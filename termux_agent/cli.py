@@ -301,6 +301,42 @@ def _run_guarded(agent: Agent, prompt: str, on_tool_use, timeout: int | None):
     return result["answer"]
 
 
+def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60) -> int:
+    """Time one tiny prompt against each model of a provider (best-effort)."""
+    import time
+
+    from termux_agent.ui.renderer import render_error, render_info
+
+    provider_name = provider_name or cfg.get("provider", "zen")
+    models = (cfg.get("providers", {}).get(provider_name, {}).get("models") or [])
+    if not models:
+        render_error(f"Provider '{provider_name}' has no preset models to benchmark.")
+        return 1
+    render_info(f"Benchmarking {provider_name}: {len(models)} model(s) — one tiny request each.")
+    results: list[tuple[str, float, int, bool]] = []
+    for m in models:
+        start = time.monotonic()
+        try:
+            answer = _run_guarded(build_agent(cfg, provider_name, m, auto_accept=True), "Reply with exactly: ok", None, timeout)
+            dt = time.monotonic() - start
+            results.append((m, dt, len(answer), True))
+        except Exception:  # noqa: BLE001
+            results.append((m, time.monotonic() - start, 0, False))
+    from rich.table import Table
+
+    from termux_agent.ui.renderer import console
+
+    table = Table(title=f"Latency benchmark: {provider_name}", expand=False)
+    table.add_column("model")
+    table.add_column("time (s)", justify="right")
+    table.add_column("chars", justify="right")
+    table.add_column("status")
+    for m, dt, chars, ok in sorted(results, key=lambda r: r[1]):
+        table.add_row(m, f"{dt:.1f}", str(chars), "ok" if ok else "FAILED")
+    console.print(table)
+    return 0
+
+
 def cmd_plan(
     cfg: dict,
     prompt: str,
@@ -417,6 +453,33 @@ def cmd_prune(keep: int) -> int:
 
     removed = prune_sessions(max(0, keep))
     render_info(f"Removed {removed} old session(s), keeping the newest {max(0, keep)}.")
+    return 0
+
+
+def cmd_forget(ref: str | None = None) -> int:
+    from termux_agent.session import delete_session
+
+    removed = delete_session(ref)
+    if not removed:
+        render_error("Session not found.")
+        return 1
+    render_info(f"Deleted session {removed.stem}.")
+    return 0
+
+
+def cmd_export_all(target_dir: str) -> int:
+    import json as _json
+
+    from termux_agent.session import export_session, list_sessions
+
+    out = Path(target_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for s in list_sessions():
+        data = export_session(s.stem)
+        (out / f"{s.stem}.json").write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        count += 1
+    render_info(f"Exported {count} session(s) to {out}.")
     return 0
 
 
@@ -706,6 +769,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest)")
     parser.add_argument("--import", dest="import_path", metavar="FILE", help="Import a portable session JSON file")
     parser.add_argument("--prune", type=int, metavar="N", help="Delete all sessions except the newest N")
+    parser.add_argument("--forget", nargs="?", const="latest", metavar="SESSION", help="Delete one session (default: latest)")
+    parser.add_argument("--export-all", metavar="DIR", help="Export every session as a JSON file into DIR")
+    parser.add_argument("--bench", nargs="?", const="__default__", metavar="PROVIDER", help="Benchmark latency across a provider's models (one tiny request each)")
     parser.add_argument("--list-providers", action="store_true", help="List provider presets")
     parser.add_argument("--list-agents", action="store_true", help="List available sub-agents")
     parser.add_argument("--models", nargs="?", const="__default__", metavar="PROVIDER", help="List models for a provider (live, or preset fallback)")
@@ -741,8 +807,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.init:
         return cmd_init()
+    if args.bench:
+        return cmd_bench(cfg, args.bench, args.timeout or 60)
     if args.export:
         return cmd_export(args.export)
+    if args.export_all:
+        return cmd_export_all(args.export_all)
+    if args.forget:
+        return cmd_forget(args.forget)
     if args.import_path:
         return cmd_import(args.import_path)
     if args.prune is not None:

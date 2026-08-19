@@ -15,10 +15,10 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Command whitelist**: `whitelisted_commands` in config lists extra command prefixes that skip confirmation (e.g. `["pip install", "python app.py"]`).
 - **Termux notifications**: `--notify` (or `notify_on_done: true` in config) sends a `termux-notification` when a one-shot task finishes (needs termux-api).
 - **Wake lock & TTS**: `--wakelock` holds a Termux wake lock while a long task runs (prevents CPU sleep), and `--speak` reads the answer aloud with `termux-tts-speak` (both need termux-api).
-- **HTTP API**: `--serve` runs a tiny local server (`POST /chat`, `GET /health`, `GET /models`, `GET /sessions`). Every request is saved as a session and the id is returned in the response; pass `"session": "<id>"` to resume that conversation. Use `--token` to require a bearer token on all endpoints except `/health`.
+- **HTTP API**: `--serve` runs a tiny local server (`POST /chat`, `GET /health`, `GET /models`, `GET /sessions`, with CORS enabled for browser clients). Every request is saved as a session and the id is returned in the response; pass `"session": "<id>"` to resume that conversation. Use `--token` to require a bearer token on all endpoints except `/health`.
 - **Chat mode**: `--chat` disables all tools for a plain conversation (no file/command access).
 - **Timeouts & saving**: `--timeout SECONDS` aborts a slow one-shot task (exit 124); one-shot tasks are now saved as sessions too, so you can `--resume` them.
-- **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--import FILE` restores it, and `--prune N` deletes all but the newest N sessions.
+- **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--export-all DIR` backs up every session, `--import FILE` restores one, `--prune N` / `--forget [ID]` delete sessions. `--bench [PROVIDER]` times one tiny request per model to help you pick a fast default.
 - **Phone-native input**: `--clip` reads the prompt from the clipboard, `--screenshot` captures the screen with `termux-screenshot` and attaches it as an image (both need termux-api). Auto-completion (`--install-completion`) derives flags from `--help`, so it never goes stale.
 - **Scriptable resumes**: `--resume` supports `--json` and `--quiet` for automated continuation; `--sessions --search "keyword"` filters sessions.
 - **Scripting output**: `--json` (structured result) and `--quiet` (only the answer, no banner) for pipelines; `--copy` sends the answer to the clipboard; `--stats` prints token usage after the answer.
@@ -196,6 +196,13 @@ termux-agent --import that-session.json   # restore it as a session
 
 # clean up old sessions, keeping only the newest 20
 termux-agent --prune 20
+termux-agent --forget 20260819-233713   # or delete just one session
+
+# backup everything
+termux-agent --export-all ./backup
+
+# pick the fastest model on your connection (one tiny request per model)
+termux-agent --bench zen
 
 # save a one-shot answer to a file too (works with --quiet / --json)
 termux-agent --quiet --output out.txt "summarize this repo"

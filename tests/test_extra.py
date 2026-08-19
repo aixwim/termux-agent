@@ -1589,6 +1589,94 @@ def test_server_token_auth(tmp_path: Path, monkeypatch):
         httpd.server_close()
 
 
+# --- export-all / forget / bench ---
+def test_cmd_export_all(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    for i in range(3):
+        (sdir / f"20260820-{i:06d}.jsonl").write_text('{"role":"user","content":"x"}\n')
+    out_dir = tmp_path / "backup"
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_export_all(str(out_dir)) == 0
+    files = sorted(p.name for p in out_dir.glob("*.json"))
+    assert len(files) == 3
+    data = _json.loads((out_dir / files[0]).read_text())
+    assert data["messages"][0]["content"] == "x"
+
+
+def test_cmd_forget(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text('{"role":"user","content":"x"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_forget("20260820-000001") == 0
+    assert session.list_sessions() == []
+
+
+def test_cmd_bench_runs_all_models(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    def fake_build(*a, **k):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            run=lambda prompt, on_tool_use=None: "ok",
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr("termux_agent.cli._run_guarded", lambda a, p, t, to: "ok")
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    cfg = _min_cfg()
+    cfg["providers"]["zen"]["models"] = ["m1", "m2"]
+    assert cli.cmd_bench(cfg, "zen", timeout=5) == 0
+
+
+def test_server_cors_headers(tmp_path: Path, monkeypatch):
+    import threading
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+    from termux_agent.server import _AgentHandler
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[{"role": "system", "content": "s"}],
+            run=lambda prompt: "OK",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=10) as r:
+            assert r.headers.get("Access-Control-Allow-Origin") == "*"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
