@@ -135,6 +135,14 @@ class Agent:
             self.allowed_tools = set()
         return self
 
+    def _with_extra_rules(self, rules: str | None) -> "Agent":
+        """Append per-invocation instructions (--rules) to the system prompt."""
+        if rules and rules.strip():
+            self.system_prompt += f"\n\n[Extra rules]\n{rules.strip()}"
+            if self.messages and self.messages[0].get("role") == "system":
+                self.messages[0]["content"] = self.system_prompt
+        return self
+
     def run(
         self,
         user_input: str,

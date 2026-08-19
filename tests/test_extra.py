@@ -1887,6 +1887,78 @@ def test_build_agent_retries_and_no_fallback(tmp_path: Path, monkeypatch):
     assert agent2.provider.fallback_models == []
 
 
+# --- json outputs / rules / version ---
+def test_cmd_sessions_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text('{"role":"user","content":"fix calc"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_sessions(as_json=True) == 0
+    data = _json.loads(out.getvalue())
+    assert data["sessions"][0]["id"] == "20260820-000001"
+    assert data["sessions"][0]["first"] == "fix calc"
+
+
+def test_version_json(monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.main(["--version", "--json"]) == 0
+    data = _json.loads(out.getvalue())
+    assert data["name"] == "termux-agent"
+    assert data["version"]
+
+
+def test_one_shot_rules_file(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    rules = tmp_path / "rules.txt"
+    rules.write_text("Always write tests.")
+    seen = {}
+
+    def fake_build(*a, **k):
+        seen["extra_rules"] = a[13] if len(a) > 13 else k.get("extra_rules")
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+        )
+
+        def _run(prompt, on_tool_use=None, on_text_delta=None):
+            return "ok"
+
+        agent.run = _run
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_one_shot(_min_cfg(), "hi", "zen", None, quiet=True, rules_file=str(rules)) == 0
+    assert seen["extra_rules"] == "Always write tests."
+
+
+def test_build_agent_extra_rules(tmp_path: Path, monkeypatch):
+    from termux_agent.cli import build_agent
+
+    monkeypatch.chdir(tmp_path)
+    agent = build_agent(_min_cfg(), "zen", None, extra_rules="Mind the indentation.")
+    assert "Mind the indentation." in agent.system_prompt
+    assert agent.messages[0]["content"] == agent.system_prompt
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

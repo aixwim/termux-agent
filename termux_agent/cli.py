@@ -52,6 +52,7 @@ def build_agent(
     no_tools: bool = False,
     retries: int | None = None,
     no_fallback: bool = False,
+    extra_rules: str | None = None,
 ) -> Agent:
     name = provider_name or cfg.get("provider", "zen")
     provider = create_provider(name, cfg, model)
@@ -85,16 +86,19 @@ def build_agent(
             "prompt": f"{agent_spec.get('prompt', '')}\nRead-only mode is active: DO NOT write or edit files, and DO NOT run any commands. Only read, search, and browse the web.",
             "tools": [t for t in base if t in READONLY_TOOLS],
         }
-    return Agent(
-        provider,
-        ctx,
-        max_tool_rounds=int(max_tool_rounds or cfg.get("max_tool_rounds", 20)),
-        temperature=float(temperature if temperature is not None else cfg.get("temperature", 0.7)),
-        agent_spec=agent_spec,
-        max_context_tokens=int(max_context_tokens if max_context_tokens is not None else cfg.get("max_context_tokens", 0)),
-        retries=int(retries if retries is not None else cfg.get("retries", 1)),
-        retry_backoff=float(cfg.get("retry_backoff", 1.0)),
-    )._with_tools(not no_tools)
+    return (
+        Agent(
+            provider,
+            ctx,
+            max_tool_rounds=int(max_tool_rounds or cfg.get("max_tool_rounds", 20)),
+            temperature=float(temperature if temperature is not None else cfg.get("temperature", 0.7)),
+            agent_spec=agent_spec,
+            max_context_tokens=int(max_context_tokens if max_context_tokens is not None else cfg.get("max_context_tokens", 0)),
+            retries=int(retries if retries is not None else cfg.get("retries", 1)),
+            retry_backoff=float(cfg.get("retry_backoff", 1.0)),
+        )
+        ._with_tools(not no_tools)
+    )._with_extra_rules(extra_rules)
 
 
 def cmd_init(provider: str | None = None, model: str | None = None) -> int:
@@ -189,6 +193,7 @@ def cmd_one_shot(
     stream: bool = False,
     retries: int | None = None,
     no_fallback: bool = False,
+    rules_file: str | None = None,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -210,7 +215,18 @@ def cmd_one_shot(
         prompt = f"{prompt}\n\n[image: {img}]".strip() if prompt else f"Describe this screenshot:\n\n[image: {img}]"
         render_info(f"Attached screenshot: {img}")
 
-    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools, retries, no_fallback)
+    extra_rules = ""
+    if rules_file:
+        try:
+            extra_rules = Path(rules_file).expanduser().read_text(encoding="utf-8").strip()
+        except OSError as e:
+            render_error(f"Cannot read --rules file: {e}")
+            return 1
+        if not extra_rules:
+            render_error(f"--rules file is empty: {rules_file}")
+            return 1
+
+    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools, retries, no_fallback, extra_rules)
     if plan and not readonly:
         return cmd_plan(cfg, prompt, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, max_context_tokens, as_json)
     if not as_json and not quiet:
@@ -354,7 +370,7 @@ def _run_guarded(agent: Agent, prompt: str, on_tool_use, timeout: int | None, on
     return result["answer"]
 
 
-def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60) -> int:
+def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as_json: bool = False) -> int:
     """Time one tiny prompt against each model of a provider (best-effort)."""
     import time
 
@@ -365,7 +381,8 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60) ->
     if not models:
         render_error(f"Provider '{provider_name}' has no preset models to benchmark.")
         return 1
-    render_info(f"Benchmarking {provider_name}: {len(models)} model(s) — one tiny request each.")
+    if not as_json:
+        render_info(f"Benchmarking {provider_name}: {len(models)} model(s) — one tiny request each.")
     results: list[tuple[str, float, int, bool]] = []
     for m in models:
         start = time.monotonic()
@@ -375,6 +392,17 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60) ->
             results.append((m, dt, len(answer), True))
         except Exception:  # noqa: BLE001
             results.append((m, time.monotonic() - start, 0, False))
+    if as_json:
+        import json as _json
+
+        print(_json.dumps(
+            {"provider": provider_name, "models": [
+                {"model": m, "seconds": round(dt, 2), "chars": ch, "ok": ok}
+                for m, dt, ch, ok in results
+            ]},
+            ensure_ascii=False,
+        ))
+        return 0
     from rich.table import Table
 
     from termux_agent.ui.renderer import console
@@ -536,10 +564,32 @@ def cmd_export_all(target_dir: str) -> int:
     return 0
 
 
-def cmd_sessions(search: str | None = None) -> int:
+def cmd_sessions(search: str | None = None, as_json: bool = False) -> int:
+    import json as _json
+
     from termux_agent.session import list_sessions, read_session
 
     sessions = list_sessions()
+    if as_json:
+        items = []
+        needle = search.lower() if search else ""
+        for s in sessions[:200]:
+            recs = read_session(s)
+            first_user = next((r["content"] for r in recs if r.get("role") == "user"), "")
+            if needle and needle not in first_user.lower():
+                continue
+            info = next((r for r in recs if r.get("provider")), {})
+            items.append(
+                {
+                    "id": s.stem,
+                    "provider": info.get("provider") or "",
+                    "model": info.get("model") or "",
+                    "messages": len(recs),
+                    "first": first_user[:100],
+                }
+            )
+        print(_json.dumps({"sessions": items}, ensure_ascii=False))
+        return 0
     if not sessions:
         render_info("No sessions saved yet in ~/.termux-agent/sessions/.")
         return 0
@@ -589,6 +639,7 @@ def cmd_resume(
     max_context_tokens: int | None = None,
     as_json: bool = False,
     quiet: bool = False,
+    stream: bool = False,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -606,17 +657,26 @@ def cmd_resume(
     agent = build_agent(cfg, provider_name, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens)
     agent.messages = [{"role": "system", "content": agent.system_prompt}] + history
     if prompt:
+        streamed = stream and not as_json and not quiet
+
         def _log(name: str, args_str: str) -> None:
             if not as_json and not quiet:
                 render_tool_use(name, args_str)
 
-        answer = agent.run(prompt, on_tool_use=_log)
+        if streamed:
+            from termux_agent.ui.renderer import PlainStreamPrinter
+
+            printer = PlainStreamPrinter()
+            answer = agent.run(prompt, on_tool_use=_log, on_text_delta=printer.feed)
+            printer.flush()
+        else:
+            answer = agent.run(prompt, on_tool_use=_log)
         _maybe_notify(cfg, "Resume done", answer, as_json)
         if as_json:
             _emit_json({"ok": True, "answer": answer, "session": path.stem}, agent)
         elif quiet:
             print(answer)
-        else:
+        elif not streamed:
             render_answer(answer)
         return 0
     if as_json or quiet:
@@ -788,7 +848,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="termux-agent",
         description="A CLI coding agent for Termux, like opencode.",
     )
-    parser.add_argument("--version", action="version", version=f"termux-agent {__version__}")
+    parser.add_argument("--version", action="store_true", help="Show the version and exit")
     parser.add_argument("--provider", help="Provider name (e.g. openai, anthropic, ollama)")
     parser.add_argument("--model", help="Model name (overrides the config default)")
     parser.add_argument("--agent", help="Sub-agent name (e.g. explore, coder, shell)")
@@ -817,6 +877,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stream", action="store_true", help="Stream the answer to the terminal as it is generated (typewriter mode)")
     parser.add_argument("--retries", type=int, metavar="N", help="Override transient retry count for network hiccups")
     parser.add_argument("--no-fallback", action="store_true", help="Disable fallback models on 429/errors (use only the selected model)")
+    parser.add_argument("--rules", metavar="FILE", help="Add extra instructions to the system prompt (like AGENTS.md but per-invocation)")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP server bind host (with --serve)")
     parser.add_argument("--port", type=int, default=8787, help="HTTP server port (with --serve)")
@@ -865,10 +926,19 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    if args.version:
+        import json as _json
+
+        if args.json:
+            print(_json.dumps({"name": "termux-agent", "version": __version__}))
+        else:
+            print(f"termux-agent {__version__}")
+        return 0
+
     if args.init:
         return cmd_init(args.provider, args.model)
     if args.bench:
-        return cmd_bench(cfg, args.bench, args.timeout or 60)
+        return cmd_bench(cfg, args.bench, args.timeout or 60, as_json=args.json)
     if args.export:
         return cmd_export(args.export)
     if args.export_all:
@@ -880,7 +950,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.prune is not None:
         return cmd_prune(args.prune)
     if args.sessions:
-        return cmd_sessions(args.search)
+        return cmd_sessions(args.search, as_json=args.json)
 
     try:
         cfg = load_config(args.config)
@@ -985,6 +1055,7 @@ def main(argv: list[str] | None = None) -> int:
             max_context_tokens=args.max_context_tokens,
             as_json=args.json,
             quiet=args.quiet,
+            stream=args.stream,
         )
 
     if prompt:
@@ -1015,6 +1086,7 @@ def main(argv: list[str] | None = None) -> int:
             stream=args.stream,
             retries=args.retries,
             no_fallback=args.no_fallback,
+            rules_file=args.rules,
         )
 
     if args.json:
