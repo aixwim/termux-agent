@@ -1264,6 +1264,56 @@ def test_cmd_resume_json(tmp_path: Path, monkeypatch):
     assert data["answer"] == "CONTINUED"
 
 
+# --- wakelock / speak flags ---
+def test_one_shot_wakelock_acquired_and_released(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    calls = []
+
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda prompt, on_tool_use=None: calls.append("run") or "DONE",
+    ))
+    monkeypatch.setattr("termux_agent.notify.wake_lock", lambda: calls.append("lock") or True)
+    monkeypatch.setattr("termux_agent.notify.wake_unlock", lambda: calls.append("unlock"))
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_one_shot(_min_cfg(), "hi", "zen", None, quiet=True, wakelock=True) == 0
+    assert calls == ["lock", "run", "unlock"]
+
+
+def test_one_shot_speak_called(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    spoken = {}
+
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda prompt, on_tool_use=None: "SPOKEN TEXT",
+    ))
+    monkeypatch.setattr("termux_agent.notify.speak", lambda t: spoken.update(text=t) or True)
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_one_shot(_min_cfg(), "hi", "zen", None, quiet=True, speak=True) == 0
+    assert spoken.get("text") == "SPOKEN TEXT"
+
+
+def test_wakelock_noop_when_missing(monkeypatch):
+    from termux_agent import notify as nmod
+
+    monkeypatch.setattr(nmod, "_have", lambda cmd: False)
+    assert nmod.wake_lock() is False
+    assert nmod.speak("x") is False
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

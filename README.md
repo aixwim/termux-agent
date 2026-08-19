@@ -14,6 +14,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Session management**: `/sessions`, `/forget [ID]` (delete a session), and `/config` (show the active configuration).
 - **Command whitelist**: `whitelisted_commands` in config lists extra command prefixes that skip confirmation (e.g. `["pip install", "python app.py"]`).
 - **Termux notifications**: `--notify` (or `notify_on_done: true` in config) sends a `termux-notification` when a one-shot task finishes (needs termux-api).
+- **Wake lock & TTS**: `--wakelock` holds a Termux wake lock while a long task runs (prevents CPU sleep), and `--speak` reads the answer aloud with `termux-tts-speak` (both need termux-api).
 - **HTTP API**: `--serve` runs a tiny local server (`POST /chat`, `GET /health`, `GET /models`) so other apps (Tasker, Termux:API, scripts) can call the agent.
 - **Chat mode**: `--chat` disables all tools for a plain conversation (no file/command access).
 - **Scriptable resumes**: `--resume` supports `--json` and `--quiet` for automated continuation; `--sessions --search "keyword"` filters sessions.
@@ -164,6 +165,9 @@ termux-agent --stats "summarize main.py"
 
 # notify when a long one-shot task finishes (needs termux-api)
 termux-agent --notify "update all dependencies"
+
+# keep the CPU awake during a long task, then read the answer aloud
+termux-agent --wakelock --speak "summarize this repo and read the summary"
 
 # run a local HTTP API (for Tasker / Termux:API / scripts)
 termux-agent --serve --host 127.0.0.1 --port 8787

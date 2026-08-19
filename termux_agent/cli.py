@@ -152,6 +152,8 @@ def cmd_one_shot(
     copy: bool = False,
     stats: bool = False,
     no_tools: bool = False,
+    wakelock: bool = False,
+    speak: bool = False,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -172,14 +174,30 @@ def cmd_one_shot(
         if not as_json and not quiet:
             render_tool_use(name, args_str)
 
+    if wakelock:
+        from termux_agent.notify import wake_lock
+
+        wake_lock()
     try:
         answer = agent.run(prompt, on_tool_use=_log_tool)
     except KeyboardInterrupt:
+        if wakelock:
+            from termux_agent.notify import wake_unlock
+
+            wake_unlock()
         if as_json:
             _emit_json({"ok": False, "error": "cancelled"}, agent)
         else:
             render_error("\nCancelled.")
         return 130
+    if wakelock:
+        from termux_agent.notify import wake_unlock
+
+        wake_unlock()
+    if speak:
+        from termux_agent.notify import speak as _speak
+
+        _speak(answer)
     _maybe_notify(cfg, "Done", answer, as_json)
     if copy:
         from termux_agent.ui.repl import copy_to_clipboard
@@ -569,6 +587,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--stats", action="store_true", help="One-shot mode: print token usage after the answer")
     parser.add_argument("--chat", action="store_true", help="Chat mode: disable all tools (plain conversation, no file/command access)")
     parser.add_argument("--notify", action="store_true", help="Send a Termux notification when a one-shot task finishes (needs termux-api)")
+    parser.add_argument("--wakelock", action="store_true", help="Hold a Termux wake lock while a one-shot task runs (needs termux-api)")
+    parser.add_argument("--speak", action="store_true", help="Read the answer aloud with termux-tts-speak (needs termux-api)")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP server bind host (with --serve)")
     parser.add_argument("--port", type=int, default=8787, help="HTTP server port (with --serve)")
@@ -730,6 +750,8 @@ def main(argv: list[str] | None = None) -> int:
             copy=args.copy,
             stats=args.stats,
             no_tools=args.chat,
+            wakelock=args.wakelock,
+            speak=args.speak,
         )
 
     if args.json:
