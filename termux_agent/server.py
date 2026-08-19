@@ -25,18 +25,44 @@ def _read_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _authorized(handler: BaseHTTPRequestHandler, body: dict[str, Any] | None = None) -> bool:
+    """Require a bearer token when the server was started with --token."""
+    token = getattr(handler, "token", None)
+    if not token:
+        return True
+    auth = handler.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        supplied = auth[len("Bearer ") :].strip()
+    elif body and isinstance(body.get("token"), str):
+        supplied = body["token"].strip()
+    else:
+        supplied = ""
+    return bool(supplied) and supplied == token
+
+
+def _send_unauthorized(handler: BaseHTTPRequestHandler) -> None:
+    body = json.dumps({"ok": False, "error": "unauthorized"}).encode("utf-8")
+    handler.send_response(401)
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
 def build_server(
     build_agent,
     cfg: dict,
     provider: str | None,
     model: str | None,
     auto_accept: bool = False,
+    token: str | None = None,
 ) -> ThreadingHTTPServer:
     _AgentHandler.build_agent = staticmethod(build_agent)
     _AgentHandler.cfg = cfg
     _AgentHandler.provider = provider
     _AgentHandler.model = model
     _AgentHandler.auto_accept = auto_accept
+    _AgentHandler.token = token
     return ThreadingHTTPServer(("", 0), _AgentHandler)
 
 
@@ -47,6 +73,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
     provider: str | None = None
     model: str | None = None
     auto_accept: bool = False
+    token: str | None = None
 
     def log_message(self, fmt: str, *args: Any) -> None:
         pass
@@ -62,14 +89,36 @@ class _AgentHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/health":
             self._send(200, {"ok": True, "version": __version__})
-        elif self.path == "/models":
-            try:
-                provider = self.build_agent(self.cfg, self.provider, self.model, auto_accept=True)
-                live = provider.provider.list_models()
-                models = live or [m for m in (self.cfg.get("providers", {}).get(self.provider or self.cfg.get("provider", "zen"), {}).get("models") or [])]
-                self._send(200, {"models": models})
-            except Exception as e:  # noqa: BLE001
-                self._send(500, {"ok": False, "error": str(e)})
+        elif self.path in ("/models", "/sessions"):
+            if not _authorized(self):
+                _send_unauthorized(self)
+                return
+            if self.path == "/models":
+                try:
+                    provider = self.build_agent(self.cfg, self.provider, self.model, auto_accept=True)
+                    live = provider.provider.list_models()
+                    models = live or [m for m in (self.cfg.get("providers", {}).get(self.provider or self.cfg.get("provider", "zen"), {}).get("models") or [])]
+                    self._send(200, {"models": models})
+                except Exception as e:  # noqa: BLE001
+                    self._send(500, {"ok": False, "error": str(e)})
+            else:
+                from termux_agent.session import list_sessions, read_session
+
+                sessions = []
+                for s in list_sessions()[:50]:
+                    recs = read_session(s)
+                    info = next((r for r in recs if r.get("provider")), {})
+                    first_user = next((r["content"] for r in recs if r.get("role") == "user" and r.get("content")), "")
+                    sessions.append(
+                        {
+                            "id": s.stem,
+                            "provider": info.get("provider") or "",
+                            "model": info.get("model") or "",
+                            "messages": len(recs),
+                            "first": str(first_user)[:100],
+                        }
+                    )
+                self._send(200, {"sessions": sessions})
         else:
             self._send(404, {"ok": False, "error": "not found"})
 
@@ -78,6 +127,9 @@ class _AgentHandler(BaseHTTPRequestHandler):
             self._send(404, {"ok": False, "error": "not found"})
             return
         data = _read_body(self)
+        if not _authorized(self, data):
+            _send_unauthorized(self)
+            return
         prompt = str(data.get("prompt", "")).strip()
         if not prompt:
             self._send(400, {"ok": False, "error": "missing 'prompt'"})
@@ -132,7 +184,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
         )
 
 
-def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | None = None, model: str | None = None, auto_accept: bool = False) -> int:
+def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | None = None, model: str | None = None, auto_accept: bool = False, token: str | None = None) -> int:
     from termux_agent.cli import build_agent as _build
 
     handler = _AgentHandler
@@ -141,6 +193,7 @@ def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | 
     handler.provider = provider
     handler.model = model
     handler.auto_accept = auto_accept
+    handler.token = token
     httpd = ThreadingHTTPServer((host, port), handler)
     import sys
 

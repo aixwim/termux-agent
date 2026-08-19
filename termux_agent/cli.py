@@ -698,6 +698,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP server bind host (with --serve)")
     parser.add_argument("--port", type=int, default=8787, help="HTTP server port (with --serve)")
+    parser.add_argument("--token", help="Require this bearer token for the HTTP API (with --serve; use a long random string)")
     parser.add_argument("prompt", nargs="*", help="One-shot prompt (no arguments = interactive mode)")
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
@@ -770,7 +771,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.serve:
         from termux_agent.server import serve
 
-        return serve(cfg, host=args.host, port=args.port, provider=args.provider, model=args.model, auto_accept=args.yes)
+        return serve(cfg, host=args.host, port=args.port, provider=args.provider, model=args.model, auto_accept=args.yes, token=args.token)
 
     if args.verbose:
         import os

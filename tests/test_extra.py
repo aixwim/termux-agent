@@ -1520,6 +1520,75 @@ def test_parser_all_flags_present():
         assert flag in help_txt, f"missing {flag}"
 
 
+# --- server auth + /sessions ---
+def test_server_token_auth(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.error
+    import urllib.request
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+    from termux_agent import session
+    from termux_agent.server import _AgentHandler
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text('{"role":"user","content":"hello"}\n{"role":"assistant","content":"hi"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[{"role": "system", "content": "s"}],
+            run=lambda prompt: "OK",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None, token="sekret")
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=10) as r:
+            assert _json.loads(r.read())["ok"] is True
+
+        def chat(auth=None, body=None):
+            headers = {"Content-Type": "application/json"}
+            if auth:
+                headers["Authorization"] = f"Bearer {auth}"
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/chat",
+                data=_json.dumps(body or {"prompt": "x"}).encode(),
+                headers=headers,
+            )
+            return urllib.request.urlopen(req, timeout=15)
+
+        try:
+            chat()
+            raise AssertionError("expected 401")
+        except urllib.error.HTTPError as e:
+            assert e.code == 401
+        with chat("sekret") as r:
+            assert _json.loads(r.read())["ok"] is True
+
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/sessions", headers={"Authorization": "Bearer sekret"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            sids = _json.loads(r.read())["sessions"]
+        assert sids and sids[0]["id"] == "20260820-000001"
+        assert sids[0]["first"] == "hello"
+
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/sessions", timeout=10)
+            raise AssertionError("expected 401")
+        except urllib.error.HTTPError as e:
+            assert e.code == 401
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

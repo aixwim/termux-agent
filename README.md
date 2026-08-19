@@ -15,7 +15,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Command whitelist**: `whitelisted_commands` in config lists extra command prefixes that skip confirmation (e.g. `["pip install", "python app.py"]`).
 - **Termux notifications**: `--notify` (or `notify_on_done: true` in config) sends a `termux-notification` when a one-shot task finishes (needs termux-api).
 - **Wake lock & TTS**: `--wakelock` holds a Termux wake lock while a long task runs (prevents CPU sleep), and `--speak` reads the answer aloud with `termux-tts-speak` (both need termux-api).
-- **HTTP API**: `--serve` runs a tiny local server (`POST /chat`, `GET /health`, `GET /models`). Every request is saved as a session and the id is returned in the response; pass `"session": "<id>"` to resume that conversation.
+- **HTTP API**: `--serve` runs a tiny local server (`POST /chat`, `GET /health`, `GET /models`, `GET /sessions`). Every request is saved as a session and the id is returned in the response; pass `"session": "<id>"` to resume that conversation. Use `--token` to require a bearer token on all endpoints except `/health`.
 - **Chat mode**: `--chat` disables all tools for a plain conversation (no file/command access).
 - **Timeouts & saving**: `--timeout SECONDS` aborts a slow one-shot task (exit 124); one-shot tasks are now saved as sessions too, so you can `--resume` them.
 - **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--import FILE` restores it, and `--prune N` deletes all but the newest N sessions.
@@ -180,6 +180,11 @@ termux-agent --serve --host 127.0.0.1 --port 8787
 curl -X POST http://127.0.0.1:8787/chat -d '{"prompt":"hello"}' -H 'Content-Type: application/json'
 # every request is saved; pass the returned "session" id to resume it:
 curl -X POST http://127.0.0.1:8787/chat -d '{"prompt":"continue","session":"20260819-..."}' -H 'Content-Type: application/json'
+
+# protect the API with a bearer token (needed for any non-/health request)
+termux-agent --serve --token "a-long-random-string"
+curl -X POST http://127.0.0.1:8787/chat -d '{"prompt":"hello"}' -H 'Authorization: Bearer a-long-random-string'
+curl http://127.0.0.1:8787/sessions -H 'Authorization: Bearer a-long-random-string'   # list saved sessions
 
 # list sessions
 termux-agent --sessions
