@@ -48,6 +48,7 @@ def build_agent(
     max_tool_rounds: int | None = None,
     readonly: bool = False,
     max_context_tokens: int | None = None,
+    no_tools: bool = False,
 ) -> Agent:
     name = provider_name or cfg.get("provider", "zen")
     provider = create_provider(name, cfg, model)
@@ -88,7 +89,7 @@ def build_agent(
         max_context_tokens=int(max_context_tokens if max_context_tokens is not None else cfg.get("max_context_tokens", 0)),
         retries=int(cfg.get("retries", 1)),
         retry_backoff=float(cfg.get("retry_backoff", 1.0)),
-    )
+    )._with_tools(not no_tools)
 
 
 def cmd_init() -> int:
@@ -150,10 +151,11 @@ def cmd_one_shot(
     quiet: bool = False,
     copy: bool = False,
     stats: bool = False,
+    no_tools: bool = False,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
-    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens)
+    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools)
     if plan and not readonly:
         return cmd_plan(cfg, prompt, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, max_context_tokens, as_json)
     if not as_json and not quiet:
@@ -298,17 +300,26 @@ def cmd_plan(
     return 0
 
 
-def cmd_sessions() -> int:
+def cmd_sessions(search: str | None = None) -> int:
     from termux_agent.session import list_sessions, read_session
 
     sessions = list_sessions()
     if not sessions:
         render_info("No sessions saved yet in ~/.termux-agent/sessions/.")
         return 0
-    for s in sessions[:20]:
+    shown = 0
+    needle = search.lower() if search else ""
+    for s in sessions[:200]:
         recs = read_session(s)
         first_user = next((r["content"] for r in recs if r.get("role") == "user"), "")
+        if needle and needle not in first_user.lower():
+            continue
         render_info(f"{s.stem}  [{len(recs)} messages]  {first_user[:60]}")
+        shown += 1
+        if shown >= 20:
+            break
+    if needle:
+        render_info(f"\n{shown} matching session(s).")
     return 0
 
 
@@ -340,6 +351,8 @@ def cmd_resume(
     max_tool_rounds: int | None = None,
     readonly: bool = False,
     max_context_tokens: int | None = None,
+    as_json: bool = False,
+    quiet: bool = False,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -348,7 +361,8 @@ def cmd_resume(
         render_error("Session not found. Run 'termux-agent --sessions' to list them.")
         return 1
     path, info, history = found
-    render_info(f"Resuming session {path.stem} ({len(history)} messages)")
+    if not quiet and not as_json:
+        render_info(f"Resuming session {path.stem} ({len(history)} messages)")
     provider_name = info.get("provider") or cfg.get("provider", "zen")
     if provider_name not in cfg.get("providers", {}):
         provider_name = cfg.get("provider", "zen")
@@ -356,9 +370,22 @@ def cmd_resume(
     agent = build_agent(cfg, provider_name, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens)
     agent.messages = [{"role": "system", "content": agent.system_prompt}] + history
     if prompt:
-        answer = agent.run(prompt, on_tool_use=render_tool_use)
-        render_answer(answer)
+        def _log(name: str, args_str: str) -> None:
+            if not as_json and not quiet:
+                render_tool_use(name, args_str)
+
+        answer = agent.run(prompt, on_tool_use=_log)
+        _maybe_notify(cfg, "Resume done", answer, as_json)
+        if as_json:
+            _emit_json({"ok": True, "answer": answer, "session": path.stem}, agent)
+        elif quiet:
+            print(answer)
+        else:
+            render_answer(answer)
         return 0
+    if as_json or quiet:
+        render_error("--json/--quiet require a prompt with --resume.")
+        return 2
     Repl(agent, provider_name=provider_name, model=agent.provider.model, agent_name=agent_name).run()
     return 0
 
@@ -540,6 +567,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prompt-file", help="Read the prompt from a file (UTF-8)")
     parser.add_argument("--api-key", help="Set the provider API key for this run (env var override, not saved)")
     parser.add_argument("--stats", action="store_true", help="One-shot mode: print token usage after the answer")
+    parser.add_argument("--chat", action="store_true", help="Chat mode: disable all tools (plain conversation, no file/command access)")
     parser.add_argument("--notify", action="store_true", help="Send a Termux notification when a one-shot task finishes (needs termux-api)")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP server bind host (with --serve)")
@@ -547,6 +575,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("prompt", nargs="*", help="One-shot prompt (no arguments = interactive mode)")
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
+    parser.add_argument("--search", help="Filter --sessions by keyword in the first message")
     parser.add_argument("--list-providers", action="store_true", help="List provider presets")
     parser.add_argument("--list-agents", action="store_true", help="List available sub-agents")
     parser.add_argument("--models", nargs="?", const="__default__", metavar="PROVIDER", help="List models for a provider (live, or preset fallback)")
@@ -578,7 +607,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.init:
         return cmd_init()
     if args.sessions:
-        return cmd_sessions()
+        return cmd_sessions(args.search)
 
     try:
         cfg = load_config()
@@ -678,6 +707,8 @@ def main(argv: list[str] | None = None) -> int:
             max_tool_rounds=args.max_tool_rounds,
             readonly=args.readonly,
             max_context_tokens=args.max_context_tokens,
+            as_json=args.json,
+            quiet=args.quiet,
         )
 
     if prompt:
@@ -698,6 +729,7 @@ def main(argv: list[str] | None = None) -> int:
             quiet=args.quiet,
             copy=args.copy,
             stats=args.stats,
+            no_tools=args.chat,
         )
 
     if args.json:
@@ -717,6 +749,7 @@ def main(argv: list[str] | None = None) -> int:
             max_tool_rounds=args.max_tool_rounds,
             readonly=args.readonly,
             max_context_tokens=args.max_context_tokens,
+            no_tools=args.chat,
         )
     except (ConfigError, KeyError) as e:
         render_error(f"Error: {e}\nRun 'termux-agent --init' first, then set the API key.")

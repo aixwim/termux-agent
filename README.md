@@ -15,6 +15,8 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Command whitelist**: `whitelisted_commands` in config lists extra command prefixes that skip confirmation (e.g. `["pip install", "python app.py"]`).
 - **Termux notifications**: `--notify` (or `notify_on_done: true` in config) sends a `termux-notification` when a one-shot task finishes (needs termux-api).
 - **HTTP API**: `--serve` runs a tiny local server (`POST /chat`, `GET /health`, `GET /models`) so other apps (Tasker, Termux:API, scripts) can call the agent.
+- **Chat mode**: `--chat` disables all tools for a plain conversation (no file/command access).
+- **Scriptable resumes**: `--resume` supports `--json` and `--quiet` for automated continuation; `--sessions --search "keyword"` filters sessions.
 - **Scripting output**: `--json` (structured result) and `--quiet` (only the answer, no banner) for pipelines; `--copy` sends the answer to the clipboard; `--stats` prints token usage after the answer.
 - **Pipe-friendly**: `echo "fix the bug" | termux-agent` runs a one-shot using stdin as the prompt.
 - **Rate-limit fallback**: `fallback_models` in the provider config are tried automatically when the main model returns HTTP 429 (rate limited).
@@ -79,6 +81,15 @@ termux-agent "read file main.py and fix its bugs"
 # resume the latest session
 termux-agent --resume
 termux-agent --resume 20260819-233713 "continue: ..."
+
+# resume with machine-readable output (for scripts)
+termux-agent --resume --json "continue the task" > result.json
+
+# plain chat without any tools
+termux-agent --chat "explain how TCP works"
+
+# find a session by keyword
+termux-agent --sessions --search "calculator"
 
 # skip all confirmations (dangerous; good for scripts)
 termux-agent --yes "commit all changes"

@@ -1194,6 +1194,76 @@ def test_notify_respects_env(monkeypatch):
     assert os.environ.get("TERMUX_AGENT_NOTIFY") == "1"
 
 
+# --- --chat mode ---
+def test_build_agent_chat_disables_tools(tmp_path: Path, monkeypatch):
+    from termux_agent.cli import build_agent
+
+    monkeypatch.chdir(tmp_path)
+    agent = build_agent(_min_cfg(), "zen", None, no_tools=True)
+    assert agent.tools == []
+
+
+def test_build_agent_chat_keeps_agent_limits(tmp_path: Path, monkeypatch):
+    from termux_agent.cli import build_agent
+
+    monkeypatch.chdir(tmp_path)
+    agent = build_agent(_min_cfg(), "zen", None, agent_name="explore", no_tools=False)
+    assert [t.name for t in agent.tools] == ["read_file"]
+
+
+# --- --sessions --search ---
+def test_cmd_sessions_search(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260819-000001.jsonl").write_text('{"role":"user","content":"fix the calculator"}\n')
+    (sdir / "20260819-000002.jsonl").write_text('{"role":"user","content":"explain config"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_sessions("calculator") == 0
+    assert "000001" in out.getvalue()
+    assert "000002" not in out.getvalue()
+
+
+# --- --resume --json ---
+def test_cmd_resume_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260819-000001.jsonl").write_text(
+        '{"role":"user","content":"hi"}\n{"role":"assistant","content":"hello"}\n'
+    )
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            system_prompt="SYS",
+            messages=[],
+            run=lambda prompt, on_tool_use=None: "CONTINUED",
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_resume(_min_cfg(), "latest", "continue please", as_json=True)
+    assert code == 0
+    data = _json.loads(out.getvalue())
+    assert data["ok"] is True
+    assert data["answer"] == "CONTINUED"
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

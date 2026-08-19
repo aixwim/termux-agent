@@ -129,6 +129,12 @@ class Agent:
             return specs
         return [s for s in specs if s.name in self.allowed_tools]
 
+    def _with_tools(self, enabled: bool) -> "Agent":
+        """Disable all tools for chat mode (enabled=False); otherwise keep agent limits."""
+        if not enabled:
+            self.allowed_tools = set()
+        return self
+
     def run(
         self,
         user_input: str,
