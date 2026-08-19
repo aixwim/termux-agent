@@ -1382,6 +1382,73 @@ def test_record_messages(tmp_path: Path, monkeypatch):
     assert [(r["role"], r["content"]) for r in recs] == [("user", "hi"), ("assistant", "hello")]
 
 
+# --- export / import / prune ---
+def test_export_import_roundtrip(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from termux_agent import session
+
+    sdir = tmp_path / "sessions"
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    sid = session.record_messages(
+        [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}],
+        "zen",
+        "m",
+    )
+    data = session.export_session(sid)
+    assert data["id"] == sid
+    assert data["provider"] == "zen"
+    assert len(data["messages"]) == 2
+    dumped = _json.dumps(data)
+    restored = session.import_session(_json.loads(dumped))
+    assert restored == sid
+    assert session.export_session(sid)["messages"] == data["messages"]
+
+
+def test_cmd_export_missing(monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    monkeypatch.setattr(session, "SESSIONS_DIR", Path("/nonexistent-sessions"))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_export("nope") == 1
+
+
+def test_cmd_prune(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    for i in range(5):
+        (sdir / f"20260819-{i:06d}.jsonl").write_text('{"role":"user","content":"x"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_prune(2) == 0
+    assert len(session.list_sessions()) == 2
+
+
+def test_one_shot_output_file(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    out_path = tmp_path / "out.txt"
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda prompt, on_tool_use=None: "RESULT LINE",
+    ))
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_one_shot(_min_cfg(), "hi", "zen", None, quiet=True, output=str(out_path)) == 0
+    assert out_path.read_text() == "RESULT LINE\n"
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

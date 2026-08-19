@@ -18,6 +18,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **HTTP API**: `--serve` runs a tiny local server (`POST /chat`, `GET /health`, `GET /models`). Every request is saved as a session and the id is returned in the response; pass `"session": "<id>"` to resume that conversation.
 - **Chat mode**: `--chat` disables all tools for a plain conversation (no file/command access).
 - **Timeouts & saving**: `--timeout SECONDS` aborts a slow one-shot task (exit 124); one-shot tasks are now saved as sessions too, so you can `--resume` them.
+- **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--import FILE` restores it, and `--prune N` deletes all but the newest N sessions.
 - **Scriptable resumes**: `--resume` supports `--json` and `--quiet` for automated continuation; `--sessions --search "keyword"` filters sessions.
 - **Scripting output**: `--json` (structured result) and `--quiet` (only the answer, no banner) for pipelines; `--copy` sends the answer to the clipboard; `--stats` prints token usage after the answer.
 - **Pipe-friendly**: `echo "fix the bug" | termux-agent` runs a one-shot using stdin as the prompt.
@@ -181,6 +182,17 @@ curl -X POST http://127.0.0.1:8787/chat -d '{"prompt":"continue","session":"2026
 
 # list sessions
 termux-agent --sessions
+
+# backup / move a session to another device (portable JSON on stdout)
+termux-agent --export > backup.json
+termux-agent --export 20260819-233713 > that-session.json
+termux-agent --import that-session.json   # restore it as a session
+
+# clean up old sessions, keeping only the newest 20
+termux-agent --prune 20
+
+# save a one-shot answer to a file too (works with --quiet / --json)
+termux-agent --quiet --output out.txt "summarize this repo"
 ```
 
 ### Project rules

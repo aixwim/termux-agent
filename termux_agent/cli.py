@@ -156,6 +156,7 @@ def cmd_one_shot(
     wakelock: bool = False,
     speak: bool = False,
     timeout: int | None = None,
+    output: str | None = None,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -210,6 +211,11 @@ def cmd_one_shot(
         from termux_agent.notify import speak as _speak
 
         _speak(answer)
+    if output:
+        try:
+            Path(output).write_text(answer + "\n", encoding="utf-8")
+        except OSError as e:
+            render_error(f"Cannot write output file {output}: {e}")
     if getattr(agent, "messages", None):
         from termux_agent.session import record_messages
 
@@ -348,6 +354,49 @@ def cmd_plan(
         _emit_json({"ok": True, "plan": plan, "executed": True, "answer": answer}, exec_agent)
     else:
         render_answer(answer)
+    return 0
+
+
+def cmd_export(ref: str | None = None) -> int:
+    """Print a session as portable JSON (default: latest)."""
+    from termux_agent.session import export_session
+
+    try:
+        data = export_session(ref)
+    except FileNotFoundError:
+        render_error("Session not found.")
+        return 1
+    import json as _json
+
+    print(_json.dumps(data, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_import(path: str) -> int:
+    """Import a portable session JSON file and save it as a session."""
+    import json as _json
+
+    from termux_agent.session import import_session
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = _json.load(f)
+        sid = import_session(data)
+    except FileNotFoundError:
+        render_error(f"File not found: {path}")
+        return 1
+    except (ValueError, _json.JSONDecodeError) as e:
+        render_error(f"Invalid session file: {e}")
+        return 1
+    render_info(f"Imported session {sid} ({len(data.get('messages', []))} messages)")
+    return 0
+
+
+def cmd_prune(keep: int) -> int:
+    from termux_agent.session import prune_sessions
+
+    removed = prune_sessions(max(0, keep))
+    render_info(f"Removed {removed} old session(s), keeping the newest {max(0, keep)}.")
     return 0
 
 
@@ -623,6 +672,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wakelock", action="store_true", help="Hold a Termux wake lock while a one-shot task runs (needs termux-api)")
     parser.add_argument("--speak", action="store_true", help="Read the answer aloud with termux-tts-speak (needs termux-api)")
     parser.add_argument("--timeout", type=int, metavar="SECONDS", help="Abort a one-shot task if it takes longer than this")
+    parser.add_argument("--output", metavar="FILE", help="Also write the answer to this file (plain text)")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP server bind host (with --serve)")
     parser.add_argument("--port", type=int, default=8787, help="HTTP server port (with --serve)")
@@ -630,6 +680,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
     parser.add_argument("--search", help="Filter --sessions by keyword in the first message")
+    parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest)")
+    parser.add_argument("--import", dest="import_path", metavar="FILE", help="Import a portable session JSON file")
+    parser.add_argument("--prune", type=int, metavar="N", help="Delete all sessions except the newest N")
     parser.add_argument("--list-providers", action="store_true", help="List provider presets")
     parser.add_argument("--list-agents", action="store_true", help="List available sub-agents")
     parser.add_argument("--models", nargs="?", const="__default__", metavar="PROVIDER", help="List models for a provider (live, or preset fallback)")
@@ -660,6 +713,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.init:
         return cmd_init()
+    if args.export:
+        return cmd_export(args.export)
+    if args.import_path:
+        return cmd_import(args.import_path)
+    if args.prune is not None:
+        return cmd_prune(args.prune)
     if args.sessions:
         return cmd_sessions(args.search)
 
@@ -787,6 +846,7 @@ def main(argv: list[str] | None = None) -> int:
             wakelock=args.wakelock,
             speak=args.speak,
             timeout=args.timeout,
+            output=args.output,
         )
 
     if args.json:

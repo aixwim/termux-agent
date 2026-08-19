@@ -75,13 +75,17 @@ def record_messages(messages: list[dict], provider_name: str, model: str, sessio
     return s.session_id
 
 
-def delete_session(ref: str | None = None) -> Path | None:
-    """Delete a session by id prefix (or the latest when ref is None/latest)."""
+def resolve_session(ref: str | None = None) -> Path | None:
+    """Resolve a session ref (id prefix or 'latest') to a path."""
     if ref and ref not in ("latest", ""):
         matches = [s for s in list_sessions() if s.stem.startswith(ref)]
-        path = matches[-1] if matches else None
-    else:
-        path = latest_session()
+        return matches[-1] if matches else None
+    return latest_session()
+
+
+def delete_session(ref: str | None = None) -> Path | None:
+    """Delete a session by id prefix (or the latest when ref is None/latest)."""
+    path = resolve_session(ref)
     if not path:
         return None
     try:
@@ -89,3 +93,62 @@ def delete_session(ref: str | None = None) -> Path | None:
     except OSError:
         return None
     return path
+
+
+def export_session(ref: str | None = None) -> dict:
+    """Export a session as a portable dict (for backup / moving devices)."""
+    path = resolve_session(ref)
+    if not path:
+        raise FileNotFoundError("session not found")
+    recs = read_session(path)
+    info = next((r for r in recs if r.get("provider")), {})
+    return {
+        "version": 1,
+        "id": path.stem,
+        "provider": info.get("provider") or "",
+        "model": info.get("model") or "",
+        "messages": [
+            {"role": r["role"], "content": r["content"]}
+            for r in recs
+            if r.get("role") in ("user", "assistant") and isinstance(r.get("content"), str) and r["content"].strip()
+        ],
+    }
+
+
+def import_session(data: dict, session_id: str | None = None) -> str:
+    """Import a portable session dict; returns the (reused) session id.
+
+    If the target id already exists it is replaced, so a restore is exact.
+    """
+    messages = data.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("missing 'messages'")
+    clean = [
+        {"role": m["role"], "content": str(m["content"])}
+        for m in messages
+        if isinstance(m, dict) and m.get("role") in ("user", "assistant") and m.get("content")
+    ]
+    if not clean:
+        raise ValueError("no user/assistant messages")
+    s = Session(
+        session_id=session_id,
+        provider_name=str(data.get("provider") or ""),
+        model=str(data.get("model") or ""),
+    )
+    s.path.write_text("", encoding="utf-8")
+    for m in clean:
+        s.append(m)
+    return s.session_id
+
+
+def prune_sessions(keep: int) -> int:
+    """Delete all but the `keep` newest sessions. Returns number deleted."""
+    sessions = list_sessions()
+    removed = 0
+    for path in sessions[keep:]:
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
