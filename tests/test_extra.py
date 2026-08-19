@@ -716,6 +716,61 @@ def test_cmd_one_shot_copy(tmp_path: Path, monkeypatch):
     assert out.getvalue() == "HELLO\n"
 
 
+# --- project-local config ---
+def test_project_config_overrides(tmp_path: Path, monkeypatch):
+    import os
+
+    from termux_agent import config as cfgmod
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".termux-agent").mkdir()
+    (proj / ".termux-agent" / "config.yaml").write_text(
+        "temperature: 0.1\nmax_tool_rounds: 5\nworking_dir: '~/proj'\n"
+    )
+    monkeypatch.setattr(os, "getcwd", lambda: str(proj))
+    monkeypatch.setattr(cfgmod, "CONFIG_FILE", tmp_path / "nonexistent.yaml")
+    cfg = cfgmod.load_config()
+    assert cfg["temperature"] == 0.1
+    assert cfg["max_tool_rounds"] == 5
+    assert cfg["provider"] == "zen"  # unchanged default
+
+
+def test_project_config_missing_is_ignored(tmp_path: Path, monkeypatch):
+    import os
+
+    from termux_agent import config as cfgmod
+
+    monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+    monkeypatch.setattr(cfgmod, "CONFIG_FILE", tmp_path / "nonexistent.yaml")
+    cfg = cfgmod.load_config()
+    assert cfg["temperature"] == 0.7
+
+
+# --- /prompt session instruction ---
+def test_repl_prompt_add_clear(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+    from termux_agent.session import Session
+    from termux_agent.ui.repl import Repl
+
+    agent = SimpleNamespace(
+        system_prompt="BASE",
+        messages=[{"role": "system", "content": "BASE"}],
+        ctx=SimpleNamespace(working_dir=tmp_path),
+    )
+    monkeypatch.setattr("termux_agent.ui.repl.Session", lambda **k: Session())
+    repl = Repl(agent, provider_name="zen", model="m")
+    repl._handle_command("/prompt always use english", None)
+    assert "always use english" in repl.agent.system_prompt
+    assert repl.agent.messages[0]["content"].startswith("BASE")
+    repl._handle_command("/prompt clear", None)
+    assert repl.agent.system_prompt == "BASE"
+    assert repl.agent.messages[0]["content"] == "BASE"
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

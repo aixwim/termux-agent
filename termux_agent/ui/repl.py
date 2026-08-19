@@ -52,6 +52,7 @@ Special commands (start with /):
   /forget [ID]    delete a session (default: this session)
   /models         list available models for the current provider
   /diff           show git working-tree changes & diff summary
+  /prompt [TXT]   add a session instruction; /prompt clear removes them; no arg = show
 Type a normal message to ask; Ctrl+C to cancel."""
 
 
@@ -77,6 +78,8 @@ class Repl:
         self.agent_name = agent_name
         self.session = Session(provider_name=provider_name, model=model)
         self._last_answer = ""
+        self._base_prompt = getattr(self.agent, "system_prompt", "")
+        self._instructions: list[str] = []
 
     def _confirm(self, command: str) -> bool:
         try:
@@ -206,6 +209,8 @@ class Repl:
             self._list_models()
         elif c == "/diff":
             self._show_diff()
+        elif c == "/prompt":
+            self._prompt(rest)
         else:
             render_error(f"Unknown command: {c}")
         return False
@@ -303,6 +308,26 @@ class Repl:
         from termux_agent.config import load_config
 
         cmd_list_models(load_config(), self.provider_name)
+
+    def _prompt(self, arg: str) -> None:
+        if not arg:
+            if self._instructions:
+                render_info("Session instructions:")
+                for s in self._instructions:
+                    render_info(f"  - {s}")
+            else:
+                render_info("No session instructions set. Use /prompt <text> to add one.")
+            return
+        if arg.strip().lower() == "clear":
+            self._instructions = []
+            self.agent.system_prompt = self._base_prompt
+            self.agent.messages[0] = {"role": "system", "content": self.agent.system_prompt}
+            render_info("Session instructions cleared.")
+            return
+        self._instructions.append(arg.strip())
+        self.agent.system_prompt = self._base_prompt + "\n\n[Session instruction]\n" + "\n".join(f"- {s}" for s in self._instructions)
+        self.agent.messages[0] = {"role": "system", "content": self.agent.system_prompt}
+        render_info(f"Instruction added ({len(self._instructions)} total).")
 
     def _show_diff(self) -> None:
         import subprocess

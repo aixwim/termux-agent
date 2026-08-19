@@ -21,6 +21,8 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Auto-completion**: `--install-completion bash|zsh` adds Tab-completion to your shell (providers, agents, and CLI options).
 - **Diagnostics**: `--doctor` checks the Termux environment, config, PATH, and API key; `--doctor-network` also tests provider connectivity.
 - **Project rules**: `AGENTS.md`, `CLAUDE.md`, or `.termux-agent/rules.md` in the working directory (and parents up to `$HOME`) are auto-loaded into the agent's instructions — like opencode.
+- **Project-local config**: a `.termux-agent/config.yaml` in the current directory (or any parent up to `$HOME`) overrides the global `~/.termux-agent/config.yaml` for that project.
+- **Session instructions**: `/prompt <text>` adds a persistent instruction for the rest of the session (`/prompt` shows them, `/prompt clear` removes them).
 - **Git integration**: the agent can check status, diff, and commit (commit requires confirmation).
 - **Session resume**: continue a previous conversation with `--resume` or `/resume`.
 - **Context compacting**: `/compact` summarizes old history to save tokens.
@@ -158,6 +160,7 @@ termux-agent "add docstrings to app.py"   # follows that rule
 /forget [ID]   delete a session (default: this session)
 /models        list available models for the current provider
 /diff          show git working-tree changes & diff summary
+/prompt [TXT]  add a session instruction; /prompt clear removes them; no arg = show
 Type a normal message to ask; Ctrl+C to cancel.
 ```
 

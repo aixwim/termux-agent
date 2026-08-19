@@ -141,6 +141,21 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
+def _find_project_configs() -> list[Path]:
+    """Locate .termux-agent/config.yaml files from cwd up to $HOME (farthest first)."""
+    found: list[Path] = []
+    home = Path.home()
+    start = Path.cwd().resolve()
+    chain = [start, *start.parents]
+    for directory in reversed(chain):
+        f = directory / ".termux-agent" / "config.yaml"
+        if f.is_file():
+            found.append(f)
+        if directory == home:
+            break
+    return found
+
+
 def load_config() -> dict[str, Any]:
     cfg = copy.deepcopy(DEFAULTS)
     if CONFIG_FILE.exists():
@@ -149,6 +164,12 @@ def load_config() -> dict[str, Any]:
         except yaml.YAMLError as e:
             raise ConfigError(f"Failed to parse {CONFIG_FILE}: {e}")
         cfg = _deep_merge(cfg, user)
+    for p in _find_project_configs():
+        try:
+            proj = yaml.safe_load(p.read_text()) or {}
+        except yaml.YAMLError as e:
+            raise ConfigError(f"Failed to parse {p}: {e}")
+        cfg = _deep_merge(cfg, proj)
     return cfg
 
 
