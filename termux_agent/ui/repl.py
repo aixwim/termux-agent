@@ -35,6 +35,7 @@ Special commands (start with /):
   /agent [NAME]   view/switch sub-agent (explore, coder, shell, ...)
   /export [PATH]  export the conversation to Markdown
   /copy           copy the last answer to the clipboard
+  /stats          show token usage of this session
 Type a normal message to ask; Ctrl+C to cancel."""
 
 
@@ -166,6 +167,8 @@ class Repl:
             self._export(rest)
         elif c == "/copy":
             self._copy_last()
+        elif c == "/stats":
+            self._show_stats()
         else:
             render_error(f"Unknown command: {c}")
         return False
@@ -254,6 +257,17 @@ class Repl:
                 render_error("Failed to copy to the clipboard.")
         else:
             render_error("Clipboard unavailable. Install termux-api (pkg install termux-api) or use /export.")
+
+    def _show_stats(self) -> None:
+        u = self.agent.usage
+        if not u or not any(u.values()):
+            render_info("No usage recorded yet.")
+            return
+        render_info(
+            f"Tokens: prompt {u.get('prompt_tokens', 0)} | "
+            f"completion {u.get('completion_tokens', 0)} | "
+            f"total {u.get('total_tokens', 0)}"
+        )
 
     def _compact(self) -> None:
         render_info("Summarizing session history...")

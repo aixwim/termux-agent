@@ -8,6 +8,9 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Full agent loop**: the model can answer or call tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep_file`, `glob_find`, `run_command`, `web_fetch`, `web_search`, `git_status`, `git_diff`, `git_commit`) until the task is done.
 - **Multi-agent / sub-agents**: specialized agents with different roles & tool restrictions — `root` (all tools), `explore` (read/search only), `coder` (write/edit without commits), `shell` (run commands). Pick one with `--agent` or `/agent`.
 - **Read-only mode (`--readonly`)**: the agent can only read, search, and browse the web — no writing/editing/running commands. Great for reviewing code without risk.
+- **Plan mode (`--plan`)**: the agent first proposes a step-by-step plan read-only, then executes it only after you approve (auto-approved with `--yes`).
+- **Token usage tracking**: `/stats` shows prompt/completion/total tokens used in the session (when the provider reports usage).
+- **Pipe-friendly**: `echo "fix the bug" | termux-agent` runs a one-shot using stdin as the prompt.
 - **Web search without an API key**: `web_search` uses DuckDuckGo, with a Wikipedia fallback when the network blocks/rejects certificates.
 - **Auto-completion**: `--install-completion bash|zsh` adds Tab-completion to your shell (providers, agents, and CLI options).
 - **Diagnostics**: `--doctor` checks the Termux environment, config, PATH, and API key; `--doctor-network` also tests provider connectivity.
@@ -90,6 +93,12 @@ termux-agent --cwd /sdcard/Documents --temperature 0.2 --max-tool-rounds 30 "tid
 # read-only mode: review code without being able to change anything
 termux-agent --readonly "review the security of this code and suggest fixes"
 
+# plan mode: propose a plan first, execute only after approval
+termux-agent --plan "add unit tests for kalkulator.py"
+
+# pipe stdin as the prompt (one-shot)
+echo "fix the bugs in main.py" | termux-agent
+
 # list sessions
 termux-agent --sessions
 ```
@@ -118,6 +127,7 @@ termux-agent "add docstrings to app.py"   # follows that rule
 /agent [NAME]  view/switch sub-agent (explore, coder, shell, ...)
 /export [PATH] export the conversation to Markdown (default: ~/.termux-agent/exports/)
 /copy          copy the last answer to the clipboard (requires termux-api)
+/stats         show token usage of this session
 Type a normal message to ask; Ctrl+C to cancel.
 ```
 
@@ -169,7 +179,7 @@ Currently available free models: `nemotron-3-ultra-free`, `deepseek-v4-flash-fre
 
 ```bash
 pip install -e ".[dev]"          # dev dependencies (pytest)
-python -m pytest tests/ -q        # 52 tests: tools, providers, agent, git, rules, resume
+python -m pytest tests/ -q        # 56 tests: tools, providers, agent, git, rules, resume
 python tests/mock_server.py &     # mock OpenAI/Anthropic server (port 8765)
 termux-agent --model mock-model "..."   # test without an API key
 ```

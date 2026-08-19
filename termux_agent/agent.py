@@ -76,6 +76,13 @@ class Agent:
         agent_prompt = str(self.agent_spec.get("prompt", ""))
         self.system_prompt = system_prompt or build_system_prompt(rules, agent_prompt)
         self.messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
+        self.usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    def _add_usage(self, usage: dict) -> None:
+        for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            v = usage.get(k)
+            if v:
+                self.usage[k] = self.usage.get(k, 0) + int(v)
 
     def set_agent(self, spec: dict | None) -> None:
         """Switch agent role (prompt + tool restrictions) and reset history."""
@@ -86,6 +93,7 @@ class Agent:
         agent_prompt = str(self.agent_spec.get("prompt", ""))
         self.system_prompt = build_system_prompt(rules, agent_prompt)
         self.messages = [{"role": "system", "content": self.system_prompt}]
+        self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     @property
     def tools(self) -> list:
@@ -115,6 +123,8 @@ class Agent:
                         text_parts.append(ev.text)
                         if on_text_delta:
                             on_text_delta(ev.text)
+                    elif ev.kind == "usage":
+                        self._add_usage(ev.usage)
                     elif ev.kind == "tool_calls":
                         tool_calls = ev.tool_calls
             except ProviderError as e:
@@ -179,6 +189,8 @@ class Agent:
             ):
                 if ev.kind == "text_delta":
                     summary_parts.append(ev.text)
+                elif ev.kind == "usage":
+                    self._add_usage(ev.usage)
         except ProviderError as e:
             return f"(compact failed: {e})"
         summary = "".join(summary_parts).strip()

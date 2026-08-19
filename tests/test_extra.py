@@ -323,6 +323,113 @@ def test_repl_export(tmp_path: Path):
     assert "tolong baca file" in text
 
 
+# --- usage tracking ---
+def _usage_provider():
+    from termux_agent.providers.base import Provider, StreamEvent
+
+    class P(Provider):
+        name = "p"
+        model = "m"
+
+        def stream(self, messages, tools=None, temperature=0.7, max_tokens=8192):
+            yield StreamEvent(kind="usage", usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})
+            yield StreamEvent(kind="text_delta", text="ok")
+            yield StreamEvent(kind="usage", usage={"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5})
+            yield StreamEvent(kind="done")
+
+    return P()
+
+
+def test_agent_tracks_usage(tmp_path: Path):
+    from termux_agent.agent import Agent
+    from termux_agent.providers.base import Provider
+    from termux_agent.tools.base import ToolContext
+
+    agent = Agent(_usage_provider(), ToolContext(working_dir=tmp_path, confirm_commands=False))
+    out = agent.run("hello")
+    assert out == "ok"
+    assert agent.usage == {"prompt_tokens": 13, "completion_tokens": 7, "total_tokens": 20}
+
+
+def test_stdin_used_as_prompt(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    class FakeStdin:
+        def isatty(self):
+            return False
+
+        def read(self):
+            return "hello from pipe"
+
+    monkeypatch.setattr(cli.sys, "stdin", FakeStdin())
+    captured = {}
+
+    def fake_one_shot(cfg, prompt, provider, model, **kw):
+        captured["p"] = prompt
+        return 0
+
+    monkeypatch.setattr(cli, "cmd_one_shot", fake_one_shot)
+    code = cli.main([])
+    assert code == 0
+    assert captured.get("p") == "hello from pipe"
+
+
+def test_cmd_plan_requires_approval(tmp_path: Path, monkeypatch):
+    import io
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    calls = {"exec": 0}
+
+    def fake_build(cfg, provider, model, auto_accept=False, agent_name=None, working_dir=None, temperature=None, max_tool_rounds=None, readonly=False):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="p", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            run=lambda prompt, on_tool_use=None: (
+                f"[PLAN] {prompt[:40]}" if readonly else calls.__setitem__("exec", calls["exec"] + 1) or "EXECUTED"
+            ),
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO())
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
+    code = cli.cmd_plan(_min_cfg(), "do the thing", "zen", None)
+    assert code == 0
+    assert calls["exec"] == 0
+
+
+def test_cmd_plan_executes_when_approved(tmp_path: Path, monkeypatch):
+    import io
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    calls = {"exec": 0}
+
+    def fake_build(cfg, provider, model, auto_accept=False, agent_name=None, working_dir=None, temperature=None, max_tool_rounds=None, readonly=False):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="p", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            run=lambda prompt, on_tool_use=None: (
+                f"[PLAN] {prompt[:40]}" if readonly else calls.__setitem__("exec", calls["exec"] + 1) or "EXECUTED"
+            ),
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO())
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
+    code = cli.cmd_plan(_min_cfg(), "do the thing", "zen", None)
+    assert code == 0
+    assert calls["exec"] == 1
+
+
 # --- web_search ---
 def test_web_search_ddg(monkeypatch):
     from termux_agent.tools import web as webmod

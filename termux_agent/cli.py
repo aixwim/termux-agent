@@ -97,10 +97,13 @@ def cmd_one_shot(
     temperature: float | None = None,
     max_tool_rounds: int | None = None,
     readonly: bool = False,
+    plan: bool = False,
 ) -> int:
-    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly)
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
+    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly)
+    if plan and not readonly:
+        return cmd_plan(cfg, prompt, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds)
     render_info(
         f"provider: {agent.provider.name} | model: {agent.provider.model} | "
         f"agent: {agent_name or cfg.get('agent', 'root')} | cwd: {agent.ctx.working_dir}"
@@ -109,6 +112,65 @@ def cmd_one_shot(
         render_info("Mode --yes: all confirmations are skipped automatically.")
     try:
         answer = agent.run(prompt, on_tool_use=render_tool_use)
+    except KeyboardInterrupt:
+        render_error("\nCancelled.")
+        return 130
+    render_answer(answer)
+    return 0
+
+
+def cmd_plan(
+    cfg: dict,
+    prompt: str,
+    provider: str | None,
+    model: str | None,
+    auto_accept: bool = False,
+    agent_name: str | None = None,
+    working_dir: str | None = None,
+    temperature: float | None = None,
+    max_tool_rounds: int | None = None,
+) -> int:
+    """Plan mode: first produce a plan read-only, then execute after approval."""
+    from termux_agent.ui.renderer import render_answer, render_tool_use
+
+    render_info("Planning mode: the agent will only propose a plan (no changes).")
+    plan_agent = build_agent(
+        cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly=True
+    )
+    plan_prompt = (
+        prompt
+        + "\n\nFirst, analyze the request and produce a clear step-by-step plan. "
+        "Do NOT modify anything yet - you are in planning mode."
+    )
+    try:
+        plan = plan_agent.run(plan_prompt, on_tool_use=render_tool_use)
+    except KeyboardInterrupt:
+        render_error("\nCancelled.")
+        return 130
+    render_info("\n--- PLAN ---")
+    render_answer(plan)
+    render_info("--- END OF PLAN ---")
+
+    proceed = auto_accept
+    if not proceed and sys.stdin.isatty():
+        try:
+            proceed = input("\nExecute this plan? [y/N] > ").strip().lower() in ("y", "yes")
+        except (KeyboardInterrupt, EOFError):
+            proceed = False
+    if not proceed:
+        render_info("Plan not executed. Run again without --plan to let the agent act.")
+        return 0
+
+    exec_agent = build_agent(
+        cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds
+    )
+    exec_prompt = (
+        f"Execute the approved plan below, then report the results.\n\n"
+        f"APPROVED PLAN:\n{plan}\n\nORIGINAL REQUEST:\n{prompt}"
+    )
+    render_info("Executing plan...")
+    try:
+        answer = exec_agent.run(exec_prompt, on_tool_use=render_tool_use)
     except KeyboardInterrupt:
         render_error("\nCancelled.")
         return 130
@@ -298,6 +360,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-tool-rounds", type=int, help="Max tool iterations per message")
     parser.add_argument("--verbose", action="store_true", help="Log provider requests/responses (same as TERMUX_AGENT_DEBUG=1)")
     parser.add_argument("--readonly", action="store_true", help="Read-only mode: cannot write/edit/run commands")
+    parser.add_argument("--plan", action="store_true", help="Plan mode: propose a plan first, execute only after approval")
     parser.add_argument("prompt", nargs="*", help="One-shot prompt (no arguments = interactive mode)")
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
@@ -371,6 +434,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     prompt = " ".join(args.prompt).strip()
+    if not prompt and not sys.stdin.isatty():
+        # Pipelines: read the whole stdin as a one-shot prompt.
+        prompt = sys.stdin.read().strip()
     if args.resume:
         return cmd_resume(
             cfg,
@@ -396,6 +462,7 @@ def main(argv: list[str] | None = None) -> int:
             temperature=args.temperature,
             max_tool_rounds=args.max_tool_rounds,
             readonly=args.readonly,
+            plan=args.plan,
         )
 
     provider_key = args.provider or cfg.get("provider", "zen")
