@@ -5,6 +5,7 @@ import argparse
 import copy
 import os
 import sys
+import threading
 from pathlib import Path
 
 import yaml
@@ -154,6 +155,7 @@ def cmd_one_shot(
     no_tools: bool = False,
     wakelock: bool = False,
     speak: bool = False,
+    timeout: int | None = None,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -179,7 +181,7 @@ def cmd_one_shot(
 
         wake_lock()
     try:
-        answer = agent.run(prompt, on_tool_use=_log_tool)
+        answer = _run_guarded(agent, prompt, _log_tool, timeout)
     except KeyboardInterrupt:
         if wakelock:
             from termux_agent.notify import wake_unlock
@@ -190,6 +192,16 @@ def cmd_one_shot(
         else:
             render_error("\nCancelled.")
         return 130
+    except TimeoutError:
+        if wakelock:
+            from termux_agent.notify import wake_unlock
+
+            wake_unlock()
+        if as_json:
+            _emit_json({"ok": False, "error": f"timed out after {timeout}s"}, agent)
+        else:
+            render_error(f"\nTimed out after {timeout}s.")
+        return 124
     if wakelock:
         from termux_agent.notify import wake_unlock
 
@@ -198,6 +210,10 @@ def cmd_one_shot(
         from termux_agent.notify import speak as _speak
 
         _speak(answer)
+    if getattr(agent, "messages", None):
+        from termux_agent.session import record_messages
+
+        record_messages(agent.messages, agent.provider.name, agent.provider.model)
     _maybe_notify(cfg, "Done", answer, as_json)
     if copy:
         from termux_agent.ui.repl import copy_to_clipboard
@@ -240,6 +256,23 @@ def _maybe_notify(cfg: dict, title: str, answer: str, as_json: bool = False) -> 
 
     preview = " ".join(answer.split())[:120] or "(empty answer)"
     notify(f"{title}: {preview}")
+
+
+def _run_guarded(agent: Agent, prompt: str, on_tool_use, timeout: int | None):
+    """Run the agent, aborting with TimeoutError after `timeout` seconds (0 = unlimited)."""
+    if not timeout:
+        return agent.run(prompt, on_tool_use=on_tool_use)
+    result: dict = {}
+
+    def _worker() -> None:
+        result["answer"] = agent.run(prompt, on_tool_use=on_tool_use)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        raise TimeoutError
+    return result["answer"]
 
 
 def cmd_plan(
@@ -589,6 +622,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--notify", action="store_true", help="Send a Termux notification when a one-shot task finishes (needs termux-api)")
     parser.add_argument("--wakelock", action="store_true", help="Hold a Termux wake lock while a one-shot task runs (needs termux-api)")
     parser.add_argument("--speak", action="store_true", help="Read the answer aloud with termux-tts-speak (needs termux-api)")
+    parser.add_argument("--timeout", type=int, metavar="SECONDS", help="Abort a one-shot task if it takes longer than this")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP server bind host (with --serve)")
     parser.add_argument("--port", type=int, default=8787, help="HTTP server port (with --serve)")
@@ -752,6 +786,7 @@ def main(argv: list[str] | None = None) -> int:
             no_tools=args.chat,
             wakelock=args.wakelock,
             speak=args.speak,
+            timeout=args.timeout,
         )
 
     if args.json:

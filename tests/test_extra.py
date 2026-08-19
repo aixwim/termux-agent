@@ -1062,7 +1062,11 @@ def test_server_chat_and_health(tmp_path: Path, monkeypatch):
     from types import SimpleNamespace
 
     from termux_agent import server as srv
+    from termux_agent import session
     from termux_agent.server import _AgentHandler
+
+    sdir = tmp_path / "sessions"
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
 
     class FakeProv:
         name = "zen"
@@ -1072,13 +1076,22 @@ def test_server_chat_and_health(tmp_path: Path, monkeypatch):
             return ["m1", "m2"]
 
     def fake_build(*a, **k):
-        return SimpleNamespace(
+        agent = SimpleNamespace(
             provider=FakeProv(),
             ctx=SimpleNamespace(working_dir=tmp_path),
             usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
             messages=[{"role": "system", "content": "s"}],
-            run=lambda prompt: "ANSWER:" + prompt,
         )
+
+        def _run(prompt):
+            agent.messages += [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "ANSWER:" + prompt},
+            ]
+            return "ANSWER:" + prompt
+
+        agent.run = _run
+        return agent
 
     _AgentHandler.build_agent = staticmethod(fake_build)
     httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
@@ -1098,6 +1111,16 @@ def test_server_chat_and_health(tmp_path: Path, monkeypatch):
             chat = _json.loads(r.read())
         assert chat["answer"] == "ANSWER:hello"
         assert chat["usage"]["total_tokens"] == 15
+        assert chat["session"]
+        assert list(sdir.glob("*.jsonl"))
+        resume_req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/chat",
+            data=_json.dumps({"prompt": "again", "session": chat["session"]}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(resume_req, timeout=15) as r:
+            resume = _json.loads(r.read())
+        assert resume["session"] == chat["session"]
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/models", timeout=10) as r:
             models = _json.loads(r.read())
         assert models["models"] == ["m1", "m2"]
@@ -1312,6 +1335,51 @@ def test_wakelock_noop_when_missing(monkeypatch):
     monkeypatch.setattr(nmod, "_have", lambda cmd: False)
     assert nmod.wake_lock() is False
     assert nmod.speak("x") is False
+
+
+# --- timeout guard ---
+def test_run_guarded_timeout(monkeypatch):
+    import time
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    agent = SimpleNamespace(run=lambda prompt, on_tool_use=None: time.sleep(2) or "LATE")
+    started = time.time()
+    try:
+        cli._run_guarded(agent, "p", None, timeout=0.1)
+        raise AssertionError("expected TimeoutError")
+    except TimeoutError:
+        assert time.time() - started < 1.5
+
+
+def test_run_guarded_no_timeout(monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    agent = SimpleNamespace(run=lambda prompt, on_tool_use=None: "FAST")
+    assert cli._run_guarded(agent, "p", None, timeout=None) == "FAST"
+
+
+def test_record_messages(tmp_path: Path, monkeypatch):
+    from termux_agent import session
+
+    sdir = tmp_path / "sessions"
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    sid = session.record_messages(
+        [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+            {"role": "tool", "content": "x"},
+            {"role": "assistant", "content": "hello"},
+        ],
+        "zen",
+        "m",
+    )
+    assert sid
+    recs = session.read_session(sdir / f"{sid}.jsonl")
+    assert [(r["role"], r["content"]) for r in recs] == [("user", "hi"), ("assistant", "hello")]
 
 
 # --- init wizard ---

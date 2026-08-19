@@ -15,8 +15,9 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Command whitelist**: `whitelisted_commands` in config lists extra command prefixes that skip confirmation (e.g. `["pip install", "python app.py"]`).
 - **Termux notifications**: `--notify` (or `notify_on_done: true` in config) sends a `termux-notification` when a one-shot task finishes (needs termux-api).
 - **Wake lock & TTS**: `--wakelock` holds a Termux wake lock while a long task runs (prevents CPU sleep), and `--speak` reads the answer aloud with `termux-tts-speak` (both need termux-api).
-- **HTTP API**: `--serve` runs a tiny local server (`POST /chat`, `GET /health`, `GET /models`) so other apps (Tasker, Termux:API, scripts) can call the agent.
+- **HTTP API**: `--serve` runs a tiny local server (`POST /chat`, `GET /health`, `GET /models`). Every request is saved as a session and the id is returned in the response; pass `"session": "<id>"` to resume that conversation.
 - **Chat mode**: `--chat` disables all tools for a plain conversation (no file/command access).
+- **Timeouts & saving**: `--timeout SECONDS` aborts a slow one-shot task (exit 124); one-shot tasks are now saved as sessions too, so you can `--resume` them.
 - **Scriptable resumes**: `--resume` supports `--json` and `--quiet` for automated continuation; `--sessions --search "keyword"` filters sessions.
 - **Scripting output**: `--json` (structured result) and `--quiet` (only the answer, no banner) for pipelines; `--copy` sends the answer to the clipboard; `--stats` prints token usage after the answer.
 - **Pipe-friendly**: `echo "fix the bug" | termux-agent` runs a one-shot using stdin as the prompt.
@@ -169,9 +170,14 @@ termux-agent --notify "update all dependencies"
 # keep the CPU awake during a long task, then read the answer aloud
 termux-agent --wakelock --speak "summarize this repo and read the summary"
 
+# abort if a task takes longer than 5 minutes (exit code 124 on timeout)
+termux-agent --timeout 300 "run the full test suite and fix failures"
+
 # run a local HTTP API (for Tasker / Termux:API / scripts)
 termux-agent --serve --host 127.0.0.1 --port 8787
 curl -X POST http://127.0.0.1:8787/chat -d '{"prompt":"hello"}' -H 'Content-Type: application/json'
+# every request is saved; pass the returned "session" id to resume it:
+curl -X POST http://127.0.0.1:8787/chat -d '{"prompt":"continue","session":"20260819-..."}' -H 'Content-Type: application/json'
 
 # list sessions
 termux-agent --sessions

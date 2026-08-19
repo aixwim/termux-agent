@@ -62,6 +62,19 @@ def latest_session() -> Path | None:
     return sessions[0] if sessions else None
 
 
+def record_messages(messages: list[dict], provider_name: str, model: str, session_id: str | None = None) -> str:
+    """Persist a finished conversation (user/assistant turns) and return its id."""
+    s = Session(session_id=session_id, provider_name=provider_name, model=model)
+    for m in messages:
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = m.get("content")
+        if isinstance(content, str) and content.strip():
+            s.append({"role": role, "content": content})
+    return s.session_id
+
+
 def delete_session(ref: str | None = None) -> Path | None:
     """Delete a session by id prefix (or the latest when ref is None/latest)."""
     if ref and ref not in ("latest", ""):

@@ -102,7 +102,22 @@ class _AgentHandler(BaseHTTPRequestHandler):
                     seeded.append({"role": m["role"], "content": str(m["content"])})
             if seeded:
                 agent.messages = [agent.messages[0]] + seeded
+        session_ref = data.get("session")
+        if isinstance(session_ref, str) and session_ref:
+            from termux_agent.session import list_sessions, session_messages
+
+            matches = [s for s in list_sessions() if s.stem.startswith(session_ref)]
+            if matches:
+                agent.messages = [agent.messages[0]] + session_messages(matches[-1])
         answer = agent.run(prompt)
+        from termux_agent.session import record_messages
+
+        session_id = record_messages(
+            agent.messages,
+            agent.provider.name,
+            agent.provider.model,
+            session_id=session_ref if (isinstance(session_ref, str) and session_ref) else None,
+        )
         usage = getattr(agent, "usage", {}) or {}
         self._send(
             200,
@@ -111,6 +126,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 "answer": answer,
                 "provider": agent.provider.name,
                 "model": agent.provider.model,
+                "session": session_id,
                 "usage": usage,
             },
         )
