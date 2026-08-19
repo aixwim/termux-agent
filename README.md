@@ -21,11 +21,11 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **JSON output**: `termux-agent --json "prompt"` prints a machine-readable result `{ok, answer, tool_calls, usage, provider, model}`.
 - **Web search without an API key**: `web_search` uses DuckDuckGo, with a Wikipedia fallback when the network blocks/rejects certificates.
 - **Auto-completion**: `--install-completion bash|zsh` adds Tab-completion to your shell (providers, agents, and CLI options).
-- **Diagnostics**: `--doctor` checks the Termux environment, config, PATH, and API key; `--doctor-network` also tests provider connectivity.
+- **Diagnostics**: `--doctor` checks the Termux environment, config, PATH, and API key; `--doctor-network` also tests provider connectivity; `--smoke` sends a tiny real prompt end-to-end to verify the whole pipeline.
 - **Project rules**: `AGENTS.md`, `CLAUDE.md`, or `.termux-agent/rules.md` in the working directory (and parents up to `$HOME`) are auto-loaded into the agent's instructions — like opencode.
 - **Project-local config**: a `.termux-agent/config.yaml` in the current directory (or any parent up to `$HOME`) overrides the global `~/.termux-agent/config.yaml` for that project.
 - **Session instructions**: `/prompt <text>` adds a persistent instruction for the rest of the session (`/prompt` shows them, `/prompt clear` removes them).
-- **Git integration**: the agent can check status, diff, and commit (commit requires confirmation).
+- **Git integration**: the agent can check status, diff, recent history, and commit (commit requires confirmation).
 - **Session resume**: continue a previous conversation with `--resume` or `/resume`.
 - **Context compacting**: `/compact` summarizes old history to save tokens.
 - **Automation mode**: `--yes` skips all confirmations (good for scripts).
@@ -115,6 +115,12 @@ termux-agent --readonly "review the security of this code and suggest fixes"
 
 # plan mode: propose a plan first, execute only after approval
 termux-agent --plan "add unit tests for kalkulator.py"
+
+# plan mode with machine-readable output (for scripts)
+termux-agent --plan --yes --json "add unit tests for kalkulator.py"
+
+# end-to-end smoke test with the real model
+termux-agent --smoke
 
 # pipe stdin as the prompt (one-shot)
 echo "fix the bugs in main.py" | termux-agent

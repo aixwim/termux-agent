@@ -145,7 +145,7 @@ def cmd_one_shot(
 
     agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens)
     if plan and not readonly:
-        return cmd_plan(cfg, prompt, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, max_context_tokens)
+        return cmd_plan(cfg, prompt, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, max_context_tokens, as_json)
     if not as_json and not quiet:
         render_info(
             f"provider: {agent.provider.name} | model: {agent.provider.model} | "
@@ -207,11 +207,13 @@ def cmd_plan(
     temperature: float | None = None,
     max_tool_rounds: int | None = None,
     max_context_tokens: int | None = None,
+    as_json: bool = False,
 ) -> int:
     """Plan mode: first produce a plan read-only, then execute after approval."""
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
-    render_info("Planning mode: the agent will only propose a plan (no changes).")
+    if not as_json:
+        render_info("Planning mode: the agent will only propose a plan (no changes).")
     plan_agent = build_agent(
         cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, True, max_context_tokens
     )
@@ -223,11 +225,15 @@ def cmd_plan(
     try:
         plan = plan_agent.run(plan_prompt, on_tool_use=render_tool_use)
     except KeyboardInterrupt:
-        render_error("\nCancelled.")
+        if as_json:
+            _emit_json({"ok": False, "error": "cancelled"}, plan_agent)
+        else:
+            render_error("\nCancelled.")
         return 130
-    render_info("\n--- PLAN ---")
-    render_answer(plan)
-    render_info("--- END OF PLAN ---")
+    if not as_json:
+        render_info("\n--- PLAN ---")
+        render_answer(plan)
+        render_info("--- END OF PLAN ---")
 
     proceed = auto_accept
     if not proceed and sys.stdin.isatty():
@@ -236,7 +242,10 @@ def cmd_plan(
         except (KeyboardInterrupt, EOFError):
             proceed = False
     if not proceed:
-        render_info("Plan not executed. Run again without --plan to let the agent act.")
+        if as_json:
+            _emit_json({"ok": True, "plan": plan, "executed": False}, plan_agent)
+        else:
+            render_info("Plan not executed. Run again without --plan to let the agent act.")
         return 0
 
     exec_agent = build_agent(
@@ -246,13 +255,20 @@ def cmd_plan(
         f"Execute the approved plan below, then report the results.\n\n"
         f"APPROVED PLAN:\n{plan}\n\nORIGINAL REQUEST:\n{prompt}"
     )
-    render_info("Executing plan...")
+    if not as_json:
+        render_info("Executing plan...")
     try:
         answer = exec_agent.run(exec_prompt, on_tool_use=render_tool_use)
     except KeyboardInterrupt:
-        render_error("\nCancelled.")
+        if as_json:
+            _emit_json({"ok": False, "error": "cancelled", "plan": plan}, exec_agent)
+        else:
+            render_error("\nCancelled.")
         return 130
-    render_answer(answer)
+    if as_json:
+        _emit_json({"ok": True, "plan": plan, "executed": True, "answer": answer}, exec_agent)
+    else:
+        render_answer(answer)
     return 0
 
 
@@ -444,6 +460,35 @@ def cmd_doctor(cfg: dict, network: bool = False) -> int:
     return 1 if issues else 0
 
 
+def cmd_smoke(cfg: dict, provider: str | None, model: str | None) -> int:
+    """End-to-end smoke test: send a tiny prompt and verify the whole pipeline."""
+    import time
+
+    from termux_agent.ui.renderer import render_tool_use
+
+    try:
+        agent = build_agent(cfg, provider, model, auto_accept=True)
+    except (ConfigError, KeyError) as e:
+        render_error(f"Error: {e}")
+        return 1
+    render_info(
+        f"Smoke test: provider={agent.provider.name} model={agent.provider.model} cwd={agent.ctx.working_dir}"
+    )
+    start = time.monotonic()
+    try:
+        answer = agent.run("Reply with exactly: OK", on_tool_use=render_tool_use)
+    except Exception as e:  # noqa: BLE001
+        render_error(f"Smoke test FAILED: {type(e).__name__}: {e}")
+        return 1
+    elapsed = time.monotonic() - start
+    usage = agent.usage
+    render_info(
+        f"Done in {elapsed:.1f}s | tokens: prompt {usage.get('prompt_tokens', 0)} / "
+        f"completion {usage.get('completion_tokens', 0)} | answer: {answer!r}"
+    )
+    return 0 if answer.strip() else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="termux-agent",
@@ -471,6 +516,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--models", nargs="?", const="__default__", metavar="PROVIDER", help="List models for a provider (live, or preset fallback)")
     parser.add_argument("--doctor", action="store_true", help="Diagnose environment & config")
     parser.add_argument("--doctor-network", action="store_true", help="Also check provider connectivity (needs internet)")
+    parser.add_argument("--smoke", action="store_true", help="End-to-end smoke test with the real model (sends a tiny prompt)")
     parser.add_argument(
         "--install-completion",
         nargs="?",
@@ -514,6 +560,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.doctor or args.doctor_network:
         return cmd_doctor(cfg, network=args.doctor_network)
+    if args.smoke:
+        return cmd_smoke(cfg, args.provider, args.model)
 
     if args.verbose:
         import os

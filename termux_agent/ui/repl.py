@@ -153,6 +153,8 @@ class Repl:
             self.agent.messages = [
                 {"role": "system", "content": self.agent.system_prompt}
             ]
+            self.agent.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+            self._instructions = []
             render_info("New session started.")
         elif c == "/provider":
             if not rest:

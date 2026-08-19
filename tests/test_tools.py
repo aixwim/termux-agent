@@ -35,6 +35,7 @@ def test_all_tools_registered():
             "web_search",
         "git_status",
         "git_diff",
+        "git_log",
         "git_commit",
     }
 

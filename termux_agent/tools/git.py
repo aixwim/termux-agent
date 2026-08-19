@@ -66,6 +66,23 @@ def git_diff(args: dict, ctx: ToolContext) -> str:
 
 
 @tool(
+    "git_log",
+    "Show recent commit history (subject line + short hash) in the git repo.",
+    {
+        "type": "object",
+        "properties": {
+            "count": {"type": "integer", "description": "Number of commits to show (default 10)"},
+        },
+        "required": [],
+    },
+)
+def git_log(args: dict, ctx: ToolContext) -> str:
+    count = max(1, min(int(args.get("count", 10)), 50))
+    rc, out, err = _git(ctx, "log", f"-{count}", "--pretty=format:%h %s")
+    return _git_output(rc, out, err)
+
+
+@tool(
     "git_commit",
     "Commit all changes in working_dir with a given message. Requires user confirmation.",
     {

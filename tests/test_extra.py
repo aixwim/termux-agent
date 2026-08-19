@@ -880,6 +880,50 @@ def test_repl_remember(tmp_path: Path, monkeypatch):
     assert "[Memory]" in agent.system_prompt
 
 
+# --- --plan --json ---
+def test_cmd_plan_json_not_executed(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    def fake_build(cfg, provider, model, auto_accept=False, agent_name=None, working_dir=None, temperature=None, max_tool_rounds=None, readonly=False, max_context_tokens=None):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            run=lambda prompt, on_tool_use=None: "step1\nstep2",
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO())
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_plan(_min_cfg(), "do it", "zen", None, as_json=True)
+    assert code == 0
+    data = _json.loads(out.getvalue())
+    assert data["ok"] is True
+    assert data["executed"] is False
+    assert "step1" in data["plan"]
+
+
+# --- git_log tool ---
+def test_git_log_tool(tmp_path: Path):
+    import subprocess
+
+    from termux_agent.tools.base import run_tool
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "f.txt").write_text("x\n")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "first commit"], cwd=tmp_path, check=True)
+    ctx = ToolContext(working_dir=tmp_path, confirm_commands=False)
+    out = run_tool("git_log", {}, ctx)
+    assert "first commit" in out
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
