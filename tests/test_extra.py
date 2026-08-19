@@ -2029,6 +2029,64 @@ def test_main_watch_requires_prompt(monkeypatch):
     assert cli.main(["--watch", "60"]) == 2
 
 
+# --- context / tools / config-show ---
+def test_attach_agent_context(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    agent = SimpleNamespace(
+        system_prompt="BASE",
+        messages=[{"role": "system", "content": "BASE"}],
+    )
+    cli._attach_agent_context(agent, "battery: 87% (charging)")
+    assert "battery: 87% (charging)" in agent.system_prompt
+    assert agent.messages[0]["content"] == agent.system_prompt
+
+
+def test_cmd_config_show(tmp_path: Path, monkeypatch):
+    import io
+    import yaml as _yaml
+
+    from termux_agent import cli
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_config_show(_min_cfg()) == 0
+    parsed = _yaml.safe_load(out.getvalue())
+    assert parsed["provider"] == "zen"
+
+
+def test_cmd_list_tools(monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_list_tools() == 0
+    assert "read_file" in out.getvalue()
+
+
+def test_cmd_prune_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    for i in range(4):
+        (sdir / f"20260820-{i:06d}.jsonl").write_text('{"role":"user","content":"x"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_prune(1, as_json=True) == 0
+    data = _json.loads(out.getvalue())
+    assert data["removed"] == 3
+    assert data["kept"] == 1
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

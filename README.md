@@ -19,6 +19,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Resilience knobs**: `--retries N` overrides the transient retry count and `--no-fallback` disables fallback models on 429/errors.
 - **Scriptable & extensible**: `--sessions --json`, `--bench --json`, and `--version --json` emit machine-readable output; `--rules FILE` injects extra instructions for one run; `--system-prompt FILE` replaces the whole prompt for a custom persona; `--resume` now supports `--stream`.
 - **Watch mode**: `--watch SECONDS` re-runs a one-shot prompt on an interval until Ctrl+C (combine with `--screenshot` to monitor the screen). In the REPL, `/system` shows the effective system prompt.
+- **Device awareness & introspection**: `--context` injects battery/wifi/time into the system prompt (needs termux-api); `--list-tools` lists registered tools; `--config-show` prints the effective merged config; `--prune --json` reports what was deleted.
 - **Chat mode**: `--chat` disables all tools for a plain conversation (no file/command access).
 - **Timeouts & saving**: `--timeout SECONDS` aborts a slow one-shot task (exit 124); one-shot tasks are now saved as sessions too, so you can `--resume` them.
 - **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--export-all DIR` backs up every session, `--import FILE` restores one, `--prune N` / `--forget [ID]` delete sessions. `--bench [PROVIDER]` times one tiny request per model to help you pick a fast default.
@@ -152,6 +153,13 @@ termux-agent --system-prompt /tmp/pirate.md "review my code"
 
 # watch mode: re-run a task every 30s, re-attaching a screenshot each round
 termux-agent --watch 30 --screenshot "what changed on my screen?"
+
+# give the agent device context (battery/wifi/time, needs termux-api)
+termux-agent --context "if battery is low, keep the answer very short"
+
+# inspect what the agent can do and what config it will use
+termux-agent --list-tools
+termux-agent --config-show
 
 # quick overrides without editing config
 termux-agent --cwd /sdcard/Documents --temperature 0.2 --max-tool-rounds 30 "tidy up this project"

@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import json
 
 
 def _have(cmd: str) -> bool:
@@ -95,3 +96,41 @@ def screenshot(path: str | None = None) -> str | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     return target if os.path.exists(target) else None
+
+
+def _json_status(cmd: str, timeout: int = 10) -> dict | None:
+    if not _have(cmd):
+        return None
+    try:
+        proc = subprocess.run([cmd], timeout=timeout, capture_output=True, text=True)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return json.loads(proc.stdout or "{}")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def device_context() -> str:
+    """Best-effort device context string (battery/wifi/time) for the system prompt."""
+    import datetime
+    import platform
+
+    parts = [
+        f"time: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M %Z')}",
+        f"platform: {platform.platform()}",
+    ]
+    battery = _json_status("termux-battery-status")
+    if battery and battery.get("percentage") is not None:
+        status = battery.get("status", "unknown")
+        temp = battery.get("temperature")
+        line = f"battery: {int(battery['percentage'])}% ({status})"
+        if temp is not None:
+            line += f", {temp} C"
+        parts.append(line)
+    wifi = _json_status("termux-wifi-connectioninfo")
+    if wifi and wifi.get("ssid"):
+        parts.append(f"wifi: {wifi['ssid']} (rssi {wifi.get('rssi')})")
+    return "\n".join(parts)

@@ -197,6 +197,7 @@ def cmd_one_shot(
     no_fallback: bool = False,
     rules_file: str | None = None,
     system_prompt_file: str | None = None,
+    context: bool = False,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -241,6 +242,10 @@ def cmd_one_shot(
             return 1
 
     agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools, retries, no_fallback, extra_rules, sys_prompt)
+    if context:
+        from termux_agent.notify import device_context
+
+        _attach_agent_context(agent, device_context())
     if plan and not readonly:
         return cmd_plan(cfg, prompt, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, max_context_tokens, as_json)
     if not as_json and not quiet:
@@ -351,6 +356,14 @@ def _maybe_notify(cfg: dict, title: str, answer: str, as_json: bool = False) -> 
 
     preview = " ".join(answer.split())[:120] or "(empty answer)"
     notify(f"{title}: {preview}")
+
+
+def _attach_agent_context(agent: Agent, context_text: str) -> None:
+    if not context_text:
+        return
+    agent.system_prompt += f"\n\n[Device context]\n{context_text}"
+    if agent.messages and agent.messages[0].get("role") == "system":
+        agent.messages[0]["content"] = agent.system_prompt
 
 
 def _run_guarded(agent: Agent, prompt: str, on_tool_use, timeout: int | None, on_text_delta=None):
@@ -591,11 +604,34 @@ def cmd_import(path: str) -> int:
     return 0
 
 
-def cmd_prune(keep: int) -> int:
-    from termux_agent.session import prune_sessions
+def cmd_prune(keep: int, as_json: bool = False) -> int:
+    import json as _json
 
+    from termux_agent.session import list_sessions, prune_sessions
+
+    kept = len(list_sessions())
     removed = prune_sessions(max(0, keep))
+    if as_json:
+        print(_json.dumps({"removed": removed, "kept": max(0, keep)}, ensure_ascii=False))
+        return 0
     render_info(f"Removed {removed} old session(s), keeping the newest {max(0, keep)}.")
+    return 0
+
+
+def cmd_config_show(cfg: dict) -> int:
+    import yaml as _yaml
+
+    print(_yaml.safe_dump(cfg, sort_keys=False))
+    return 0
+
+
+def cmd_list_tools() -> int:
+    from termux_agent.tools.base import tool_specs
+
+    specs = tool_specs()
+    for s in specs:
+        render_info(f"{s.name}: {s.description}")
+    render_info(f"\n{len(specs)} tools registered.")
     return 0
 
 
@@ -942,6 +978,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-fallback", action="store_true", help="Disable fallback models on 429/errors (use only the selected model)")
     parser.add_argument("--rules", metavar="FILE", help="Add extra instructions to the system prompt (like AGENTS.md but per-invocation)")
     parser.add_argument("--system-prompt", dest="system_prompt_file", metavar="FILE", help="Replace the entire system prompt with the file contents (custom persona)")
+    parser.add_argument("--context", action="store_true", help="Add device context (battery/wifi/time, via termux-api) to the system prompt")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP server bind host (with --serve)")
     parser.add_argument("--port", type=int, default=8787, help="HTTP server port (with --serve)")
@@ -953,6 +990,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest)")
     parser.add_argument("--import", dest="import_path", metavar="FILE", help="Import a portable session JSON file")
     parser.add_argument("--prune", type=int, metavar="N", help="Delete all sessions except the newest N")
+    parser.add_argument("--config-show", action="store_true", help="Print the effective merged configuration as YAML")
+    parser.add_argument("--list-tools", action="store_true", help="List all registered tools")
     parser.add_argument("--forget", nargs="?", const="latest", metavar="SESSION", help="Delete one session (default: latest)")
     parser.add_argument("--export-all", metavar="DIR", help="Export every session as a JSON file into DIR")
     parser.add_argument("--bench", nargs="?", const="__default__", metavar="PROVIDER", help="Benchmark latency across a provider's models (one tiny request each)")
@@ -1012,7 +1051,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.import_path:
         return cmd_import(args.import_path)
     if args.prune is not None:
-        return cmd_prune(args.prune)
+        return cmd_prune(args.prune, as_json=args.json)
+    if args.config_show:
+        return cmd_config_show(cfg)
+    if args.list_tools:
+        return cmd_list_tools()
     if args.sessions:
         return cmd_sessions(args.search, as_json=args.json)
 
@@ -1167,6 +1210,7 @@ def main(argv: list[str] | None = None) -> int:
             no_fallback=args.no_fallback,
             rules_file=args.rules,
             system_prompt_file=args.system_prompt_file,
+            context=args.context,
         )
 
     if args.json:
