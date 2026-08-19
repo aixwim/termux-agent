@@ -55,6 +55,7 @@ Special commands (start with /):
   /prompt [TXT]   add a session instruction; /prompt clear removes them; no arg = show
   /remember TXT   store a note in ~/.termux-agent/memory.md (loaded every session)
   /cd DIR         change the working directory (and file-access boundary)
+  /plan           toggle plan-first mode (propose, approve, then execute)
 Type a normal message to ask; Ctrl+C to cancel."""
 
 
@@ -82,6 +83,7 @@ class Repl:
         self._last_answer = ""
         self._base_prompt = getattr(self.agent, "system_prompt", "")
         self._instructions: list[str] = []
+        self.plan_mode = False
 
     def _confirm(self, command: str) -> bool:
         try:
@@ -242,6 +244,9 @@ class Repl:
             self._remember(rest)
         elif c == "/cd":
             self._cd(rest)
+        elif c == "/plan":
+            self.plan_mode = not self.plan_mode
+            render_info(f"Plan-first mode {'ON' if self.plan_mode else 'OFF'}.")
         else:
             render_error(f"Unknown command: {c}")
         return False
@@ -480,9 +485,60 @@ class Repl:
     def _run_turn(self, user_input: str) -> None:
         self.session.append({"role": "user", "content": user_input})
         printer = PlainStreamPrinter()
+        if self.plan_mode:
+            self._run_plan_turn(user_input, printer)
+            return
         try:
             answer = self.agent.run(
                 user_input,
+                on_text_delta=printer.feed,
+                on_tool_use=render_tool_use,
+            )
+        except Exception as e:  # noqa: BLE001
+            render_error(f"Error: {e}")
+            return
+        printer.flush()
+        self._last_answer = answer
+        self.session.append({"role": "assistant", "content": answer})
+
+    def _run_plan_turn(self, user_input: str, printer: PlainStreamPrinter) -> None:
+        """Plan-first mode: read-only plan, ask approval, then execute."""
+        from termux_agent.cli import READONLY_TOOLS
+
+        from termux_agent.ui.renderer import render_answer, render_info
+
+        saved_tools = self.agent.allowed_tools
+        self.agent.allowed_tools = set(READONLY_TOOLS)
+        render_info("Plan-first mode: producing a read-only plan (no changes yet)...")
+        try:
+            plan = self.agent.run(
+                f"{user_input}\n\nFirst, analyze the request and produce a clear step-by-step plan. "
+                "Do NOT modify anything yet - you are in planning mode.",
+                on_text_delta=printer.feed,
+                on_tool_use=render_tool_use,
+            )
+        except Exception as e:  # noqa: BLE001
+            render_error(f"Error: {e}")
+            return
+        finally:
+            self.agent.allowed_tools = saved_tools
+        printer.flush()
+        render_info("\n--- PLAN ---")
+        render_answer(plan)
+        render_info("--- END OF PLAN ---")
+        self._last_answer = plan
+        self.session.append({"role": "assistant", "content": plan})
+        try:
+            ok = input("\nExecute this plan? [y/N] > ").strip().lower() in ("y", "yes")
+        except (KeyboardInterrupt, EOFError):
+            ok = False
+        if not ok:
+            render_info("Plan not executed. Type your next message (or /plan to leave this mode).")
+            return
+        try:
+            answer = self.agent.run(
+                f"Execute the approved plan below, then report the results.\n\n"
+                f"APPROVED PLAN:\n{plan}\n\nORIGINAL REQUEST:\n{user_input}",
                 on_text_delta=printer.feed,
                 on_tool_use=render_tool_use,
             )

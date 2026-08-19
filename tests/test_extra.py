@@ -1677,6 +1677,93 @@ def test_server_cors_headers(tmp_path: Path, monkeypatch):
         httpd.server_close()
 
 
+# --- --stream / --prompt-file - ---
+def test_main_prompt_file_stdin_dash(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    seen = {}
+
+    def fake_one_shot(cfg, prompt, provider, model, **kw):
+        seen["prompt"] = prompt
+        return 0
+
+    monkeypatch.setattr(cli, "cmd_one_shot", fake_one_shot)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("from stdin pipe"))
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    assert cli.main(["--prompt-file", "-"]) == 0
+    assert seen["prompt"] == "from stdin pipe"
+
+
+def test_one_shot_stream_deltas(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    deltas = []
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+        )
+
+        def _run(prompt, on_tool_use=None, on_text_delta=None):
+            assert on_text_delta is not None
+            deltas.append(on_text_delta("hel"))
+            deltas.append(on_text_delta("lo"))
+            return "hello"
+
+        agent.run = _run
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_one_shot(_min_cfg(), "hi", "zen", None, stream=True) == 0
+    assert deltas == [None, None]
+
+
+def test_plan_turn_asks_approval(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+    from termux_agent.ui import repl
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+
+    calls = []
+
+    class FakeAgent:
+        system_prompt = "SYS"
+        allowed_tools = None
+        provider = SimpleNamespace(name="zen", model="m")
+        usage = {}
+        messages = []
+        ctx = SimpleNamespace(working_dir=tmp_path)
+
+        def run(self, prompt, on_text_delta=None, on_tool_use=None):
+            calls.append(prompt)
+            if on_text_delta:
+                on_text_delta("plan text")
+            return "PLAN" if "planning mode" in prompt else "EXECUTED"
+
+    r = repl.Repl(FakeAgent(), provider_name="zen", model="m")
+    r.plan_mode = True
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    r._run_turn("do it")
+    assert len(calls) == 2
+    assert "planning mode" in calls[0]
+    assert "APPROVED PLAN" in calls[1]
+    assert r._last_answer == "EXECUTED"
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

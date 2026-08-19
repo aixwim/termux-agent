@@ -20,6 +20,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Timeouts & saving**: `--timeout SECONDS` aborts a slow one-shot task (exit 124); one-shot tasks are now saved as sessions too, so you can `--resume` them.
 - **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--export-all DIR` backs up every session, `--import FILE` restores one, `--prune N` / `--forget [ID]` delete sessions. `--bench [PROVIDER]` times one tiny request per model to help you pick a fast default.
 - **Phone-native input**: `--clip` reads the prompt from the clipboard, `--screenshot` captures the screen with `termux-screenshot` and attaches it as an image (both need termux-api). Auto-completion (`--install-completion`) derives flags from `--help`, so it never goes stale.
+- **Streaming**: `--stream` prints the answer as it is generated; `--prompt-file -` reads the prompt from stdin. In the REPL, `/plan` toggles plan-first mode (read-only plan, then approve before execution).
 - **Scriptable resumes**: `--resume` supports `--json` and `--quiet` for automated continuation; `--sessions --search "keyword"` filters sessions.
 - **Scripting output**: `--json` (structured result) and `--quiet` (only the answer, no banner) for pipelines; `--copy` sends the answer to the clipboard; `--stats` prints token usage after the answer.
 - **Pipe-friendly**: `echo "fix the bug" | termux-agent` runs a one-shot using stdin as the prompt.
@@ -213,6 +214,12 @@ termux-agent --clip --copy "improve my clipboard text"
 # attach a screenshot of the screen to the prompt (needs screen-share permission)
 termux-agent --screenshot "what error is on my screen?"
 
+# stream the answer to the terminal as it is generated
+termux-agent --stream "explain this error"
+
+# read the prompt from stdin
+cat notes.txt | termux-agent --prompt-file -
+
 # regenerate auto-completion (derives all flags from --help, never goes stale)
 termux-agent --install-completion
 ```
@@ -250,6 +257,7 @@ termux-agent "add docstrings to app.py"   # follows that rule
 /prompt [TXT]  add a session instruction; /prompt clear removes them; no arg = show
 /remember TXT  store a note in ~/.termux-agent/memory.md (loaded every session)
 /cd DIR        change the working directory (and file-access boundary)
+/plan          toggle plan-first mode (propose, approve, then execute)
 Type a normal message to ask; Ctrl+C to cancel.
 ```
 

@@ -159,6 +159,7 @@ def cmd_one_shot(
     output: str | None = None,
     clip: bool = False,
     screenshot: bool = False,
+    stream: bool = False,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -201,8 +202,16 @@ def cmd_one_shot(
         from termux_agent.notify import wake_lock
 
         wake_lock()
+    streamed = stream and not as_json and not quiet
     try:
-        answer = _run_guarded(agent, prompt, _log_tool, timeout)
+        if streamed:
+            from termux_agent.ui.renderer import PlainStreamPrinter
+
+            printer = PlainStreamPrinter()
+            answer = _run_guarded(agent, prompt, _log_tool, timeout, on_text_delta=printer.feed)
+            printer.flush()
+        else:
+            answer = _run_guarded(agent, prompt, _log_tool, timeout)
     except KeyboardInterrupt:
         if wakelock:
             from termux_agent.notify import wake_unlock
@@ -253,7 +262,7 @@ def cmd_one_shot(
         _emit_json({"ok": True, "answer": answer, "tool_calls": tool_log}, agent)
     elif quiet:
         print(answer)
-    else:
+    elif not streamed:
         render_answer(answer)
     if stats and not as_json:
         u = agent.usage
@@ -284,14 +293,28 @@ def _maybe_notify(cfg: dict, title: str, answer: str, as_json: bool = False) -> 
     notify(f"{title}: {preview}")
 
 
-def _run_guarded(agent: Agent, prompt: str, on_tool_use, timeout: int | None):
+def _run_guarded(agent: Agent, prompt: str, on_tool_use, timeout: int | None, on_text_delta=None):
     """Run the agent, aborting with TimeoutError after `timeout` seconds (0 = unlimited)."""
+    if on_text_delta is None:
+        if not timeout:
+            return agent.run(prompt, on_tool_use=on_tool_use)
+        result: dict = {}
+
+        def _worker() -> None:
+            result["answer"] = agent.run(prompt, on_tool_use=on_tool_use)
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            raise TimeoutError
+        return result["answer"]
     if not timeout:
-        return agent.run(prompt, on_tool_use=on_tool_use)
+        return agent.run(prompt, on_tool_use=on_tool_use, on_text_delta=on_text_delta)
     result: dict = {}
 
     def _worker() -> None:
-        result["answer"] = agent.run(prompt, on_tool_use=on_tool_use)
+        result["answer"] = agent.run(prompt, on_tool_use=on_tool_use, on_text_delta=on_text_delta)
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
@@ -758,6 +781,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", metavar="FILE", help="Also write the answer to this file (plain text)")
     parser.add_argument("--clip", action="store_true", help="Use the clipboard as the prompt (needs termux-api)")
     parser.add_argument("--screenshot", action="store_true", help="Attach a screenshot of the screen to the prompt (needs termux-api + screen share)")
+    parser.add_argument("--stream", action="store_true", help="Stream the answer to the terminal as it is generated (typewriter mode)")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP server bind host (with --serve)")
     parser.add_argument("--port", type=int, default=8787, help="HTTP server port (with --serve)")
@@ -887,14 +911,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     prompt = " ".join(args.prompt).strip()
-    if not prompt and not sys.stdin.isatty():
+    if args.prompt_file != "-" and not prompt and not sys.stdin.isatty():
         # Pipelines: read the whole stdin as a one-shot prompt.
         prompt = sys.stdin.read().strip()
     if args.prompt_file:
         from pathlib import Path as _Path
 
         try:
-            file_prompt = _Path(args.prompt_file).expanduser().read_text(encoding="utf-8").strip()
+            if args.prompt_file == "-":
+                file_prompt = sys.stdin.read().strip()
+            else:
+                file_prompt = _Path(args.prompt_file).expanduser().read_text(encoding="utf-8").strip()
         except OSError as e:
             render_error(f"Cannot read --prompt-file: {e}")
             return 1
@@ -949,6 +976,7 @@ def main(argv: list[str] | None = None) -> int:
             output=args.output,
             clip=args.clip,
             screenshot=args.screenshot,
+            stream=args.stream,
         )
 
     if args.json:
