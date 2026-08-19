@@ -12,6 +12,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Token usage tracking**: `/stats` shows prompt/completion/total tokens used in the session (when the provider reports usage).
 - **Auto context compacting**: `--max-context-tokens N` (or `max_context_tokens` in config) summarizes old history automatically once the session passes N cumulative tokens.
 - **Session management**: `/sessions`, `/forget [ID]` (delete a session), and `/config` (show the active configuration).
+- **Scripting output**: `--json` (structured result) and `--quiet` (only the answer, no banner) for pipelines; `--copy` sends the answer to the clipboard.
 - **Pipe-friendly**: `echo "fix the bug" | termux-agent` runs a one-shot using stdin as the prompt.
 - **Rate-limit fallback**: `fallback_models` in the provider config are tried automatically when the main model returns HTTP 429 (rate limited).
 - **Undo file changes**: `/undo` in interactive mode restores the most recent file write/edit (the agent keeps a snapshot of every changed file).
@@ -117,6 +118,12 @@ echo "fix the bugs in main.py" | termux-agent
 # machine-readable one-shot output (JSON for scripts)
 termux-agent --json "summarize this repo" > result.json
 
+# print only the answer (no banner/tool logs) - good for pipelines
+termux-agent --quiet "what files changed?"
+
+# copy the answer to the clipboard (needs termux-api)
+termux-agent --copy "fix the bugs in main.py"
+
 # list sessions
 termux-agent --sessions
 ```
@@ -149,6 +156,8 @@ termux-agent "add docstrings to app.py"   # follows that rule
 /undo          revert the most recent file write/edit
 /config        show the active configuration
 /forget [ID]   delete a session (default: this session)
+/models        list available models for the current provider
+/diff          show git working-tree changes & diff summary
 Type a normal message to ask; Ctrl+C to cancel.
 ```
 

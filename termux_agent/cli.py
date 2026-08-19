@@ -136,24 +136,26 @@ def cmd_one_shot(
     plan: bool = False,
     as_json: bool = False,
     max_context_tokens: int | None = None,
+    quiet: bool = False,
+    copy: bool = False,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
     agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens)
     if plan and not readonly:
         return cmd_plan(cfg, prompt, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, max_context_tokens)
-    if not as_json:
+    if not as_json and not quiet:
         render_info(
             f"provider: {agent.provider.name} | model: {agent.provider.model} | "
             f"agent: {agent_name or cfg.get('agent', 'root')} | cwd: {agent.ctx.working_dir}"
         )
-    if auto_accept and not as_json:
+    if auto_accept and not as_json and not quiet:
         render_info("Mode --yes: all confirmations are skipped automatically.")
     tool_log: list[dict] = []
 
     def _log_tool(name: str, args_str: str) -> None:
         tool_log.append({"name": name, "arguments": args_str})
-        if not as_json:
+        if not as_json and not quiet:
             render_tool_use(name, args_str)
 
     try:
@@ -164,8 +166,18 @@ def cmd_one_shot(
         else:
             render_error("\nCancelled.")
         return 130
+    if copy:
+        from termux_agent.ui.repl import copy_to_clipboard
+
+        if copy_to_clipboard(answer):
+            if not quiet:
+                render_info("Answer copied to the clipboard.")
+        elif not quiet:
+            render_error("Clipboard unavailable. Install termux-api (pkg install termux-api).")
     if as_json:
         _emit_json({"ok": True, "answer": answer, "tool_calls": tool_log}, agent)
+    elif quiet:
+        print(answer)
     else:
         render_answer(answer)
     return 0
@@ -447,6 +459,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--readonly", action="store_true", help="Read-only mode: cannot write/edit/run commands")
     parser.add_argument("--plan", action="store_true", help="Plan mode: propose a plan first, execute only after approval")
     parser.add_argument("--json", action="store_true", help="One-shot mode: print the result as JSON (answer, tool_calls, usage)")
+    parser.add_argument("--quiet", action="store_true", help="One-shot mode: print only the answer (no banner/tool logs)")
+    parser.add_argument("--copy", action="store_true", help="One-shot mode: copy the answer to the clipboard")
     parser.add_argument("prompt", nargs="*", help="One-shot prompt (no arguments = interactive mode)")
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
@@ -556,6 +570,8 @@ def main(argv: list[str] | None = None) -> int:
             plan=args.plan,
             as_json=args.json,
             max_context_tokens=args.max_context_tokens,
+            quiet=args.quiet,
+            copy=args.copy,
         )
 
     if args.json:

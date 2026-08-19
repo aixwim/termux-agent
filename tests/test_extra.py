@@ -669,6 +669,53 @@ def test_delete_session_nonexistent(tmp_path: Path, monkeypatch):
     assert session.delete_session("nope") is None
 
 
+# --- --quiet / --copy ---
+def test_cmd_one_shot_quiet(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda prompt, on_tool_use=None: "ONLY ANSWER",
+    ))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_one_shot(_min_cfg(), "hi", "zen", None, quiet=True)
+    assert code == 0
+    assert out.getvalue() == "ONLY ANSWER\n"
+
+
+def test_cmd_one_shot_copy(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    copied = {}
+
+    def fake_copy(text):
+        copied["text"] = text
+        return True
+
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda prompt, on_tool_use=None: "HELLO",
+    ))
+    monkeypatch.setattr("termux_agent.ui.repl.copy_to_clipboard", fake_copy)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_one_shot(_min_cfg(), "hi", "zen", None, copy=True, quiet=True)
+    assert code == 0
+    assert copied.get("text") == "HELLO"
+    assert out.getvalue() == "HELLO\n"
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

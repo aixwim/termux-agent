@@ -21,6 +21,17 @@ from termux_agent.ui.renderer import (
 
 PROMPT_STYLE = Style.from_dict({"prompt": "bold cyan"})
 
+def copy_to_clipboard(text: str) -> bool:
+    """Copy text using termux-clipboard-set / xclip / pbcopy. Returns True on success."""
+    import shutil
+    import subprocess
+
+    clip = shutil.which("termux-clipboard-set") or shutil.which("xclip") or shutil.which("pbcopy")
+    if not clip:
+        return False
+    proc = subprocess.run([clip], input=text.encode(), capture_output=True)
+    return proc.returncode == 0
+
 HELP = """\
 Special commands (start with /):
   /exit, /quit    quit
@@ -39,6 +50,8 @@ Special commands (start with /):
   /undo           revert the most recent file write/edit
   /config         show the active configuration
   /forget [ID]    delete a session (default: this session)
+  /models         list available models for the current provider
+  /diff           show git working-tree changes & diff summary
 Type a normal message to ask; Ctrl+C to cancel."""
 
 
@@ -189,6 +202,10 @@ class Repl:
                 render_info(f"Deleted session: {removed.stem}")
             else:
                 render_error(f"Session not found: {rest or 'latest'}")
+        elif c == "/models":
+            self._list_models()
+        elif c == "/diff":
+            self._show_diff()
         else:
             render_error(f"Unknown command: {c}")
         return False
@@ -262,19 +279,11 @@ class Repl:
         render_info(f"Exported to: {out}")
 
     def _copy_last(self) -> None:
-        import shutil
-        import subprocess
-
         if not self._last_answer:
             render_error("No answer to copy yet.")
             return
-        clip = shutil.which("termux-clipboard-set") or shutil.which("xclip") or shutil.which("pbcopy")
-        if clip:
-            proc = subprocess.run([clip], input=self._last_answer.encode(), capture_output=True)
-            if proc.returncode == 0:
-                render_info("Last answer copied to the clipboard.")
-            else:
-                render_error("Failed to copy to the clipboard.")
+        if copy_to_clipboard(self._last_answer):
+            render_info("Last answer copied to the clipboard.")
         else:
             render_error("Clipboard unavailable. Install termux-api (pkg install termux-api) or use /export.")
 
@@ -288,6 +297,37 @@ class Repl:
             f"completion {u.get('completion_tokens', 0)} | "
             f"total {u.get('total_tokens', 0)}"
         )
+
+    def _list_models(self) -> None:
+        from termux_agent.cli import cmd_list_models
+        from termux_agent.config import load_config
+
+        cmd_list_models(load_config(), self.provider_name)
+
+    def _show_diff(self) -> None:
+        import subprocess
+
+        cwd = str(self.agent.ctx.working_dir)
+        try:
+            stat = subprocess.run(
+                ["git", "-C", cwd, "diff", "--stat"], capture_output=True, text=True, timeout=30
+            )
+            status = subprocess.run(
+                ["git", "-C", cwd, "status", "--short"], capture_output=True, text=True, timeout=30
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            render_error("Cannot run git here.")
+            return
+        if status.stdout.strip():
+            render_info("Changes in working tree:")
+            for line in status.stdout.splitlines()[:30]:
+                render_info(f"  {line}")
+        else:
+            render_info("Working tree is clean (no tracked changes).")
+        if stat.stdout.strip():
+            render_info("Diff summary:")
+            for line in stat.stdout.splitlines()[:30]:
+                render_info(f"  {line}")
 
     def _compact(self) -> None:
         render_info("Summarizing session history...")
