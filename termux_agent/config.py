@@ -22,6 +22,9 @@ DEFAULTS: dict[str, Any] = {
     "confirm_commands": True,
     "command_timeout": 60,
     "max_output_chars": 60000,
+    # Izinkan akses ke penyimpanan Android (/storage/emulated/0) oleh tool file.
+    # Jalankan dulu: termux-setup-storage (membuat ~/storage).
+    "allow_storage": False,
     "providers": {
         "openai": {
             "type": "openai_compat",
@@ -120,6 +123,20 @@ def resolve_working_dir(cfg: dict[str, Any]) -> Path:
     if not p.exists():
         p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def detect_storage_roots() -> list[Path]:
+    """Deteksi root penyimpanan Android yang bisa diakses Termux."""
+    roots: list[Path] = []
+    candidates = [
+        Path("/storage/emulated/0"),
+        Path.home() / "storage" / "shared",  # hasil termux-setup-storage
+        Path.home() / "storage" / "downloads",
+    ]
+    for c in candidates:
+        if c.is_dir() and c.exists():
+            roots.append(c)
+    return roots
 
 
 def ensure_config_file() -> Path:

@@ -19,16 +19,25 @@ from termux_agent.ui.renderer import render_error, render_info
 from termux_agent.ui.repl import Repl
 
 
-def build_agent(cfg: dict, provider_name: str | None, model: str | None) -> Agent:
-    name = provider_name or cfg.get("provider", "openai")
+def build_agent(
+    cfg: dict,
+    provider_name: str | None,
+    model: str | None,
+    auto_accept: bool = False,
+) -> Agent:
+    name = provider_name or cfg.get("provider", "zen")
     provider = create_provider(name, cfg, model)
     working_dir = resolve_working_dir(cfg)
     ctx = ToolContext(
         working_dir=working_dir,
         max_output_chars=int(cfg.get("max_output_chars", 60000)),
         command_timeout=int(cfg.get("command_timeout", 60)),
-        confirm_commands=bool(cfg.get("confirm_commands", True)),
+        confirm_commands=not auto_accept and bool(cfg.get("confirm_commands", True)),
     )
+    if cfg.get("allow_storage"):
+        from termux_agent.config import detect_storage_roots
+
+        ctx._allowed_dirs = [*ctx._allowed_dirs, *detect_storage_roots()]
     return Agent(
         provider,
         ctx,
@@ -44,15 +53,21 @@ def cmd_init() -> int:
     return 0
 
 
-def cmd_one_shot(cfg: dict, prompt: str, provider: str | None, model: str | None) -> int:
-    agent = build_agent(cfg, provider, model)
-    if not agent.ctx.confirm_commands:
-        pass
+def cmd_one_shot(
+    cfg: dict,
+    prompt: str,
+    provider: str | None,
+    model: str | None,
+    auto_accept: bool = False,
+) -> int:
+    agent = build_agent(cfg, provider, model, auto_accept)
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
     render_info(
         f"provider: {agent.provider.name} | model: {agent.provider.model} | cwd: {agent.ctx.working_dir}"
     )
+    if auto_accept:
+        render_info("Mode --yes: semua konfirmasi dilewati otomatis.")
     try:
         answer = agent.run(prompt, on_tool_use=render_tool_use)
     except KeyboardInterrupt:
@@ -93,7 +108,7 @@ def find_session(session_ref: str | None) -> "tuple[Path, dict, list[dict]] | No
     return path, info, session_messages(path)
 
 
-def cmd_resume(cfg: dict, session_ref: str | None, prompt: str) -> int:
+def cmd_resume(cfg: dict, session_ref: str | None, prompt: str, auto_accept: bool = False) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
     found = find_session(session_ref)
@@ -106,7 +121,7 @@ def cmd_resume(cfg: dict, session_ref: str | None, prompt: str) -> int:
     if provider_name not in cfg.get("providers", {}):
         provider_name = cfg.get("provider", "zen")
     model = info.get("model") or None
-    agent = build_agent(cfg, provider_name, model)
+    agent = build_agent(cfg, provider_name, model, auto_accept=auto_accept)
     agent.messages = [{"role": "system", "content": agent.system_prompt}] + history
     if prompt:
         answer = agent.run(prompt, on_tool_use=render_tool_use)
@@ -142,6 +157,12 @@ def main(argv: list[str] | None = None) -> int:
         metavar="ID",
         help="Lanjutkan sesi sebelumnya (default: sesi terbaru)",
     )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Lewati semua konfirmasi (berbahaya: izinkan perintah & commit apa pun)",
+    )
     args = parser.parse_args(argv)
 
     if args.init:
@@ -168,17 +189,19 @@ def main(argv: list[str] | None = None) -> int:
 
     prompt = " ".join(args.prompt).strip()
     if args.resume:
-        return cmd_resume(cfg, args.resume, prompt)
+        return cmd_resume(cfg, args.resume, prompt, auto_accept=args.yes)
 
     if prompt:
-        return cmd_one_shot(cfg, prompt, args.provider, args.model)
+        return cmd_one_shot(cfg, prompt, args.provider, args.model, auto_accept=args.yes)
 
     provider_key = args.provider or cfg.get("provider", "zen")
     try:
-        agent = build_agent(cfg, provider_key, args.model)
+        agent = build_agent(cfg, provider_key, args.model, auto_accept=args.yes)
     except (ConfigError, KeyError) as e:
         render_error(f"Error: {e}\nJalankan 'termux-agent --init' dulu, lalu isi API key.")
         return 1
+    if args.yes:
+        render_info("Mode --yes: semua konfirmasi dilewati otomatis.")
     try:
         Repl(agent, provider_name=provider_key, model=agent.provider.model).run()
     except KeyboardInterrupt:

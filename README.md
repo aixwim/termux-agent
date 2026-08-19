@@ -9,6 +9,9 @@ CLI coding agent untuk **Termux (Android)**, mirip [opencode](https://opencode.a
 - **Rules proyek**: file `AGENTS.md`, `CLAUDE.md`, atau `.termux-agent/rules.md` di direktori kerja (dan parent sampai `$HOME`) otomatis dimuat ke instruksi agent — seperti opencode.
 - **Git terintegrasi**: agent bisa cek status, diff, dan commit (commit butuh konfirmasi).
 - **Resume sesi**: lanjutkan percakapan sebelumnya dengan `--resume` atau `/resume`.
+- **Compact konteks**: `/compact` merangkum riwayat lama agar hemat token.
+- **Mode otomatis**: `--yes` melewati semua konfirmasi (cocok untuk skrip).
+- **Akses storage Android**: aktifkan `allow_storage: true` di config untuk akses file di `/storage/emulated/0` (jalankan `termux-setup-storage` dulu).
 - **Multi-provider** via preset: OpenAI, Anthropic, OpenRouter, Ollama, Groq, DeepSeek, Gemini, dan **OpenCode Zen**.
 - **Mode interaktif & one-shot**.
 - **Sesi tersimpan** ke `~/.termux-agent/sessions/`.
@@ -54,6 +57,9 @@ termux-agent "baca file main.py lalu perbaiki bug-nya"
 termux-agent --resume
 termux-agent --resume 20260819-233713 "lanjutan: ..."
 
+# lewati semua konfirmasi (berbahaya; cocok untuk skrip)
+termux-agent --yes "git commit semua perubahan"
+
 # pilih provider/model
 termux-agent --provider zen --model nemotron-3-ultra-free "cek isi direktori ini"
 
@@ -84,6 +90,18 @@ termux-agent "tambah docstring ke app.py"   # mengikuti aturan itu
 /cwd           tampilkan direktori kerja
 /sessions      daftar sesi
 /resume [ID]   lanjutkan sesi (ID opsional, default terbaru)
+/compact       ringkas riwayat sesi agar hemat konteks
+```
+
+### Akses file Android (storage)
+
+Agar agent bisa membaca/menulis file di penyimpanan Android (foto, dokumen, dll):
+
+```bash
+termux-setup-storage          # sekali: membuat ~/storage -> /storage/emulated/0
+# lalu aktifkan di ~/.termux-agent/config.yaml:
+#   allow_storage: true
+termux-agent "baca file terbaru di folder Download"
 ```
 
 ## Provider & API key

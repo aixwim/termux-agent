@@ -127,3 +127,45 @@ class Agent:
                     }
                 )
         return "(mencapai batas maksimal putaran tool; hentikan agar tidak berulang)"
+
+    def compact(self, keep_recent: int = 4) -> str:
+        """Ringkas pesan lama (selain N terakhir) menjadi satu ringkasan,
+        lalu ganti dengan ringkasan itu agar konteks tetap hemat."""
+        if len(self.messages) <= keep_recent + 1:
+            return ""
+        system = self.messages[0]
+        recent = self.messages[-keep_recent:]
+        old = self.messages[1:-keep_recent]
+        history = "\n".join(
+            f"{m.get('role')}: {m.get('content', '')}" for m in old if m.get("content")
+        )
+        if not history.strip():
+            return ""
+        prompt = (
+            "Ringkas percakapan berikut dalam bahasa yang sama dengan percakapan. "
+            "Pertahankan semua keputusan, file yang dibuat/diubah, perintah yang dijalankan, "
+            "dan kesimpulan penting. Format: paragraf ringkas.\n\n" + history
+        )
+        summary_parts: list[str] = []
+        try:
+            for ev in self.provider.stream(
+                [system, {"role": "user", "content": prompt}],
+                tools=None,
+                temperature=0.3,
+            ):
+                if ev.kind == "text_delta":
+                    summary_parts.append(ev.text)
+        except ProviderError as e:
+            return f"(gagal compact: {e})"
+        summary = "".join(summary_parts).strip()
+        if not summary:
+            return ""
+        self.messages = [
+            system,
+            {
+                "role": "user",
+                "content": f"[Ringkasan percakapan sebelumnya]\n{summary}",
+            },
+            *recent,
+        ]
+        return summary

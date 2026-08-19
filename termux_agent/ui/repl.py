@@ -30,6 +30,7 @@ Perintah khusus (diawali /):
   /cwd            tampilkan direktori kerja
   /sessions       daftar sesi tersimpan
   /resume [ID]    lanjutkan sesi (ID opsional, default terbaru)
+  /compact        ringkas riwayat sesi agar hemat konteks
 Ketikan pesan biasa untuk bertanya; Ctrl+C untuk membatalkan."""
 
 
@@ -145,9 +146,21 @@ class Repl:
                     render_info(f"  {s.name} ({s.stat().st_size}B)")
         elif c == "/resume":
             self._resume(rest)
+        elif c == "/compact":
+            self._compact()
         else:
             render_error(f"Perintah tidak dikenal: {c}")
         return False
+
+    def _compact(self) -> None:
+        render_info("Merangkum riwayat sesi...")
+        summary = self.agent.compact()
+        if not summary:
+            render_info("Tidak ada yang perlu diringkas (percakapan masih pendek).")
+        elif summary.startswith("(gagal"):
+            render_error(summary)
+        else:
+            render_info(f"Sesi diringkas dari {len(self.agent.messages)} pesan tersisa.")
 
     def _resume(self, ref: str) -> None:
         from termux_agent.cli import find_session

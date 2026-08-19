@@ -1,4 +1,4 @@
-"""Test fitur tambahan: rules file, tool git, resume sesi."""
+"""Test fitur tambahan: rules file, tool git, resume sesi, compact, storage."""
 import subprocess
 from pathlib import Path
 
@@ -116,3 +116,91 @@ def test_session_messages(tmp_path: Path, monkeypatch):
         {"role": "user", "content": "halo"},
         {"role": "assistant", "content": "hai!"},
     ]
+
+
+# --- compact ---
+class FakeSummarizer:
+    name = "fake"
+    model = "m"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def stream(self, messages, tools=None, temperature=0.7, max_tokens=8192):
+        self.calls += 1
+        if tools is None:  # panggilan ringkasan
+            from termux_agent.providers.base import StreamEvent
+
+            return [StreamEvent(kind="text_delta", text="RINGKASAN")]
+        raise AssertionError("compact tidak boleh memakai tools")
+
+
+def test_compact_reduces_messages(tmp_path: Path):
+    prov = FakeSummarizer()
+    agent = Agent(prov, ToolContext(working_dir=tmp_path, confirm_commands=False))
+    for i in range(6):
+        agent.messages.append({"role": "user", "content": f"q{i}"})
+        agent.messages.append({"role": "assistant", "content": f"a{i}"})
+    n_before = len(agent.messages)
+    summary = agent.compact(keep_recent=2)
+    assert summary == "RINGKASAN"
+    assert len(agent.messages) < n_before
+    assert agent.messages[1]["role"] == "user"
+    assert "RINGKASAN" in agent.messages[1]["content"]
+    # 2 pesan terakhir tetap utuh
+    assert agent.messages[-1] == {"role": "assistant", "content": "a5"}
+
+
+def test_compact_skips_short_history(tmp_path: Path):
+    prov = FakeSummarizer()
+    agent = Agent(prov, ToolContext(working_dir=tmp_path, confirm_commands=False))
+    assert agent.compact() == ""  # hanya system message
+
+
+# --- auto-accept / --yes ---
+def test_build_agent_auto_accept(tmp_path: Path, monkeypatch):
+    from termux_agent.cli import build_agent
+
+    cfg = {
+        "provider": "zen",
+        "providers": {
+            "zen": {
+                "type": "openai_compat",
+                "base_url": "http://localhost:9/v1",
+                "models": ["m"],
+                "api_key_env": "",
+            }
+        },
+    }
+    monkeypatch.chdir(tmp_path)
+    agent = build_agent(cfg, "zen", None, auto_accept=True)
+    assert agent.ctx.confirm_commands is False
+
+
+# --- storage android ---
+def test_detect_storage_roots():
+    from termux_agent.config import detect_storage_roots
+
+    roots = detect_storage_roots()
+    assert isinstance(roots, list)
+
+
+def test_allow_storage_adds_allowed_dirs(tmp_path: Path, monkeypatch):
+    from termux_agent.cli import build_agent
+
+    cfg = {
+        "provider": "zen",
+        "providers": {
+            "zen": {
+                "type": "openai_compat",
+                "base_url": "http://localhost:9/v1",
+                "models": ["m"],
+                "api_key_env": "",
+            }
+        },
+        "allow_storage": True,
+    }
+    monkeypatch.chdir(tmp_path)
+    agent = build_agent(cfg, "zen", None)
+    allowed = [d for d in agent.ctx._allowed_dirs if "storage" in str(d)]
+    assert allowed, "storage roots harus ditambahkan ke _allowed_dirs"

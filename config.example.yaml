@@ -30,6 +30,10 @@ command_timeout: 60
 # Potong output tool agar hemat memori di perangkat mobile
 max_output_chars: 60000
 
+# Izinkan tool file mengakses penyimpanan Android (/storage/emulated/0).
+# Jalankan dulu: termux-setup-storage (membuat ~/storage).
+allow_storage: false
+
 # Preset provider. api_key_env = nama env var yang memegang API key.
 providers:
   openai:
