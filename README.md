@@ -17,7 +17,8 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Wake lock & TTS**: `--wakelock` holds a Termux wake lock while a long task runs (prevents CPU sleep), and `--speak` reads the answer aloud with `termux-tts-speak` (both need termux-api).
 - **HTTP API**: `--serve` runs a tiny local server (`POST /chat`, `GET /health`, `GET /models`, `GET /sessions`, with CORS enabled for browser clients). Every request is saved as a session and the id is returned in the response; pass `"session": "<id>"` to resume that conversation, or `"stream": true` for Server-Sent Event output. Use `--token` to require a bearer token on all endpoints except `/health`.
 - **Resilience knobs**: `--retries N` overrides the transient retry count and `--no-fallback` disables fallback models on 429/errors.
-- **Scriptable & extensible**: `--sessions --json`, `--bench --json`, and `--version --json` emit machine-readable output; `--rules FILE` injects extra instructions for one run; `--resume` now supports `--stream`.
+- **Scriptable & extensible**: `--sessions --json`, `--bench --json`, and `--version --json` emit machine-readable output; `--rules FILE` injects extra instructions for one run; `--system-prompt FILE` replaces the whole prompt for a custom persona; `--resume` now supports `--stream`.
+- **Watch mode**: `--watch SECONDS` re-runs a one-shot prompt on an interval until Ctrl+C (combine with `--screenshot` to monitor the screen). In the REPL, `/system` shows the effective system prompt.
 - **Chat mode**: `--chat` disables all tools for a plain conversation (no file/command access).
 - **Timeouts & saving**: `--timeout SECONDS` aborts a slow one-shot task (exit 124); one-shot tasks are now saved as sessions too, so you can `--resume` them.
 - **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--export-all DIR` backs up every session, `--import FILE` restores one, `--prune N` / `--forget [ID]` delete sessions. `--bench [PROVIDER]` times one tiny request per model to help you pick a fast default.
@@ -142,6 +143,15 @@ termux-agent --version --json
 # extra per-invocation instructions (like AGENTS.md, just for this run)
 echo "Never touch the deploy script." > /tmp/rules.txt
 termux-agent --rules /tmp/rules.txt "review the repo"
+
+# full custom persona (replaces the built-in system prompt)
+cat > /tmp/pirate.md <<'EOF'
+You are a pirate code reviewer. Always use nautical metaphors and be terse.
+EOF
+termux-agent --system-prompt /tmp/pirate.md "review my code"
+
+# watch mode: re-run a task every 30s, re-attaching a screenshot each round
+termux-agent --watch 30 --screenshot "what changed on my screen?"
 
 # quick overrides without editing config
 termux-agent --cwd /sdcard/Documents --temperature 0.2 --max-tool-rounds 30 "tidy up this project"
@@ -289,6 +299,7 @@ termux-agent "add docstrings to app.py"   # follows that rule
 /remember TXT  store a note in ~/.termux-agent/memory.md (loaded every session)
 /cd DIR        change the working directory (and file-access boundary)
 /plan          toggle plan-first mode (propose, approve, then execute)
+/system        show the effective system prompt
 Type a normal message to ask; Ctrl+C to cancel.
 ```
 

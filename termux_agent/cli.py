@@ -53,6 +53,7 @@ def build_agent(
     retries: int | None = None,
     no_fallback: bool = False,
     extra_rules: str | None = None,
+    system_prompt: str | None = None,
 ) -> Agent:
     name = provider_name or cfg.get("provider", "zen")
     provider = create_provider(name, cfg, model)
@@ -92,6 +93,7 @@ def build_agent(
             ctx,
             max_tool_rounds=int(max_tool_rounds or cfg.get("max_tool_rounds", 20)),
             temperature=float(temperature if temperature is not None else cfg.get("temperature", 0.7)),
+            system_prompt=system_prompt,
             agent_spec=agent_spec,
             max_context_tokens=int(max_context_tokens if max_context_tokens is not None else cfg.get("max_context_tokens", 0)),
             retries=int(retries if retries is not None else cfg.get("retries", 1)),
@@ -194,6 +196,7 @@ def cmd_one_shot(
     retries: int | None = None,
     no_fallback: bool = False,
     rules_file: str | None = None,
+    system_prompt_file: str | None = None,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -226,7 +229,18 @@ def cmd_one_shot(
             render_error(f"--rules file is empty: {rules_file}")
             return 1
 
-    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools, retries, no_fallback, extra_rules)
+    sys_prompt = None
+    if system_prompt_file:
+        try:
+            sys_prompt = Path(system_prompt_file).expanduser().read_text(encoding="utf-8").strip()
+        except OSError as e:
+            render_error(f"Cannot read --system-prompt file: {e}")
+            return 1
+        if not sys_prompt:
+            render_error(f"--system-prompt file is empty: {system_prompt_file}")
+            return 1
+
+    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools, retries, no_fallback, extra_rules, sys_prompt)
     if plan and not readonly:
         return cmd_plan(cfg, prompt, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, max_context_tokens, as_json)
     if not as_json and not quiet:
@@ -416,6 +430,54 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
         table.add_row(m, f"{dt:.1f}", str(chars), "ok" if ok else "FAILED")
     console.print(table)
     return 0
+
+
+def cmd_watch(
+    cfg: dict,
+    prompt: str,
+    provider: str | None,
+    model: str | None,
+    interval: int,
+    with_screenshot: bool = False,
+    auto_accept: bool = False,
+    timeout: int | None = None,
+) -> int:
+    """Re-run a one-shot task every N seconds until Ctrl+C. Optionally re-attach a screenshot."""
+    import time
+
+    from termux_agent.ui.renderer import render_answer, render_tool_use
+
+    agent = build_agent(cfg, provider, model, auto_accept=auto_accept)
+    render_info(f"Watching every {interval}s — press Ctrl+C to stop.")
+    round_no = 0
+    try:
+        while True:
+            round_no += 1
+            render_info(f"\n--- round {round_no} ---")
+            p = prompt
+            if with_screenshot:
+                from termux_agent.notify import screenshot
+
+                img = screenshot()
+                if img:
+                    p = f"{prompt}\n\n[image: {img}]"
+                    render_info(f"Attached screenshot: {img}")
+                else:
+                    render_error("Screenshot failed this round — continuing without it.")
+            try:
+                answer = _run_guarded(agent, p, render_tool_use, timeout)
+            except TimeoutError:
+                render_error(f"Round {round_no} timed out after {timeout}s.")
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:  # noqa: BLE001
+                render_error(f"Round {round_no} failed: {e}")
+            else:
+                render_answer(answer)
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        render_info("\nStopped.")
+        return 0
 
 
 def cmd_plan(
@@ -875,9 +937,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--clip", action="store_true", help="Use the clipboard as the prompt (needs termux-api)")
     parser.add_argument("--screenshot", action="store_true", help="Attach a screenshot of the screen to the prompt (needs termux-api + screen share)")
     parser.add_argument("--stream", action="store_true", help="Stream the answer to the terminal as it is generated (typewriter mode)")
+    parser.add_argument("--watch", type=int, metavar="SECONDS", help="Re-run the one-shot prompt every N seconds until Ctrl+C (combine with --screenshot)")
     parser.add_argument("--retries", type=int, metavar="N", help="Override transient retry count for network hiccups")
     parser.add_argument("--no-fallback", action="store_true", help="Disable fallback models on 429/errors (use only the selected model)")
     parser.add_argument("--rules", metavar="FILE", help="Add extra instructions to the system prompt (like AGENTS.md but per-invocation)")
+    parser.add_argument("--system-prompt", dest="system_prompt_file", metavar="FILE", help="Replace the entire system prompt with the file contents (custom persona)")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP server bind host (with --serve)")
     parser.add_argument("--port", type=int, default=8787, help="HTTP server port (with --serve)")
@@ -1058,6 +1122,21 @@ def main(argv: list[str] | None = None) -> int:
             stream=args.stream,
         )
 
+    if args.watch:
+        if not prompt:
+            render_error("--watch requires a one-shot prompt.")
+            return 2
+        return cmd_watch(
+            cfg,
+            prompt,
+            args.provider,
+            args.model,
+            interval=args.watch,
+            with_screenshot=args.screenshot,
+            auto_accept=args.yes,
+            timeout=args.timeout,
+        )
+
     if prompt:
         return cmd_one_shot(
             cfg,
@@ -1087,6 +1166,7 @@ def main(argv: list[str] | None = None) -> int:
             retries=args.retries,
             no_fallback=args.no_fallback,
             rules_file=args.rules,
+            system_prompt_file=args.system_prompt_file,
         )
 
     if args.json:

@@ -56,6 +56,7 @@ Special commands (start with /):
   /remember TXT   store a note in ~/.termux-agent/memory.md (loaded every session)
   /cd DIR         change the working directory (and file-access boundary)
   /plan           toggle plan-first mode (propose, approve, then execute)
+  /system         show the effective system prompt
 Type a normal message to ask; Ctrl+C to cancel."""
 
 
@@ -247,6 +248,8 @@ class Repl:
         elif c == "/plan":
             self.plan_mode = not self.plan_mode
             render_info(f"Plan-first mode {'ON' if self.plan_mode else 'OFF'}.")
+        elif c == "/system":
+            console.print(self.agent.system_prompt)
         else:
             render_error(f"Unknown command: {c}")
         return False

@@ -1959,6 +1959,76 @@ def test_build_agent_extra_rules(tmp_path: Path, monkeypatch):
     assert agent.messages[0]["content"] == agent.system_prompt
 
 
+# --- system prompt / watch ---
+def test_build_agent_custom_system_prompt(tmp_path: Path, monkeypatch):
+    from termux_agent.cli import build_agent
+
+    monkeypatch.chdir(tmp_path)
+    agent = build_agent(_min_cfg(), "zen", None, system_prompt="You are a pirate.")
+    assert agent.system_prompt == "You are a pirate."
+
+
+def test_one_shot_system_prompt_file(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    sp = tmp_path / "persona.txt"
+    sp.write_text("You are a pirate.")
+    seen = {}
+
+    def fake_build(*a, **k):
+        seen["system_prompt"] = a[14] if len(a) > 14 else k.get("system_prompt")
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+        )
+        agent.run = lambda prompt, on_tool_use=None, on_text_delta=None: "ok"
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_one_shot(_min_cfg(), "hi", "zen", None, quiet=True, system_prompt_file=str(sp)) == 0
+    assert seen["system_prompt"] == "You are a pirate."
+
+
+def test_cmd_watch_loop(tmp_path: Path, monkeypatch):
+    import io
+    import time
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to: "ROUND OK")
+    monkeypatch.setattr(time, "sleep", lambda s: (_ for _ in ()).throw(KeyboardInterrupt()))
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_watch(_min_cfg(), "check", "zen", None, interval=1) == 0
+
+
+def test_main_watch_requires_prompt(monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    class FakeIn:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(cli.sys, "stdin", FakeIn())
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.main(["--watch", "60"]) == 2
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
