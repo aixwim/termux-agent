@@ -123,3 +123,54 @@ def list_dir(args: dict, ctx: ToolContext) -> str:
         size = "" if e.is_dir() else f"{e.stat().st_size}B"
         lines.append(f"{kind:4} {e.name:40} {size}")
     return f"{path} ({len(lines)} entries)\n" + "\n".join(lines)
+
+
+@tool(
+    "list_tree",
+    "Show a recursive tree of a directory (ignores .git). Use depth to limit how deep it goes.",
+    {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Directory to walk (default: working_dir)"},
+            "depth": {"type": "integer", "description": "Max depth (default 3)"},
+            "max_entries": {"type": "integer", "description": "Cap on printed entries (default 200)"},
+        },
+        "required": [],
+    },
+)
+def list_tree(args: dict, ctx: ToolContext) -> str:
+    raw = str(args.get("path") or ".")
+    path = ctx.require_allowed(ctx.resolve(raw))
+    if not path.is_dir():
+        return f"Error: not a directory: {path}"
+    depth = max(1, min(int(args.get("depth", 3)), 10))
+    cap = max(1, int(args.get("max_entries", 200)))
+    lines: list[str] = [str(path)]
+
+    def walk(p: Path, level: int) -> None:
+        if len(lines) >= cap + 1:
+            return
+        try:
+            entries = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+        except OSError:
+            return
+        for e in entries:
+            if len(lines) >= cap + 1:
+                lines.append("... [tree truncated]")
+                return
+            if e.name == ".git":
+                continue
+            prefix = "  " * level
+            if e.is_dir():
+                lines.append(f"{prefix}{e.name}/")
+                if level < depth:
+                    walk(e, level + 1)
+            else:
+                try:
+                    size = e.stat().st_size
+                except OSError:
+                    size = 0
+                lines.append(f"{prefix}{e.name} ({size}B)")
+
+    walk(path, 0)
+    return "\n".join(lines)

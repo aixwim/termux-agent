@@ -511,6 +511,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--copy", action="store_true", help="One-shot mode: copy the answer to the clipboard")
     parser.add_argument("--image", help="Attach an image to the one-shot prompt (vision-capable models, e.g. a screenshot)")
     parser.add_argument("--prompt-file", help="Read the prompt from a file (UTF-8)")
+    parser.add_argument("--api-key", help="Set the provider API key for this run (env var override, not saved)")
     parser.add_argument("prompt", nargs="*", help="One-shot prompt (no arguments = interactive mode)")
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
@@ -570,6 +571,19 @@ def main(argv: list[str] | None = None) -> int:
         import os
 
         os.environ["TERMUX_AGENT_DEBUG"] = "1"
+
+    if args.api_key:
+        import os
+
+        pname = args.provider or cfg.get("provider", "zen")
+        pc = cfg.get("providers", {}).get(pname, {})
+        env_name = pc.get("api_key_env", "")
+        if not env_name:
+            render_error(f"Provider '{pname}' has no api_key_env to set.")
+            return 1
+        os.environ[env_name] = args.api_key
+        if pname != "zen":
+            render_info(f"API key set for {pname} via --api-key (not saved).")
 
     if args.list_providers:
         return cmd_list_providers(cfg)

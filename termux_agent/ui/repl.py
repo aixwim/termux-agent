@@ -120,6 +120,7 @@ class Repl:
             except (KeyboardInterrupt, EOFError):
                 console.print()
                 break
+            user = self._maybe_read_multiline(user, ps)
             user = user.strip()
             if not user:
                 continue
@@ -128,6 +129,28 @@ class Repl:
                     break
                 continue
             self._run_turn(user)
+
+    @staticmethod
+    def _maybe_read_multiline(first: str, ps: PromptSession) -> str:
+        """Wrap long input in {{ ... }} to send multiple lines at once."""
+        stripped = first.lstrip()
+        if not stripped.startswith("{{"):
+            return first
+        if stripped.rstrip().endswith("}}") and stripped.count("{{") == 1:
+            return stripped[2:-2].strip()
+        lines = [first]
+        try:
+            while True:
+                more = ps.prompt("...> ")
+                lines.append(more)
+                if more.rstrip().endswith("}}"):
+                    break
+        except (KeyboardInterrupt, EOFError):
+            return first
+        body = "\n".join(lines)
+        if body.startswith("{{") and body.endswith("}}"):
+            return body[2:-2].strip()
+        return body
 
     def _run_piped(self) -> None:
         """Fallback when stdin is not a terminal (e.g. piped)."""

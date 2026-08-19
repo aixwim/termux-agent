@@ -31,7 +31,8 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Context compacting**: `/compact` summarizes old history to save tokens.
 - **Automation mode**: `--yes` skips all confirmations (good for scripts).
 - **Android storage access**: enable `allow_storage: true` in config to access files in `/storage/emulated/0` (run `termux-setup-storage` first).
-- **Multi-provider** presets: OpenAI, Anthropic, OpenRouter, Ollama, Groq, DeepSeek, Gemini, and **OpenCode Zen**.
+- **Multi-provider** presets: OpenAI, Anthropic, OpenRouter, Ollama, Groq, DeepSeek, Gemini, xAI (Grok), Mistral, Cerebras, and **OpenCode Zen**.
+- **Multi-line input**: wrap a message in `{{ ... }}` in interactive mode to send several lines (e.g. paste code).
 - **Interactive & one-shot modes**.
 - **Sessions saved** to `~/.termux-agent/sessions/`.
 - **Mobile-friendly safety**: working directory boundary, confirmation for non-whitelisted commands, timeouts, and output truncation to save memory.
@@ -140,6 +141,9 @@ termux-agent --image /sdcard/DCIM/screenshot.png "explain what this screen shows
 
 # read the prompt from a file
 termux-agent --prompt-file review.txt --json
+
+# pass the API key for a single run (never saved)
+termux-agent --provider xai --api-key sk-... --model grok-3 "explain this repo"
 
 # list sessions
 termux-agent --sessions

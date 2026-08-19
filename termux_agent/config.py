@@ -91,6 +91,27 @@ DEFAULTS: dict[str, Any] = {
             ],
             "api_key_env": "OPENCODE_API_KEY",
         },
+        # xAI (Grok): OpenAI-compatible endpoint.
+        "xai": {
+            "type": "openai_compat",
+            "base_url": "https://api.x.ai/v1",
+            "models": ["grok-3-mini", "grok-3", "grok-4"],
+            "api_key_env": "XAI_API_KEY",
+        },
+        # Mistral: OpenAI-compatible endpoint.
+        "mistral": {
+            "type": "openai_compat",
+            "base_url": "https://api.mistral.ai/v1",
+            "models": ["mistral-large-latest", "mistral-small-latest", "codestral-latest"],
+            "api_key_env": "MISTRAL_API_KEY",
+        },
+        # Cerebras: fast inference, OpenAI-compatible endpoint.
+        "cerebras": {
+            "type": "openai_compat",
+            "base_url": "https://api.cerebras.ai/v1",
+            "models": ["cerebras-grok-3-mini", "llama-3.3-70b", "gpt-4.1"],
+            "api_key_env": "CEREBRAS_API_KEY",
+        },
     },
     # Sub-agents: name -> extra prompt + allowed tool list (optional).
     # The "tools" key lists tool names the agent may use (empty = all tools).

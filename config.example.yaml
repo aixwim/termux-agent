@@ -97,3 +97,21 @@ providers:
     api_key_env: OPENCODE_API_KEY
     # automatically retried in order when the main model is rate limited (HTTP 429)
     fallback_models: [deepseek-v4-flash-free, mimo-v2.5-free, big-pickle]
+
+  xai:
+    type: openai_compat
+    base_url: https://api.x.ai/v1
+    models: [grok-3-mini, grok-3, grok-4]
+    api_key_env: XAI_API_KEY
+
+  mistral:
+    type: openai_compat
+    base_url: https://api.mistral.ai/v1
+    models: [mistral-large-latest, mistral-small-latest, codestral-latest]
+    api_key_env: MISTRAL_API_KEY
+
+  cerebras:
+    type: openai_compat
+    base_url: https://api.cerebras.ai/v1
+    models: [cerebras-grok-3-mini, llama-3.3-70b, gpt-4.1]
+    api_key_env: CEREBRAS_API_KEY

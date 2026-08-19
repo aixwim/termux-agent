@@ -1007,6 +1007,53 @@ def test_main_image_flag(tmp_path: Path, monkeypatch):
     assert f"[image: {img}]" in seen["prompt"]
 
 
+# --- multiline input ---
+def test_multiline_single_line_wrap(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import Repl
+
+    agent = SimpleNamespace(
+        system_prompt="B",
+        messages=[{"role": "system", "content": "B"}],
+        ctx=SimpleNamespace(working_dir=tmp_path),
+    )
+    repl = Repl(agent, provider_name="zen", model="m")
+    out = repl._maybe_read_multiline("{{ hello }}", None)
+    assert out == "hello"
+
+
+def test_list_tree_tool(tmp_path: Path):
+    from termux_agent.tools import files
+    from termux_agent.tools.base import ToolContext, run_tool
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("x")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref")
+    (tmp_path / "README.md").write_text("hi")
+    ctx = ToolContext(working_dir=tmp_path)
+    out = run_tool("list_tree", {}, ctx)
+    assert "src/" in out
+    assert "a.py" in out
+    assert ".git" not in out
+    assert "README.md" in out
+
+
+def test_main_api_key_flag(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO())
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(cli, "cmd_one_shot", lambda *a, **k: 0)
+    assert cli.main(["--provider", "xai", "--api-key", "sk-test", "hi"]) == 0
+    import os
+
+    assert os.environ.get("XAI_API_KEY") == "sk-test"
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

@@ -28,6 +28,7 @@ def test_all_tools_registered():
         "write_file",
         "edit_file",
         "list_dir",
+        "list_tree",
         "grep_file",
         "glob_find",
         "run_command",
