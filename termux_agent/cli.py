@@ -141,6 +141,7 @@ def cmd_one_shot(
     max_context_tokens: int | None = None,
     quiet: bool = False,
     copy: bool = False,
+    stats: bool = False,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -183,6 +184,12 @@ def cmd_one_shot(
         print(answer)
     else:
         render_answer(answer)
+    if stats and not as_json:
+        u = agent.usage
+        if u and any(u.values()):
+            render_info(
+                f"Tokens: prompt {u.get('prompt_tokens', 0)} | completion {u.get('completion_tokens', 0)} | total {u.get('total_tokens', 0)}"
+            )
     return 0
 
 
@@ -512,6 +519,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--image", help="Attach an image to the one-shot prompt (vision-capable models, e.g. a screenshot)")
     parser.add_argument("--prompt-file", help="Read the prompt from a file (UTF-8)")
     parser.add_argument("--api-key", help="Set the provider API key for this run (env var override, not saved)")
+    parser.add_argument("--stats", action="store_true", help="One-shot mode: print token usage after the answer")
+    parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
+    parser.add_argument("--host", default="127.0.0.1", help="HTTP server bind host (with --serve)")
+    parser.add_argument("--port", type=int, default=8787, help="HTTP server port (with --serve)")
     parser.add_argument("prompt", nargs="*", help="One-shot prompt (no arguments = interactive mode)")
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
@@ -566,6 +577,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_doctor(cfg, network=args.doctor_network)
     if args.smoke:
         return cmd_smoke(cfg, args.provider, args.model)
+    if args.serve:
+        from termux_agent.server import serve
+
+        return serve(cfg, host=args.host, port=args.port, provider=args.provider, model=args.model, auto_accept=args.yes)
 
     if args.verbose:
         import os
@@ -657,6 +672,7 @@ def main(argv: list[str] | None = None) -> int:
             max_context_tokens=args.max_context_tokens,
             quiet=args.quiet,
             copy=args.copy,
+            stats=args.stats,
         )
 
     if args.json:

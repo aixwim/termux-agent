@@ -1054,6 +1054,111 @@ def test_main_api_key_flag(tmp_path: Path, monkeypatch):
     assert os.environ.get("XAI_API_KEY") == "sk-test"
 
 
+# --- HTTP server ---
+def test_server_chat_and_health(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+    from termux_agent.server import _AgentHandler
+
+    class FakeProv:
+        name = "zen"
+        model = "m"
+
+        def list_models(self):
+            return ["m1", "m2"]
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=FakeProv(),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            messages=[{"role": "system", "content": "s"}],
+            run=lambda prompt: "ANSWER:" + prompt,
+        )
+
+    _AgentHandler.build_agent = staticmethod(fake_build)
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=10) as r:
+            health = _json.loads(r.read())
+        assert health["ok"] is True
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/chat",
+            data=_json.dumps({"prompt": "hello"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            chat = _json.loads(r.read())
+        assert chat["answer"] == "ANSWER:hello"
+        assert chat["usage"]["total_tokens"] == 15
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/models", timeout=10) as r:
+            models = _json.loads(r.read())
+        assert models["models"] == ["m1", "m2"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_server_missing_prompt(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.error
+    import urllib.request
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+    from termux_agent.server import _AgentHandler
+
+    _AgentHandler.build_agent = staticmethod(lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="p", model="m"),
+        usage={},
+        messages=[],
+        run=lambda p: "x",
+    ))
+    httpd = srv.build_server(lambda *a, **k: None, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/chat",
+            data=_json.dumps({}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            urllib.request.urlopen(req, timeout=10)
+        assert ei.value.code == 400
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_cmd_one_shot_stats(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        run=lambda prompt, on_tool_use=None: "ANSWER",
+    ))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_one_shot(_min_cfg(), "hi", "zen", None, stats=True)
+    assert code == 0
+    assert "total 5" in out.getvalue()
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

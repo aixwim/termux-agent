@@ -12,7 +12,8 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Token usage tracking**: `/stats` shows prompt/completion/total tokens used in the session (when the provider reports usage).
 - **Auto context compacting**: `--max-context-tokens N` (or `max_context_tokens` in config) summarizes old history automatically once the session passes N cumulative tokens.
 - **Session management**: `/sessions`, `/forget [ID]` (delete a session), and `/config` (show the active configuration).
-- **Scripting output**: `--json` (structured result) and `--quiet` (only the answer, no banner) for pipelines; `--copy` sends the answer to the clipboard.
+- **HTTP API**: `--serve` runs a tiny local server (`POST /chat`, `GET /health`, `GET /models`) so other apps (Tasker, Termux:API, scripts) can call the agent.
+- **Scripting output**: `--json` (structured result) and `--quiet` (only the answer, no banner) for pipelines; `--copy` sends the answer to the clipboard; `--stats` prints token usage after the answer.
 - **Pipe-friendly**: `echo "fix the bug" | termux-agent` runs a one-shot using stdin as the prompt.
 - **Rate-limit fallback**: `fallback_models` in the provider config are tried automatically when the main model returns HTTP 429 (rate limited).
 - **Flaky-network retries**: transient failures (network blips, HTTP 5xx) are retried automatically (`retries`, `retry_backoff` in config) — handy on mobile connections.
@@ -144,6 +145,13 @@ termux-agent --prompt-file review.txt --json
 
 # pass the API key for a single run (never saved)
 termux-agent --provider xai --api-key sk-... --model grok-3 "explain this repo"
+
+# print token usage after a one-shot answer
+termux-agent --stats "summarize main.py"
+
+# run a local HTTP API (for Tasker / Termux:API / scripts)
+termux-agent --serve --host 127.0.0.1 --port 8787
+curl -X POST http://127.0.0.1:8787/chat -d '{"prompt":"hello"}' -H 'Content-Type: application/json'
 
 # list sessions
 termux-agent --sessions
