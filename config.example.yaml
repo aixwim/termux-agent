@@ -1,0 +1,84 @@
+# Konfigurasi termux-agent. Salin ke ~/.termux-agent/config.yaml lalu edit.
+#
+# Cara pakai:
+#   1. termux-agent init            -> membuat file ini di ~/.termux-agent/
+#   2. isi API key di env (atau file ini):
+#        export OPENAI_API_KEY=sk-...        # atau ANTHROPIC_API_KEY, GROQ_API_KEY, dsb.
+#   3. termux-agent                 -> mode interaktif
+#      termux-agent "perintah"      -> mode one-shot
+
+# Provider default yang dipakai. Zen = OpenCode Zen; model free jalan tanpa API key.
+provider: zen
+
+# Model default (boleh kosong -> pakai model pertama dari preset provider)
+model: nemotron-3-ultra-free
+
+temperature: 0.7
+
+# Maksimal putaran tool-call sebelum dipaksa selesai (cegah loop tak terbatas)
+max_tool_rounds: 20
+
+# Direktori kerja: batas default untuk tool read/write/command
+working_dir: "~"
+
+# Minta konfirmasi sebelum menjalankan perintah yang tidak ada di whitelist
+confirm_commands: true
+
+# Timeout (detik) untuk perintah shell
+command_timeout: 60
+
+# Potong output tool agar hemat memori di perangkat mobile
+max_output_chars: 60000
+
+# Preset provider. api_key_env = nama env var yang memegang API key.
+providers:
+  openai:
+    type: openai_compat
+    base_url: https://api.openai.com/v1
+    models: [gpt-4o-mini, gpt-4o, gpt-4.1-mini]
+    api_key_env: OPENAI_API_KEY
+
+  anthropic:
+    type: anthropic
+    base_url: https://api.anthropic.com
+    models: [claude-sonnet-4-20250514, claude-haiku-4-5-20251001]
+    api_key_env: ANTHROPIC_API_KEY
+
+  openrouter:
+    type: openai_compat
+    base_url: https://openrouter.ai/api/v1
+    models: [anthropic/claude-3.5-sonnet, openai/gpt-4o, meta-llama/llama-3.3-70b-instruct]
+    api_key_env: OPENROUTER_API_KEY
+
+  # Model lokal di device. Install: pkg install ollama && ollama pull llama3.2
+  ollama:
+    type: openai_compat
+    base_url: http://localhost:11434/v1
+    models: [llama3.2, qwen2.5-coder:7b, deepseek-coder-v2]
+    api_key_env: ""
+
+  groq:
+    type: openai_compat
+    base_url: https://api.groq.com/openai/v1
+    models: [llama-3.3-70b-versatile, deepseek-r1-distill-llama-70b]
+    api_key_env: GROQ_API_KEY
+
+  deepseek:
+    type: openai_compat
+    base_url: https://api.deepseek.com/v1
+    models: [deepseek-chat, deepseek-reasoner]
+    api_key_env: DEEPSEEK_API_KEY
+
+  gemini:
+    type: openai_compat
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+    models: [gemini-2.0-flash, gemini-2.5-flash]
+    api_key_env: GEMINI_API_KEY
+
+  # OpenCode Zen (https://opencode.ai/zen): model "free" jalan tanpa API key,
+  # model lain butuh OPENCODE_API_KEY dari https://opencode.ai/auth.
+  zen:
+    type: openai_compat
+    base_url: https://opencode.ai/zen/v1
+    models: [nemotron-3-ultra-free, deepseek-v4-flash-free, mimo-v2.5-free, big-pickle]
+    api_key_env: OPENCODE_API_KEY

@@ -1,0 +1,9 @@
+provider: mock
+working_dir: /root/termux-agent/tests/work
+confirm_commands: false
+providers:
+  mock:
+    type: openai_compat
+    base_url: http://127.0.0.1:8765/v1
+    models: [mock-model]
+    api_key_env: ""

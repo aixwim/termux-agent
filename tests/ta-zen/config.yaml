@@ -1,0 +1,5 @@
+provider: zen
+model: nemotron-3-ultra-free
+working_dir: /root/termux-agent/tests/work
+confirm_commands: false
+command_timeout: 30

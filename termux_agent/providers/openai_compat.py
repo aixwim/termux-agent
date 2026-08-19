@@ -1,0 +1,175 @@
+"""Provider untuk API yang kompatibel dengan OpenAI Chat Completions.
+Mencakup: OpenAI, OpenRouter, Ollama, Groq, DeepSeek, Gemini (endpoint compat)."""
+from __future__ import annotations
+
+import json
+import os
+from typing import Any, Iterable
+
+import httpx
+
+from termux_agent.providers.base import (
+    Provider,
+    ProviderError,
+    StreamEvent,
+    ToolSpec,
+    normalize_messages,
+)
+
+DEFAULT_TIMEOUT = httpx.Timeout(120.0, connect=30.0)
+
+
+def _iter_sse(response: httpx.Response) -> Iterable[str]:
+    """Iterasi baris data: dari stream SSE."""
+    buffer = ""
+    for chunk in response.iter_lines():
+        if chunk is None:
+            continue
+        if chunk.startswith("data:"):
+            data = chunk[len("data:"):].strip()
+            if data == "[DONE]":
+                return
+            if data:
+                yield data
+        elif chunk.startswith(":"):
+            continue
+        else:
+            buffer = chunk
+    if buffer.strip():
+        if buffer.strip() == "[DONE]":
+            return
+        yield buffer.strip()
+
+
+def _to_openai_wire(messages: list[dict]) -> list[dict]:
+    """Ubah pesan internal (flat) kembali ke format wire OpenAI untuk dikirim."""
+    out: list[dict] = []
+    for m in normalize_messages(messages):
+        role = m["role"]
+        if role == "assistant" and m.get("tool_calls"):
+            tcs = [
+                {
+                    "id": tc.get("id", ""),
+                    "type": "function",
+                    "function": {
+                        "name": tc.get("name", ""),
+                        "arguments": tc.get("arguments", ""),
+                    },
+                }
+                for tc in m["tool_calls"]
+            ]
+            out.append({"role": "assistant", "content": m.get("content", ""), "tool_calls": tcs})
+        else:
+            out.append(m)
+    return out
+
+
+class OpenAICompatProvider(Provider):
+    name = "openai_compat"
+
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        api_key: str | None = None,
+        client: httpx.Client | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key = api_key
+        self._client = client or httpx.Client(timeout=DEFAULT_TIMEOUT)
+
+    def _headers(self) -> dict[str, str]:
+        h = {"Content-Type": "application/json"}
+        if self.api_key:
+            h["Authorization"] = f"Bearer {self.api_key}"
+        return h
+
+    def _body(
+        self,
+        messages: list[dict],
+        tools: list[ToolSpec] | None,
+        temperature: float,
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": _to_openai_wire(messages),
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            body["tools"] = self.build_tool_specs(tools)
+        return body
+
+    def stream(
+        self,
+        messages: list[dict],
+        tools: list[ToolSpec] | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 8192,
+    ) -> Iterable[StreamEvent]:
+        body = self._body(messages, tools, temperature, max_tokens)
+        if os.environ.get("TERMUX_AGENT_DEBUG"):
+            import sys
+
+            print(
+                f"[debug] POST {self.base_url}/chat/completions\n{json.dumps(body, ensure_ascii=False, indent=1)[:3000]}",
+                file=sys.stderr,
+            )
+        url = f"{self.base_url}/chat/completions"
+        try:
+            with self._client.stream(
+                "POST", url, headers=self._headers(), json=self._body(messages, tools, temperature, max_tokens)
+            ) as resp:
+                if resp.status_code != 200:
+                    body = resp.read().decode("utf-8", errors="replace")
+                    raise ProviderError(f"{self.name}: HTTP {resp.status_code} - {body[:500]}")
+                pending: dict[int, dict[str, Any]] = {}
+                for data in _iter_sse(resp):
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    if not chunk.get("choices"):
+                        if chunk.get("usage"):
+                            yield StreamEvent(kind="usage", usage=chunk["usage"])
+                        continue
+                    choice = chunk["choices"][0]
+                    delta = choice.get("delta") or {}
+                    if delta.get("content"):
+                        yield StreamEvent(kind="text_delta", text=delta["content"])
+                    for tc in delta.get("tool_calls") or []:
+                        idx = int(tc.get("index", 0))
+                        entry = pending.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                        if tc.get("id"):
+                            entry["id"] = tc["id"]
+                        if tc.get("function", {}).get("name"):
+                            entry["name"] += tc["function"]["name"]
+                        if tc.get("function", {}).get("arguments"):
+                            entry["arguments"] += tc["function"]["arguments"]
+                if pending:
+                    tool_calls = []
+                    for _, entry in sorted(pending.items()):
+                        tool_calls.append(
+                            {
+                                "id": entry["id"] or f"call_{len(tool_calls)}",
+                                "name": entry["name"],
+                                "arguments": entry["arguments"],
+                            }
+                        )
+                    yield StreamEvent(kind="tool_calls", tool_calls=tool_calls)
+                yield StreamEvent(kind="done")
+        except httpx.HTTPError as e:
+            raise ProviderError(f"{self.name}: koneksi gagal - {e}") from e
+
+    def list_models(self) -> list[str]:
+        url = f"{self.base_url}/models"
+        try:
+            r = self._client.get(url, headers=self._headers())
+            r.raise_for_status()
+            return [m.get("id", "") for m in r.json().get("data", []) if m.get("id")]
+        except (httpx.HTTPError, ValueError):
+            return []

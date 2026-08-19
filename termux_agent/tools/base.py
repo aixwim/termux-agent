@@ -1,0 +1,77 @@
+"""Registri tool dan konteks eksekusi yang dibagi semua tool."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable
+
+TOOL_REGISTRY: dict[str, dict[str, Any]] = {}
+
+ConfirmFn = Callable[[str], bool]
+
+
+@dataclass
+class ToolContext:
+    working_dir: Path
+    max_output_chars: int = 60000
+    command_timeout: int = 60
+    confirm_commands: bool = True
+    confirm: ConfirmFn | None = None
+    _allowed_dirs: list[Path] = field(default_factory=list)
+
+    def resolve(self, path: str) -> Path:
+        p = Path(path).expanduser()
+        if not p.is_absolute():
+            p = self.working_dir / p
+        return p.resolve()
+
+    def is_allowed(self, path: Path) -> bool:
+        resolved = path.resolve()
+        allowed = [self.working_dir.resolve()] + [d.resolve() for d in self._allowed_dirs]
+        return any(resolved == a or a in resolved.parents for a in allowed)
+
+    def require_allowed(self, path: Path) -> Path:
+        if not self.is_allowed(path):
+            raise PermissionError(f"Akses ditolak: di luar direktori kerja ({self.working_dir})")
+        return path
+
+
+def tool(name: str, description: str, parameters: dict[str, Any]):
+    def deco(fn: Callable[[dict[str, Any], ToolContext], str]) -> Callable:
+        TOOL_REGISTRY[name] = {
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+            "fn": fn,
+        }
+        return fn
+
+    return deco
+
+
+def run_tool(name: str, args: dict[str, Any], ctx: ToolContext) -> str:
+    entry = TOOL_REGISTRY.get(name)
+    if not entry:
+        return f"Error: tool '{name}' tidak dikenal."
+    try:
+        result = entry["fn"](args, ctx)
+    except PermissionError as e:
+        return f"Error: {e}"
+    except Exception as e:  # noqa: BLE001
+        return f"Error ({type(e).__name__}): {e}"
+    if len(result) > ctx.max_output_chars:
+        result = result[: ctx.max_output_chars] + "\n... [output terpotong]"
+    return result
+
+
+def tool_specs() -> list[dict]:
+    from termux_agent.providers.base import ToolSpec
+
+    return [
+        ToolSpec(
+            name=e["name"],
+            description=e["description"],
+            parameters=e["parameters"],
+        )
+        for e in sorted(TOOL_REGISTRY.values(), key=lambda x: x["name"])
+    ]
