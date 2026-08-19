@@ -29,6 +29,7 @@ Perintah khusus (diawali /):
   /model MODEL    ganti model (mis. /model gpt-4o-mini)
   /cwd            tampilkan direktori kerja
   /sessions       daftar sesi tersimpan
+  /resume [ID]    lanjutkan sesi (ID opsional, default terbaru)
 Ketikan pesan biasa untuk bertanya; Ctrl+C untuk membatalkan."""
 
 
@@ -66,11 +67,14 @@ class Repl:
         )
 
     def run(self) -> None:
-        self._attach_confirm()
-        self._banner()
         if sys.stdin.isatty():
+            self._attach_confirm()
+            self._banner()
             self._run_tty()
         else:
+            # Mode pipe: tidak bisa konfirmasi interaktif -> tolak semua.
+            self.agent.ctx.confirm = lambda _cmd: False
+            self._banner()
             self._run_piped()
 
     def _run_tty(self) -> None:
@@ -139,9 +143,39 @@ class Repl:
             else:
                 for s in sessions[:10]:
                     render_info(f"  {s.name} ({s.stat().st_size}B)")
+        elif c == "/resume":
+            self._resume(rest)
         else:
             render_error(f"Perintah tidak dikenal: {c}")
         return False
+
+    def _resume(self, ref: str) -> None:
+        from termux_agent.cli import find_session
+        from termux_agent.config import load_config
+
+        found = find_session(ref or None)
+        if not found:
+            render_error("Sesi tidak ditemukan.")
+            return
+        path, info, history = found
+        cfg = load_config()
+        provider_name = info.get("provider") or self.provider_name
+        if provider_name not in cfg.get("providers", {}):
+            provider_name = cfg.get("provider", "zen")
+        model = info.get("model") or self.model
+        from termux_agent.providers import create_provider
+
+        try:
+            provider = create_provider(provider_name, cfg, model)
+        except Exception as e:  # noqa: BLE001
+            render_error(f"Gagal buat provider: {e}")
+            return
+        self.provider_name = provider_name
+        self.model = provider.model
+        self.agent.provider = provider
+        self.agent.messages = [{"role": "system", "content": self.agent.system_prompt}] + history
+        self.session = Session(provider_name=provider_name, model=provider.model)
+        render_info(f"Melanjutkan sesi {path.stem} ({len(history)} pesan)")
 
     def _switch_provider(self, name: str) -> None:
         from termux_agent.config import load_config

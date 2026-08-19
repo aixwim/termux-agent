@@ -44,3 +44,19 @@ def read_session(path: Path) -> list[dict]:
             except json.JSONDecodeError:
                 continue
     return out
+
+
+def session_messages(path: Path) -> list[dict]:
+    """Bangun ulang riwayat percakapan (user/assistant) dari file sesi."""
+    msgs = []
+    for rec in read_session(path):
+        if rec.get("role") in ("user", "assistant"):
+            content = rec.get("content")
+            if isinstance(content, str) and content.strip():
+                msgs.append({"role": rec["role"], "content": content})
+    return msgs
+
+
+def latest_session() -> Path | None:
+    sessions = list_sessions()
+    return sessions[0] if sessions else None

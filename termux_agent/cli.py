@@ -76,6 +76,46 @@ def cmd_sessions() -> int:
     return 0
 
 
+def find_session(session_ref: str | None) -> "tuple[Path, dict, list[dict]] | None":
+    """Cari file sesi + info provider + riwayat pesan."""
+    from termux_agent.session import latest_session, list_sessions, read_session, session_messages
+
+    path: Path | None = None
+    if session_ref and session_ref not in ("latest", ""):
+        matches = [s for s in list_sessions() if s.stem.startswith(session_ref)]
+        path = matches[-1] if matches else None
+    else:
+        path = latest_session()
+    if not path:
+        return None
+    recs = read_session(path)
+    info = next((r for r in recs if r.get("provider")), {})
+    return path, info, session_messages(path)
+
+
+def cmd_resume(cfg: dict, session_ref: str | None, prompt: str) -> int:
+    from termux_agent.ui.renderer import render_answer, render_tool_use
+
+    found = find_session(session_ref)
+    if not found:
+        render_error("Sesi tidak ditemukan. Jalankan 'termux-agent --sessions' untuk daftar.")
+        return 1
+    path, info, history = found
+    render_info(f"Melanjutkan sesi {path.stem} ({len(history)} pesan)")
+    provider_name = info.get("provider") or cfg.get("provider", "zen")
+    if provider_name not in cfg.get("providers", {}):
+        provider_name = cfg.get("provider", "zen")
+    model = info.get("model") or None
+    agent = build_agent(cfg, provider_name, model)
+    agent.messages = [{"role": "system", "content": agent.system_prompt}] + history
+    if prompt:
+        answer = agent.run(prompt, on_tool_use=render_tool_use)
+        render_answer(answer)
+        return 0
+    Repl(agent, provider_name=provider_name, model=agent.provider.model).run()
+    return 0
+
+
 def cmd_list_providers(cfg: dict) -> int:
     for name, pc in cfg.get("providers", {}).items():
         models = ", ".join(pc.get("models") or [])
@@ -95,6 +135,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--init", action="store_true", help="Buat config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="Daftar sesi tersimpan")
     parser.add_argument("--list-providers", action="store_true", help="Daftar preset provider")
+    parser.add_argument(
+        "--resume",
+        nargs="?",
+        const="latest",
+        metavar="ID",
+        help="Lanjutkan sesi sebelumnya (default: sesi terbaru)",
+    )
     args = parser.parse_args(argv)
 
     if args.init:
@@ -120,16 +167,20 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_list_providers(cfg)
 
     prompt = " ".join(args.prompt).strip()
+    if args.resume:
+        return cmd_resume(cfg, args.resume, prompt)
+
     if prompt:
         return cmd_one_shot(cfg, prompt, args.provider, args.model)
 
+    provider_key = args.provider or cfg.get("provider", "zen")
     try:
-        agent = build_agent(cfg, args.provider, args.model)
+        agent = build_agent(cfg, provider_key, args.model)
     except (ConfigError, KeyError) as e:
         render_error(f"Error: {e}\nJalankan 'termux-agent --init' dulu, lalu isi API key.")
         return 1
     try:
-        Repl(agent, provider_name=agent.provider.name, model=agent.provider.model).run()
+        Repl(agent, provider_name=provider_key, model=agent.provider.model).run()
     except KeyboardInterrupt:
         pass
     return 0

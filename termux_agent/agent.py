@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from typing import Callable, Iterable
 
 from termux_agent.providers.base import Provider, ProviderError, StreamEvent
@@ -20,6 +22,33 @@ Aturan:
 - Saat selesai, ringkas singkat apa yang kamu ubah atau jalankan.
 """
 
+# Nama file aturan proyek yang otomatis dibaca (seperti AGENTS.md di opencode).
+RULES_FILES = ("AGENTS.md", "CLAUDE.md", ".termux-agent/rules.md")
+
+
+def load_rules(working_dir: Path) -> str:
+    """Baca file aturan proyek dari working_dir (dan parent sampai $HOME)."""
+    parts: list[str] = []
+    home = Path.home()
+    start = working_dir.resolve()
+    for directory in (start, *start.parents):
+        for name in RULES_FILES:
+            f = directory / name
+            if f.is_file():
+                try:
+                    parts.append(f"[Aturan dari {f.relative_to(start) if f.is_relative_to(start) else f}]\n{f.read_text(encoding='utf-8', errors='replace').strip()}")
+                except OSError:
+                    continue
+        if directory == home:
+            break
+    return "\n\n".join(parts)
+
+
+def build_system_prompt(extra_rules: str = "") -> str:
+    if extra_rules.strip():
+        return SYSTEM_PROMPT + "\n\n" + extra_rules
+    return SYSTEM_PROMPT
+
 
 class Agent:
     def __init__(
@@ -28,14 +57,14 @@ class Agent:
         ctx: ToolContext,
         max_tool_rounds: int = 20,
         temperature: float = 0.7,
-        system_prompt: str = SYSTEM_PROMPT,
+        system_prompt: str | None = None,
     ) -> None:
         self.provider = provider
         self.ctx = ctx
         self.max_tool_rounds = max_tool_rounds
         self.temperature = temperature
-        self.system_prompt = system_prompt
-        self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
+        self.system_prompt = system_prompt or build_system_prompt(load_rules(ctx.working_dir))
+        self.messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
 
     @property
     def tools(self) -> list:

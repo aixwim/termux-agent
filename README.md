@@ -5,7 +5,10 @@ CLI coding agent untuk **Termux (Android)**, mirip [opencode](https://opencode.a
 ## Fitur
 
 - **Langsung jalan**: setelah install cukup ketik `termux-agent` — default memakai OpenCode Zen model free (tanpa API key), seperti opencode yang langsung bisa dipakai.
-- **Agent loop lengkap**: model bebas memilih jawab atau memanggil tool (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep_file`, `glob_find`, `run_command`, `web_fetch`) sampai tugas selesai.
+- **Agent loop lengkap**: model bebas memilih jawab atau memanggil tool (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep_file`, `glob_find`, `run_command`, `web_fetch`, `git_status`, `git_diff`, `git_commit`) sampai tugas selesai.
+- **Rules proyek**: file `AGENTS.md`, `CLAUDE.md`, atau `.termux-agent/rules.md` di direktori kerja (dan parent sampai `$HOME`) otomatis dimuat ke instruksi agent — seperti opencode.
+- **Git terintegrasi**: agent bisa cek status, diff, dan commit (commit butuh konfirmasi).
+- **Resume sesi**: lanjutkan percakapan sebelumnya dengan `--resume` atau `/resume`.
 - **Multi-provider** via preset: OpenAI, Anthropic, OpenRouter, Ollama, Groq, DeepSeek, Gemini, dan **OpenCode Zen**.
 - **Mode interaktif & one-shot**.
 - **Sesi tersimpan** ke `~/.termux-agent/sessions/`.
@@ -47,6 +50,10 @@ termux-agent
 # mode one-shot
 termux-agent "baca file main.py lalu perbaiki bug-nya"
 
+# lanjutkan sesi terakhir
+termux-agent --resume
+termux-agent --resume 20260819-233713 "lanjutan: ..."
+
 # pilih provider/model
 termux-agent --provider zen --model nemotron-3-ultra-free "cek isi direktori ini"
 
@@ -55,6 +62,15 @@ termux-agent --list-providers
 
 # daftar sesi
 termux-agent --sessions
+```
+
+### Rules proyek
+
+Letakkan `AGENTS.md` (atau `CLAUDE.md`, `.termux-agent/rules.md`) di direktori kerja — isinya otomatis jadi instruksi untuk agent:
+
+```bash
+echo "Selalu tulis docstring di tiap fungsi." > AGENTS.md
+termux-agent "tambah docstring ke app.py"   # mengikuti aturan itu
 ```
 
 ### Perintah di mode interaktif
@@ -67,6 +83,7 @@ termux-agent --sessions
 /help          bantuan
 /cwd           tampilkan direktori kerja
 /sessions      daftar sesi
+/resume [ID]   lanjutkan sesi (ID opsional, default terbaru)
 ```
 
 ## Provider & API key
@@ -96,7 +113,7 @@ Model free yang tersedia saat ini: `nemotron-3-ultra-free`, `deepseek-v4-flash-f
 
 ```bash
 pip install -e ".[dev]"          # dependency dev (pytest)
-python -m pytest tests/ -q        # 25 test: tool, provider, agent loop
+python -m pytest tests/ -q        # 37 test: tool, provider, agent, git, rules, resume
 python tests/mock_server.py &     # mock OpenAI/Anthropic server (port 8765)
 termux-agent --model mock-model "..."   # tes tanpa API key
 ```

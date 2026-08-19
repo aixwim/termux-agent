@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from termux_agent.tools import files, search, shell  # noqa: F401  # register tools
+from termux_agent.tools import files, git, search, shell  # noqa: F401  # register tools
 from termux_agent.tools.base import ToolContext, run_tool, tool_specs
 
 
@@ -32,6 +32,9 @@ def test_all_tools_registered():
         "glob_find",
         "run_command",
         "web_fetch",
+        "git_status",
+        "git_diff",
+        "git_commit",
     }
 
 
