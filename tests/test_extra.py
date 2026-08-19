@@ -385,7 +385,7 @@ def test_cmd_plan_requires_approval(tmp_path: Path, monkeypatch):
 
     calls = {"exec": 0}
 
-    def fake_build(cfg, provider, model, auto_accept=False, agent_name=None, working_dir=None, temperature=None, max_tool_rounds=None, readonly=False):
+    def fake_build(cfg, provider, model, auto_accept=False, agent_name=None, working_dir=None, temperature=None, max_tool_rounds=None, readonly=False, max_context_tokens=None):
         return SimpleNamespace(
             provider=SimpleNamespace(name="p", model="m"),
             ctx=SimpleNamespace(working_dir=tmp_path),
@@ -412,7 +412,7 @@ def test_cmd_plan_executes_when_approved(tmp_path: Path, monkeypatch):
 
     calls = {"exec": 0}
 
-    def fake_build(cfg, provider, model, auto_accept=False, agent_name=None, working_dir=None, temperature=None, max_tool_rounds=None, readonly=False):
+    def fake_build(cfg, provider, model, auto_accept=False, agent_name=None, working_dir=None, temperature=None, max_tool_rounds=None, readonly=False, max_context_tokens=None):
         return SimpleNamespace(
             provider=SimpleNamespace(name="p", model="m"),
             ctx=SimpleNamespace(working_dir=tmp_path),
@@ -587,6 +587,86 @@ def test_cmd_one_shot_json(tmp_path: Path, monkeypatch):
     assert data["answer"] == "ANSWER"
     assert data["tool_calls"][0]["name"] == "read_file"
     assert data["usage"]["total_tokens"] == 8
+
+
+# --- auto-compact on token budget ---
+def test_auto_compact_on_budget(tmp_path: Path):
+    from termux_agent.agent import Agent
+    from termux_agent.providers.base import Provider, StreamEvent
+    from termux_agent.tools.base import ToolContext
+
+    stream_count = {"n": 0}
+
+    class P(Provider):
+        name = "p"
+        model = "m"
+
+        def stream(self, messages, tools=None, temperature=0.7, max_tokens=8192):
+            stream_count["n"] += 1
+            if stream_count["n"] == 1:
+                yield StreamEvent(kind="text_delta", text="first")
+                yield StreamEvent(kind="usage", usage={"prompt_tokens": 500, "completion_tokens": 100, "total_tokens": 600})
+                yield StreamEvent(kind="done")
+                return
+            yield StreamEvent(kind="text_delta", text="second")
+            yield StreamEvent(kind="usage", usage={"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150})
+            yield StreamEvent(kind="done")
+
+    agent = Agent(P(), ToolContext(working_dir=tmp_path), max_context_tokens=1000)
+    assert agent.run("a") == "first"
+    # usage 600 + 150 = 750 < 1000 -> no compact yet
+    assert len(agent.messages) >= 3
+    agent.run("b")  # usage now 750, but no new usage crossing yet
+    assert agent.usage["total_tokens"] == 750
+
+    class P2(P):
+        def stream(self, messages, tools=None, temperature=0.7, max_tokens=8192):
+            yield StreamEvent(kind="text_delta", text="done")
+            yield StreamEvent(kind="usage", usage={"prompt_tokens": 400, "completion_tokens": 0, "total_tokens": 400})
+            yield StreamEvent(kind="done")
+
+    # fresh agent with enough history: crossing the budget should compact old messages
+    class PC(Provider):
+        name = "p"
+        model = "m"
+
+        def stream(self, messages, tools=None, temperature=0.7, max_tokens=8192):
+            yield StreamEvent(kind="text_delta", text="ok")
+            yield StreamEvent(kind="usage", usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 1100})
+            yield StreamEvent(kind="done")
+
+    agent2 = Agent(PC(), ToolContext(working_dir=tmp_path), max_context_tokens=1000)
+    agent2.messages = [{"role": "system", "content": agent2.system_prompt}] + [
+        {"role": "user", "content": f"q{i}"} if i % 2 else {"role": "assistant", "content": f"a{i}"}
+        for i in range(1, 8)
+    ]
+    agent2.run("hello")
+    assert agent2._compacted_this_turn is True
+    joined = " ".join(m.get("content", "") for m in agent2.messages)
+    assert "Summary of previous conversation" in joined
+
+
+# --- session delete ---
+def test_delete_session_by_prefix(tmp_path: Path, monkeypatch):
+    from termux_agent import session
+    from termux_agent.config import CONFIG_DIR
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    (sessions_dir / "20260819-111111.jsonl").write_text('{"role":"user","content":"hi"}\n')
+    (sessions_dir / "20260819-222222.jsonl").write_text('{"role":"user","content":"hey"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sessions_dir)
+    removed = session.delete_session("20260819-2222")
+    assert removed is not None
+    assert not (sessions_dir / "20260819-222222.jsonl").exists()
+    assert (sessions_dir / "20260819-111111.jsonl").exists()
+
+
+def test_delete_session_nonexistent(tmp_path: Path, monkeypatch):
+    from termux_agent import session
+
+    monkeypatch.setattr(session, "SESSIONS_DIR", tmp_path / "empty")
+    assert session.delete_session("nope") is None
 
 
 # --- init wizard ---

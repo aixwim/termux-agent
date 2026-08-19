@@ -45,6 +45,7 @@ def build_agent(
     temperature: float | None = None,
     max_tool_rounds: int | None = None,
     readonly: bool = False,
+    max_context_tokens: int | None = None,
 ) -> Agent:
     name = provider_name or cfg.get("provider", "zen")
     provider = create_provider(name, cfg, model)
@@ -81,6 +82,7 @@ def build_agent(
         max_tool_rounds=int(max_tool_rounds or cfg.get("max_tool_rounds", 20)),
         temperature=float(temperature if temperature is not None else cfg.get("temperature", 0.7)),
         agent_spec=agent_spec,
+        max_context_tokens=int(max_context_tokens if max_context_tokens is not None else cfg.get("max_context_tokens", 0)),
     )
 
 
@@ -133,12 +135,13 @@ def cmd_one_shot(
     readonly: bool = False,
     plan: bool = False,
     as_json: bool = False,
+    max_context_tokens: int | None = None,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
-    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly)
+    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens)
     if plan and not readonly:
-        return cmd_plan(cfg, prompt, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds)
+        return cmd_plan(cfg, prompt, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, max_context_tokens)
     if not as_json:
         render_info(
             f"provider: {agent.provider.name} | model: {agent.provider.model} | "
@@ -189,13 +192,14 @@ def cmd_plan(
     working_dir: str | None = None,
     temperature: float | None = None,
     max_tool_rounds: int | None = None,
+    max_context_tokens: int | None = None,
 ) -> int:
     """Plan mode: first produce a plan read-only, then execute after approval."""
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
     render_info("Planning mode: the agent will only propose a plan (no changes).")
     plan_agent = build_agent(
-        cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly=True
+        cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, True, max_context_tokens
     )
     plan_prompt = (
         prompt
@@ -222,7 +226,7 @@ def cmd_plan(
         return 0
 
     exec_agent = build_agent(
-        cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds
+        cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, False, max_context_tokens
     )
     exec_prompt = (
         f"Execute the approved plan below, then report the results.\n\n"
@@ -279,6 +283,7 @@ def cmd_resume(
     temperature: float | None = None,
     max_tool_rounds: int | None = None,
     readonly: bool = False,
+    max_context_tokens: int | None = None,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -292,7 +297,7 @@ def cmd_resume(
     if provider_name not in cfg.get("providers", {}):
         provider_name = cfg.get("provider", "zen")
     model = info.get("model") or None
-    agent = build_agent(cfg, provider_name, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly)
+    agent = build_agent(cfg, provider_name, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens)
     agent.messages = [{"role": "system", "content": agent.system_prompt}] + history
     if prompt:
         answer = agent.run(prompt, on_tool_use=render_tool_use)
@@ -437,6 +442,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cwd", help="Working directory (overrides config working_dir)")
     parser.add_argument("--temperature", type=float, help="Sampling temperature (0.0-2.0)")
     parser.add_argument("--max-tool-rounds", type=int, help="Max tool iterations per message")
+    parser.add_argument("--max-context-tokens", type=int, help="Auto-compact history when cumulative tokens pass this budget (0=off)")
     parser.add_argument("--verbose", action="store_true", help="Log provider requests/responses (same as TERMUX_AGENT_DEBUG=1)")
     parser.add_argument("--readonly", action="store_true", help="Read-only mode: cannot write/edit/run commands")
     parser.add_argument("--plan", action="store_true", help="Plan mode: propose a plan first, execute only after approval")
@@ -532,6 +538,7 @@ def main(argv: list[str] | None = None) -> int:
             temperature=args.temperature,
             max_tool_rounds=args.max_tool_rounds,
             readonly=args.readonly,
+            max_context_tokens=args.max_context_tokens,
         )
 
     if prompt:
@@ -548,6 +555,7 @@ def main(argv: list[str] | None = None) -> int:
             readonly=args.readonly,
             plan=args.plan,
             as_json=args.json,
+            max_context_tokens=args.max_context_tokens,
         )
 
     if args.json:
@@ -566,6 +574,7 @@ def main(argv: list[str] | None = None) -> int:
             temperature=args.temperature,
             max_tool_rounds=args.max_tool_rounds,
             readonly=args.readonly,
+            max_context_tokens=args.max_context_tokens,
         )
     except (ConfigError, KeyError) as e:
         render_error(f"Error: {e}\nRun 'termux-agent --init' first, then set the API key.")

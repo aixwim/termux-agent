@@ -10,6 +10,8 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Read-only mode (`--readonly`)**: the agent can only read, search, and browse the web — no writing/editing/running commands. Great for reviewing code without risk.
 - **Plan mode (`--plan`)**: the agent first proposes a step-by-step plan read-only, then executes it only after you approve (auto-approved with `--yes`).
 - **Token usage tracking**: `/stats` shows prompt/completion/total tokens used in the session (when the provider reports usage).
+- **Auto context compacting**: `--max-context-tokens N` (or `max_context_tokens` in config) summarizes old history automatically once the session passes N cumulative tokens.
+- **Session management**: `/sessions`, `/forget [ID]` (delete a session), and `/config` (show the active configuration).
 - **Pipe-friendly**: `echo "fix the bug" | termux-agent` runs a one-shot using stdin as the prompt.
 - **Rate-limit fallback**: `fallback_models` in the provider config are tried automatically when the main model returns HTTP 429 (rate limited).
 - **Undo file changes**: `/undo` in interactive mode restores the most recent file write/edit (the agent keeps a snapshot of every changed file).
@@ -100,6 +102,9 @@ termux-agent --doctor-network      # also check provider connectivity
 # quick overrides without editing config
 termux-agent --cwd /sdcard/Documents --temperature 0.2 --max-tool-rounds 30 "tidy up this project"
 
+# auto-summarize history once a session passes ~60k tokens
+termux-agent --max-context-tokens 60000
+
 # read-only mode: review code without being able to change anything
 termux-agent --readonly "review the security of this code and suggest fixes"
 
@@ -142,6 +147,8 @@ termux-agent "add docstrings to app.py"   # follows that rule
 /copy          copy the last answer to the clipboard (requires termux-api)
 /stats         show token usage of this session
 /undo          revert the most recent file write/edit
+/config        show the active configuration
+/forget [ID]   delete a session (default: this session)
 Type a normal message to ask; Ctrl+C to cancel.
 ```
 

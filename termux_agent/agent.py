@@ -62,11 +62,14 @@ class Agent:
         temperature: float = 0.7,
         system_prompt: str | None = None,
         agent_spec: dict | None = None,
+        max_context_tokens: int = 0,
     ) -> None:
         self.provider = provider
         self.ctx = ctx
         self.max_tool_rounds = max_tool_rounds
         self.temperature = temperature
+        self.max_context_tokens = max_context_tokens
+        self._compacted_this_turn = False
         self.agent_spec = agent_spec or {}
         self.allowed_tools: set[str] | None = None
         spec_tools = self.agent_spec.get("tools") or []
@@ -111,6 +114,7 @@ class Agent:
         """Send one user message and run the tool-call loop until done.
         Returns the final answer text."""
         self.messages.append({"role": "user", "content": user_input})
+        self._compacted_this_turn = False
         models = [self.provider.model, *self.provider.fallback_models]
         last_err: ProviderError | None = None
         for i, model in enumerate(models):
@@ -146,6 +150,10 @@ class Agent:
                     self._add_usage(ev.usage)
                 elif ev.kind == "tool_calls":
                     tool_calls = ev.tool_calls
+            if self.max_context_tokens and not self._compacted_this_turn:
+                if self.usage.get("total_tokens", 0) >= self.max_context_tokens:
+                    if self.compact():
+                        self._compacted_this_turn = True
             text = "".join(text_parts)
 
             if not tool_calls:

@@ -18,6 +18,10 @@ temperature: 0.7
 # Max tool-call rounds before being forced to finish (prevents infinite loops)
 max_tool_rounds: 20
 
+# When cumulative tokens used in a session pass this budget, old history is
+# auto-summarized (compact) to keep context small. 0 = disabled.
+max_context_tokens: 0
+
 # Working directory: default boundary for read/write/command tools
 working_dir: "~"
 

@@ -37,6 +37,8 @@ Special commands (start with /):
   /copy           copy the last answer to the clipboard
   /stats          show token usage of this session
   /undo           revert the most recent file write/edit
+  /config         show the active configuration
+  /forget [ID]    delete a session (default: this session)
 Type a normal message to ask; Ctrl+C to cancel."""
 
 
@@ -172,6 +174,21 @@ class Repl:
             self._show_stats()
         elif c == "/undo":
             render_info(self.agent.ctx.undo())
+        elif c == "/config":
+            render_info(
+                f"provider: {self.provider_name} | model: {self.model}\n"
+                f"agent: {self.agent_name} | cwd: {self.agent.ctx.working_dir}\n"
+                f"temperature: {self.agent.temperature} | max_tool_rounds: {self.agent.max_tool_rounds} | "
+                f"max_context_tokens: {self.agent.max_context_tokens} | confirm_commands: {self.agent.ctx.confirm_commands}"
+            )
+        elif c == "/forget":
+            from termux_agent.session import delete_session
+
+            removed = delete_session(rest or self.session.session_id)
+            if removed:
+                render_info(f"Deleted session: {removed.stem}")
+            else:
+                render_error(f"Session not found: {rest or 'latest'}")
         else:
             render_error(f"Unknown command: {c}")
         return False

@@ -19,6 +19,7 @@ DEFAULTS: dict[str, Any] = {
     "agent": "root",
     "temperature": 0.7,
     "max_tool_rounds": 20,
+    "max_context_tokens": 0,
     "working_dir": "~",
     "confirm_commands": True,
     "command_timeout": 60,

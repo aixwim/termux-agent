@@ -60,3 +60,19 @@ def session_messages(path: Path) -> list[dict]:
 def latest_session() -> Path | None:
     sessions = list_sessions()
     return sessions[0] if sessions else None
+
+
+def delete_session(ref: str | None = None) -> Path | None:
+    """Delete a session by id prefix (or the latest when ref is None/latest)."""
+    if ref and ref not in ("latest", ""):
+        matches = [s for s in list_sessions() if s.stem.startswith(ref)]
+        path = matches[-1] if matches else None
+    else:
+        path = latest_session()
+    if not path:
+        return None
+    try:
+        path.unlink()
+    except OSError:
+        return None
+    return path
