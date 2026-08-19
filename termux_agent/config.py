@@ -167,27 +167,36 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def _find_project_configs() -> list[Path]:
-    """Locate .termux-agent/config.yaml files from cwd up to $HOME (farthest first)."""
+    """Locate .termux-agent/config.yaml files from cwd up to $HOME (farthest first).
+
+    The user-level CONFIG_FILE ($HOME/.termux-agent/config.yaml) is excluded so it
+    is never merged twice or allowed to override an explicit --config file.
+    """
     found: list[Path] = []
     home = Path.home()
     start = Path.cwd().resolve()
     chain = [start, *start.parents]
     for directory in reversed(chain):
         f = directory / ".termux-agent" / "config.yaml"
-        if f.is_file():
+        if f.is_file() and f.resolve() != CONFIG_FILE.resolve():
             found.append(f)
         if directory == home:
             break
     return found
 
 
-def load_config() -> dict[str, Any]:
+def load_config(config_file: str | None = None) -> dict[str, Any]:
+    """Load config: defaults <- user file (default or --config FILE) <- project files.
+
+    When an explicit --config FILE is given, project files are still merged on top.
+    """
+    file = Path(config_file).expanduser() if config_file else CONFIG_FILE
     cfg = copy.deepcopy(DEFAULTS)
-    if CONFIG_FILE.exists():
+    if file.exists():
         try:
-            user = yaml.safe_load(CONFIG_FILE.read_text()) or {}
+            user = yaml.safe_load(file.read_text()) or {}
         except yaml.YAMLError as e:
-            raise ConfigError(f"Failed to parse {CONFIG_FILE}: {e}")
+            raise ConfigError(f"Failed to parse {file}: {e}")
         cfg = _deep_merge(cfg, user)
     for p in _find_project_configs():
         try:

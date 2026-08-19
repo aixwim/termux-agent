@@ -93,12 +93,35 @@ def build_agent(
     )._with_tools(not no_tools)
 
 
-def cmd_init() -> int:
+def cmd_init(provider: str | None = None, model: str | None = None) -> int:
+    if provider or model:
+        return _init_noninteractive(provider, model)
     if sys.stdin.isatty():
         return _init_wizard()
     path = ensure_config_file()
     render_info(f"Configuration created: {path}\n")
     render_info("Next steps:\n  1. Set the API key in an env var (e.g. export OPENAI_API_KEY=...)\n  2. Run: termux-agent")
+    return 0
+
+
+def _init_noninteractive(provider: str | None, model: str | None) -> int:
+    """Create ~/.termux-agent/config.yaml with the chosen provider/model (no wizard)."""
+    cfg = copy.deepcopy(DEFAULTS)
+    if provider:
+        if provider not in cfg.get("providers", {}):
+            render_error(f"Unknown provider: {provider}")
+            return 1
+        cfg["provider"] = provider
+    pname = cfg.get("provider", "zen")
+    if model:
+        cfg["providers"][pname]["models"] = [model]
+        cfg["model"] = model
+    import yaml as _yaml
+
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(_yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    render_info(f"Configuration created: {CONFIG_FILE}")
+    render_info(f"Provider: {pname} | Model: {model or cfg['providers'][pname]['models'][0]}")
     return 0
 
 
@@ -273,14 +296,15 @@ def cmd_one_shot(
     return 0
 
 
-def _emit_json(payload: dict, agent: "Agent") -> None:
+def _emit_json(payload: dict, agent: "Agent | None") -> None:
     import json
 
-    payload["provider"] = agent.provider.name
-    payload["model"] = agent.provider.model
-    usage = getattr(agent, "usage", {})
-    if usage:
-        payload["usage"] = usage
+    if agent is not None:
+        payload["provider"] = agent.provider.name
+        payload["model"] = agent.provider.model
+        usage = getattr(agent, "usage", {})
+        if usage:
+            payload["usage"] = usage
     print(json.dumps(payload, ensure_ascii=False))
 
 
@@ -630,14 +654,18 @@ def cmd_list_models(cfg: dict, provider_name: str | None = None) -> int:
     return 0
 
 
-def cmd_doctor(cfg: dict, network: bool = False) -> int:
+def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False) -> int:
     """Environment diagnostics: versions, Termux, config, PATH, provider connectivity."""
     import os
     import platform
     import shutil
     import sys as _sys
 
-    issues = 0
+    checks: list[dict] = []
+
+    def add(label: str, ok_flag: bool, detail: str = "") -> None:
+        checks.append({"label": label, "ok": ok_flag, "detail": detail})
+
     try:
         import termux_agent.tools.base as tbase
 
@@ -645,76 +673,75 @@ def cmd_doctor(cfg: dict, network: bool = False) -> int:
     except Exception:  # noqa: BLE001
         n_tools = 0
 
-    def ok(label: str, detail: str = "") -> None:
-        render_info(f"  [OK]  {label}" + (f": {detail}" if detail else ""))
-
-    def warn(label: str, detail: str = "") -> None:
-        nonlocal issues
-        issues += 1
-        render_error(f"  [!!]  {label}" + (f": {detail}" if detail else ""))
-
-    render_info("== environment ==")
-    ok("python", f"{_sys.version.split()[0]} ({_sys.executable})")
-    ok("platform", platform.platform())
+    add("python", True, f"{_sys.version.split()[0]} ({_sys.executable})")
+    add("platform", True, platform.platform())
     is_termux = "TERMUX_VERSION" in os.environ or os.path.isdir("/data/data/com.termux")
-    if is_termux:
-        ok("termux", "detected")
-    else:
-        warn("termux", "not detected - this might not be Termux")
-
-    render_info("== configuration ==")
-    ok("config", str(CONFIG_FILE))
-    try:
-        render_info(f"  provider: {cfg.get('provider')} | model: {cfg.get('model')} | agent: {cfg.get('agent')}")
-    except Exception:  # noqa: BLE001
-        pass
+    add("termux", is_termux, "detected" if is_termux else "not detected - this might not be Termux")
+    add("config", True, str(CONFIG_FILE))
+    add("provider", True, f"{cfg.get('provider')} / model: {cfg.get('model')} / agent: {cfg.get('agent')}")
     try:
         cwd = resolve_working_dir(cfg)
-        if os.access(cwd, os.W_OK):
-            ok("working_dir writable", str(cwd))
-        else:
-            warn("working_dir", f"not writable: {cwd}")
+        add("working_dir writable", os.access(cwd, os.W_OK), str(cwd))
     except Exception as e:  # noqa: BLE001
-        warn("working_dir", str(e))
+        add("working_dir", False, str(e))
     if cfg.get("allow_storage"):
         from termux_agent.config import detect_storage_roots
 
         roots = detect_storage_roots()
-        ok("storage roots", ", ".join(map(str, roots)) or "none")
-
-    render_info("== PATH & tools ==")
+        add("storage roots", True, ", ".join(map(str, roots)) or "none")
     for name in ("git", "pip", "python"):
         path = shutil.which(name)
-        ok(name, path or "NOT FOUND") if path else warn(name, "not found in PATH")
-    ok("registered tools", str(n_tools))
-
-    render_info("== provider ==")
+        add(name, bool(path), path or "not found in PATH")
+    add("registered tools", True, str(n_tools))
     pname = cfg.get("provider", "zen")
     pc = cfg.get("providers", {}).get(pname, {})
-    ok("active provider", f"{pname} ({pc.get('type')})")
+    add("active provider", True, f"{pname} ({pc.get('type')})")
     if pc.get("api_key_env"):
         key = os.environ.get(pc["api_key_env"])
         model = cfg.get("model", "")
         is_free = pname == "zen" and "free" in str(model)
         if key:
-            ok("api key", f"{pc['api_key_env']} set ({key[:4]}...)")
+            add("api key", True, f"{pc['api_key_env']} set ({key[:4]}...)")
         elif is_free:
-            ok("api key", f"{pc['api_key_env']} empty - not required for zen free models")
+            add("api key", True, f"{pc['api_key_env']} empty - not required for zen free models")
         else:
-            warn("api key", f"{pc['api_key_env']} empty - set the env var or fill it in the config")
+            add("api key", False, f"{pc['api_key_env']} empty - set the env var or fill it in the config")
     if network and pc.get("base_url"):
         import urllib.request
 
         try:
             req = urllib.request.Request(pc["base_url"], method="HEAD")
             urllib.request.urlopen(req, timeout=10).close()
-            ok("connectivity", f"{pc['base_url']} reachable")
+            add("connectivity", True, f"{pc['base_url']} reachable")
         except Exception as e:  # noqa: BLE001
-            warn("connectivity", f"{pc['base_url']}: {type(e).__name__}")
+            add("connectivity", False, f"{pc['base_url']}: {type(e).__name__}")
 
     from termux_agent.session import list_sessions
 
-    ok("saved sessions", str(len(list_sessions())))
+    add("saved sessions", True, str(len(list_sessions())))
+
+    if as_json:
+        import json as _json
+
+        _emit_json({"ok": all(c["ok"] for c in checks), "checks": checks}, None)
+        return 0 if all(c["ok"] for c in checks) else 1
+
+    issues = sum(1 for c in checks if not c["ok"])
+    render_info("== environment ==")
+    for c in checks[:3]:
+        (render_info if c["ok"] else render_error)(f"  [{'OK' if c['ok'] else '!!'}]  {c['label']}" + (f": {c['detail']}" if c["detail"] else ""))
+    render_info("== configuration ==")
+    for c in checks[3:6]:
+        (render_info if c["ok"] else render_error)(f"  [{'OK' if c['ok'] else '!!'}]  {c['label']}" + (f": {c['detail']}" if c["detail"] else ""))
+    if cfg.get("allow_storage"):
+        for c in checks[6:7]:
+            (render_info if c["ok"] else render_error)(f"  [{'OK' if c['ok'] else '!!'}]  {c['label']}" + (f": {c['detail']}" if c["detail"] else ""))
+    render_info("== PATH & tools ==")
+    for c in checks[7:11]:
+        (render_info if c["ok"] else render_error)(f"  [{'OK' if c['ok'] else '!!'}]  {c['label']}" + (f": {c['detail']}" if c["detail"] else ""))
+    render_info("== provider ==")
+    for c in checks[11:]:
+        (render_info if c["ok"] else render_error)(f"  [{'OK' if c['ok'] else '!!'}]  {c['label']}" + (f": {c['detail']}" if c["detail"] else ""))
     render_info("\nIf you see [!!] markers, rerun with TERMUX_AGENT_DEBUG=1 for detailed logs.")
     return 1 if issues else 0
 
@@ -801,6 +828,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--models", nargs="?", const="__default__", metavar="PROVIDER", help="List models for a provider (live, or preset fallback)")
     parser.add_argument("--doctor", action="store_true", help="Diagnose environment & config")
     parser.add_argument("--doctor-network", action="store_true", help="Also check provider connectivity (needs internet)")
+    parser.add_argument("--config", metavar="FILE", help="Use this config file instead of ~/.termux-agent/config.yaml")
     parser.add_argument("--smoke", action="store_true", help="End-to-end smoke test with the real model (sends a tiny prompt)")
     parser.add_argument(
         "--install-completion",
@@ -830,7 +858,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.init:
-        return cmd_init()
+        return cmd_init(args.provider, args.model)
     if args.bench:
         return cmd_bench(cfg, args.bench, args.timeout or 60)
     if args.export:
@@ -847,13 +875,13 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_sessions(args.search)
 
     try:
-        cfg = load_config()
+        cfg = load_config(args.config)
     except ConfigError as e:
         render_error(str(e))
         return 1
 
     # Auto-create ~/.termux-agent/config.yaml on first run (like opencode).
-    if not CONFIG_FILE.exists():
+    if not CONFIG_FILE.exists() and not args.config:
         ensure_config_file()
         render_info(
             f"First-run configuration created at {CONFIG_FILE} - edit it if needed, "
@@ -861,7 +889,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.doctor or args.doctor_network:
-        return cmd_doctor(cfg, network=args.doctor_network)
+        return cmd_doctor(cfg, network=args.doctor_network, as_json=args.json)
     if args.smoke:
         return cmd_smoke(cfg, args.provider, args.model)
     if args.serve:

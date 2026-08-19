@@ -1764,6 +1764,66 @@ def test_plan_turn_asks_approval(tmp_path: Path, monkeypatch):
     assert r._last_answer == "EXECUTED"
 
 
+# --- --config / non-interactive init / doctor json ---
+def test_load_config_explicit_file(tmp_path: Path, monkeypatch):
+    import yaml as _yaml
+
+    from termux_agent import cli
+
+    cf = tmp_path / "custom.yaml"
+    cf.write_text(_yaml.safe_dump({"provider": "anthropic", "model": "claude-x"}), encoding="utf-8")
+    seen = {}
+
+    def fake_one_shot(cfg, prompt, provider, model, **kw):
+        seen["provider"] = cfg.get("provider")
+        seen["model"] = cfg.get("model")
+        return 0
+
+    monkeypatch.setattr(cli, "cmd_one_shot", fake_one_shot)
+    assert cli.main(["--config", str(cf), "hi"]) == 0
+    assert seen == {"provider": "anthropic", "model": "claude-x"}
+
+
+def test_init_noninteractive(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, config
+
+    fake_cf = tmp_path / "config.yaml"
+    monkeypatch.setattr(cli, "CONFIG_FILE", fake_cf)
+    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_init("openai", "gpt-test") == 0
+    cfg = config.load_config(str(fake_cf))
+    assert cfg["provider"] == "openai"
+    assert cfg["providers"]["openai"]["models"] == ["gpt-test"]
+
+
+def test_init_unknown_provider(monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_init("nonexistent") == 1
+
+
+def test_doctor_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_doctor(_min_cfg(), as_json=True)
+    data = _json.loads(out.getvalue())
+    assert "checks" in data
+    assert "ok" in data
+    assert any(c["label"] == "python" for c in data["checks"])
+    assert code in (0, 1)
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

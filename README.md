@@ -21,6 +21,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--export-all DIR` backs up every session, `--import FILE` restores one, `--prune N` / `--forget [ID]` delete sessions. `--bench [PROVIDER]` times one tiny request per model to help you pick a fast default.
 - **Phone-native input**: `--clip` reads the prompt from the clipboard, `--screenshot` captures the screen with `termux-screenshot` and attaches it as an image (both need termux-api). Auto-completion (`--install-completion`) derives flags from `--help`, so it never goes stale.
 - **Streaming**: `--stream` prints the answer as it is generated; `--prompt-file -` reads the prompt from stdin. In the REPL, `/plan` toggles plan-first mode (read-only plan, then approve before execution).
+- **Config flexibility**: `--config FILE` uses a specific config file (project-level `.termux-agent/config.yaml` files still merge on top, and the home config is never double-loaded); `--init --provider X --model Y` sets up a config without the wizard.
 - **Scriptable resumes**: `--resume` supports `--json` and `--quiet` for automated continuation; `--sessions --search "keyword"` filters sessions.
 - **Scripting output**: `--json` (structured result) and `--quiet` (only the answer, no banner) for pipelines; `--copy` sends the answer to the clipboard; `--stats` prints token usage after the answer.
 - **Pipe-friendly**: `echo "fix the bug" | termux-agent` runs a one-shot using stdin as the prompt.
@@ -116,13 +117,19 @@ termux-agent --models zen
 
 # interactive first-time setup (provider + model + API key hint)
 termux-agent --init
+# ...or create a config non-interactively
+termux-agent --init --provider openai --model gpt-4o-mini
 
 # install Tab-completion (bash/zsh) once
 termux-agent --install-completion bash
 source ~/.bashrc
 
-# diagnose environment & config
+# diagnose environment & config (add --json for machine-readable output)
 termux-agent --doctor
+termux-agent --doctor --json > health.json
+
+# use a different config file (project files still merge on top)
+termux-agent --config ./my-config.yaml "check this repo"
 termux-agent --doctor-network      # also check provider connectivity
 
 # quick overrides without editing config
@@ -220,8 +227,14 @@ termux-agent --stream "explain this error"
 # read the prompt from stdin
 cat notes.txt | termux-agent --prompt-file -
 
-# regenerate auto-completion (derives all flags from --help, never goes stale)
-termux-agent --install-completion
+# use a different config file (project files still merge on top)
+termux-agent --config ./my-config.yaml "check this repo"
+
+# create a config non-interactively
+termux-agent --init --provider openai --model gpt-4o-mini
+
+# machine-readable diagnostics
+termux-agent --doctor --json > health.json
 ```
 
 ### Project rules
