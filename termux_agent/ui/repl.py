@@ -36,6 +36,7 @@ Special commands (start with /):
   /export [PATH]  export the conversation to Markdown
   /copy           copy the last answer to the clipboard
   /stats          show token usage of this session
+  /undo           revert the most recent file write/edit
 Type a normal message to ask; Ctrl+C to cancel."""
 
 
@@ -169,6 +170,8 @@ class Repl:
             self._copy_last()
         elif c == "/stats":
             self._show_stats()
+        elif c == "/undo":
+            render_info(self.agent.ctx.undo())
         else:
             render_error(f"Unknown command: {c}")
         return False

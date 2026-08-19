@@ -12,6 +12,8 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Token usage tracking**: `/stats` shows prompt/completion/total tokens used in the session (when the provider reports usage).
 - **Pipe-friendly**: `echo "fix the bug" | termux-agent` runs a one-shot using stdin as the prompt.
 - **Rate-limit fallback**: `fallback_models` in the provider config are tried automatically when the main model returns HTTP 429 (rate limited).
+- **Undo file changes**: `/undo` in interactive mode restores the most recent file write/edit (the agent keeps a snapshot of every changed file).
+- **JSON output**: `termux-agent --json "prompt"` prints a machine-readable result `{ok, answer, tool_calls, usage, provider, model}`.
 - **Web search without an API key**: `web_search` uses DuckDuckGo, with a Wikipedia fallback when the network blocks/rejects certificates.
 - **Auto-completion**: `--install-completion bash|zsh` adds Tab-completion to your shell (providers, agents, and CLI options).
 - **Diagnostics**: `--doctor` checks the Termux environment, config, PATH, and API key; `--doctor-network` also tests provider connectivity.
@@ -107,6 +109,9 @@ termux-agent --plan "add unit tests for kalkulator.py"
 # pipe stdin as the prompt (one-shot)
 echo "fix the bugs in main.py" | termux-agent
 
+# machine-readable one-shot output (JSON for scripts)
+termux-agent --json "summarize this repo" > result.json
+
 # list sessions
 termux-agent --sessions
 ```
@@ -136,6 +141,7 @@ termux-agent "add docstrings to app.py"   # follows that rule
 /export [PATH] export the conversation to Markdown (default: ~/.termux-agent/exports/)
 /copy          copy the last answer to the clipboard (requires termux-api)
 /stats         show token usage of this session
+/undo          revert the most recent file write/edit
 Type a normal message to ask; Ctrl+C to cancel.
 ```
 

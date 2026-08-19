@@ -510,6 +510,85 @@ def test_cmd_list_models_live(tmp_path: Path, monkeypatch):
     assert cli.cmd_list_models(_min_cfg(), "zen") == 0
 
 
+# --- undo ---
+def test_undo_restores_edited_file(tmp_path: Path):
+    from termux_agent.tools import files
+    from termux_agent.tools.base import ToolContext
+
+    p = tmp_path / "a.txt"
+    p.write_text("line1\nline2\n")
+    ctx = ToolContext(working_dir=tmp_path)
+    files.edit_file({"path": "a.txt", "old_string": "line2", "new_string": "CHANGED"}, ctx)
+    assert p.read_text() == "line1\nCHANGED\n"
+    msg = ctx.undo()
+    assert "Undid" in msg
+    assert p.read_text() == "line1\nline2\n"
+
+
+def test_undo_removes_new_file(tmp_path: Path):
+    from termux_agent.tools import files
+    from termux_agent.tools.base import ToolContext
+
+    ctx = ToolContext(working_dir=tmp_path)
+    files.write_file({"path": "new.txt", "content": "hello"}, ctx)
+    assert (tmp_path / "new.txt").exists()
+    msg = ctx.undo()
+    assert "Undid" in msg
+    assert not (tmp_path / "new.txt").exists()
+
+
+def test_undo_empty(tmp_path: Path):
+    from termux_agent.tools.base import ToolContext
+
+    ctx = ToolContext(working_dir=tmp_path)
+    assert "Nothing to undo" in ctx.undo()
+
+
+def test_undo_lifo_order(tmp_path: Path):
+    from termux_agent.tools import files
+    from termux_agent.tools.base import ToolContext
+
+    a = tmp_path / "a.txt"
+    a.write_text("original")
+    ctx = ToolContext(working_dir=tmp_path)
+    files.write_file({"path": "a.txt", "content": "first"}, ctx)
+    files.write_file({"path": "a.txt", "content": "second"}, ctx)
+    ctx.undo()
+    assert a.read_text() == "first"
+    ctx.undo()
+    assert a.read_text() == "original"
+
+
+# --- --json ---
+def test_cmd_one_shot_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    calls = {}
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+            run=lambda prompt, on_tool_use=None: (on_tool_use("read_file", "{}") or "ANSWER"),
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_one_shot(_min_cfg(), "hi", "zen", None, as_json=True)
+    assert code == 0
+    data = _json.loads(out.getvalue())
+    assert data["ok"] is True
+    assert data["answer"] == "ANSWER"
+    assert data["tool_calls"][0]["name"] == "read_file"
+    assert data["usage"]["total_tokens"] == 8
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

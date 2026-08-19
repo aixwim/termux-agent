@@ -132,25 +132,51 @@ def cmd_one_shot(
     max_tool_rounds: int | None = None,
     readonly: bool = False,
     plan: bool = False,
+    as_json: bool = False,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
     agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly)
     if plan and not readonly:
         return cmd_plan(cfg, prompt, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds)
-    render_info(
-        f"provider: {agent.provider.name} | model: {agent.provider.model} | "
-        f"agent: {agent_name or cfg.get('agent', 'root')} | cwd: {agent.ctx.working_dir}"
-    )
-    if auto_accept:
+    if not as_json:
+        render_info(
+            f"provider: {agent.provider.name} | model: {agent.provider.model} | "
+            f"agent: {agent_name or cfg.get('agent', 'root')} | cwd: {agent.ctx.working_dir}"
+        )
+    if auto_accept and not as_json:
         render_info("Mode --yes: all confirmations are skipped automatically.")
+    tool_log: list[dict] = []
+
+    def _log_tool(name: str, args_str: str) -> None:
+        tool_log.append({"name": name, "arguments": args_str})
+        if not as_json:
+            render_tool_use(name, args_str)
+
     try:
-        answer = agent.run(prompt, on_tool_use=render_tool_use)
+        answer = agent.run(prompt, on_tool_use=_log_tool)
     except KeyboardInterrupt:
-        render_error("\nCancelled.")
+        if as_json:
+            _emit_json({"ok": False, "error": "cancelled"}, agent)
+        else:
+            render_error("\nCancelled.")
         return 130
-    render_answer(answer)
+    if as_json:
+        _emit_json({"ok": True, "answer": answer, "tool_calls": tool_log}, agent)
+    else:
+        render_answer(answer)
     return 0
+
+
+def _emit_json(payload: dict, agent: "Agent") -> None:
+    import json
+
+    payload["provider"] = agent.provider.name
+    payload["model"] = agent.provider.model
+    usage = getattr(agent, "usage", {})
+    if usage:
+        payload["usage"] = usage
+    print(json.dumps(payload, ensure_ascii=False))
 
 
 def cmd_plan(
@@ -414,6 +440,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--verbose", action="store_true", help="Log provider requests/responses (same as TERMUX_AGENT_DEBUG=1)")
     parser.add_argument("--readonly", action="store_true", help="Read-only mode: cannot write/edit/run commands")
     parser.add_argument("--plan", action="store_true", help="Plan mode: propose a plan first, execute only after approval")
+    parser.add_argument("--json", action="store_true", help="One-shot mode: print the result as JSON (answer, tool_calls, usage)")
     parser.add_argument("prompt", nargs="*", help="One-shot prompt (no arguments = interactive mode)")
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
@@ -520,7 +547,12 @@ def main(argv: list[str] | None = None) -> int:
             max_tool_rounds=args.max_tool_rounds,
             readonly=args.readonly,
             plan=args.plan,
+            as_json=args.json,
         )
+
+    if args.json:
+        render_error("--json requires a one-shot prompt (e.g. termux-agent --json 'summarize this repo').")
+        return 2
 
     provider_key = args.provider or cfg.get("provider", "zen")
     try:

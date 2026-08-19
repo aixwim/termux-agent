@@ -18,6 +18,7 @@ class ToolContext:
     confirm_commands: bool = True
     confirm: ConfirmFn | None = None
     _allowed_dirs: list[Path] = field(default_factory=list)
+    undo_stack: list[dict] = field(default_factory=list)
 
     def resolve(self, path: str) -> Path:
         p = Path(path).expanduser()
@@ -34,6 +35,32 @@ class ToolContext:
         if not self.is_allowed(path):
             raise PermissionError(f"Access denied: outside working directory ({self.working_dir})")
         return path
+
+    def _snapshot(self, path: Path) -> None:
+        """Record the current state of a file before it is modified."""
+        resolved = path.resolve()
+        if resolved.is_file():
+            content = resolved.read_text(encoding="utf-8", errors="replace")
+        else:
+            content = None
+        self.undo_stack.append({"path": resolved, "existed": content is not None, "content": content})
+
+    def undo(self) -> str:
+        """Restore the most recently modified file to its previous state."""
+        if not self.undo_stack:
+            return "Nothing to undo."
+        entry = self.undo_stack.pop()
+        path: Path = entry["path"]
+        try:
+            if entry["existed"]:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(entry["content"], encoding="utf-8")
+                return f"Undid: restored original content of {path}"
+            if path.exists():
+                path.unlink()
+            return f"Undid: removed {path} (it did not exist before)"
+        except OSError as e:
+            return f"Error: cannot undo {path}: {e}"
 
 
 def tool(name: str, description: str, parameters: dict[str, Any]):

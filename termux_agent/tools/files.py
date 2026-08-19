@@ -50,6 +50,7 @@ def read_file(args: dict, ctx: ToolContext) -> str:
 def write_file(args: dict, ctx: ToolContext) -> str:
     path = ctx.require_allowed(ctx.resolve(str(args["path"])))
     content = str(args.get("content", ""))
+    ctx._snapshot(path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
@@ -87,6 +88,7 @@ def edit_file(args: dict, ctx: ToolContext) -> str:
     if count > 1:
         return f"Error: old_string found {count} times; make old_string more unique."
     content = content.replace(old, new, 1)
+    ctx._snapshot(path)
     try:
         path.write_text(content, encoding="utf-8")
     except OSError as e:
