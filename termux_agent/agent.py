@@ -67,6 +67,13 @@ def load_memory() -> str:
     return ""
 
 
+TOOL_GROUPS: dict[str, tuple[str, ...]] = {
+    "shell": ("run_command",),
+    "web": ("web_fetch", "web_search"),
+    "git": ("git_status", "git_diff", "git_log", "git_commit"),
+}
+
+
 class Agent:
     def __init__(
         self,
@@ -133,6 +140,19 @@ class Agent:
         """Disable all tools for chat mode (enabled=False); otherwise keep agent limits."""
         if not enabled:
             self.allowed_tools = set()
+        return self
+
+    def _without_groups(self, groups) -> "Agent":
+        """Remove whole tool groups (shell/web/git) from the allowed set."""
+        blocked: set[str] = set()
+        for g in groups:
+            blocked.update(TOOL_GROUPS.get(g, ()))
+        if not blocked:
+            return self
+        if self.allowed_tools is None:
+            self.allowed_tools = {s.name for s in tool_specs()} - blocked
+        else:
+            self.allowed_tools -= blocked
         return self
 
     def _with_extra_rules(self, rules: str | None) -> "Agent":

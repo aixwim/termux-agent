@@ -54,6 +54,9 @@ def build_agent(
     no_fallback: bool = False,
     extra_rules: str | None = None,
     system_prompt: str | None = None,
+    disabled_groups: list[str] | None = None,
+    max_output_chars: int | None = None,
+    command_timeout: int | None = None,
 ) -> Agent:
     name = provider_name or cfg.get("provider", "zen")
     provider = create_provider(name, cfg, model)
@@ -68,8 +71,8 @@ def build_agent(
         cwd = resolve_working_dir(cfg)
     ctx = ToolContext(
         working_dir=cwd,
-        max_output_chars=int(cfg.get("max_output_chars", 60000)),
-        command_timeout=int(cfg.get("command_timeout", 60)),
+        max_output_chars=int(max_output_chars if max_output_chars is not None else cfg.get("max_output_chars", 60000)),
+        command_timeout=int(command_timeout if command_timeout is not None else cfg.get("command_timeout", 60)),
         confirm_commands=not auto_accept and bool(cfg.get("confirm_commands", True)),
         whitelisted_commands=[str(c) for c in (cfg.get("whitelisted_commands") or [])],
     )
@@ -100,7 +103,7 @@ def build_agent(
             retry_backoff=float(cfg.get("retry_backoff", 1.0)),
         )
         ._with_tools(not no_tools)
-    )._with_extra_rules(extra_rules)
+    )._with_extra_rules(extra_rules)._without_groups(disabled_groups or [])
 
 
 def cmd_init(provider: str | None = None, model: str | None = None) -> int:
@@ -198,6 +201,9 @@ def cmd_one_shot(
     rules_file: str | None = None,
     system_prompt_file: str | None = None,
     context: bool = False,
+    disabled_groups: list[str] | None = None,
+    max_output_chars: int | None = None,
+    command_timeout: int | None = None,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -241,7 +247,7 @@ def cmd_one_shot(
             render_error(f"--system-prompt file is empty: {system_prompt_file}")
             return 1
 
-    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools, retries, no_fallback, extra_rules, sys_prompt)
+    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools, retries, no_fallback, extra_rules, sys_prompt, disabled_groups, max_output_chars, command_timeout)
     if context:
         from termux_agent.notify import device_context
 
@@ -445,6 +451,17 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
     return 0
 
 
+def _disabled_groups_from(args) -> list[str]:
+    groups: list[str] = []
+    if getattr(args, "no_shell", False):
+        groups.append("shell")
+    if getattr(args, "no_web", False):
+        groups.append("web")
+    if getattr(args, "no_git", False):
+        groups.append("git")
+    return groups
+
+
 def cmd_batch(
     cfg: dict,
     prompts_file: str,
@@ -454,6 +471,9 @@ def cmd_batch(
     auto_accept: bool = False,
     timeout: int | None = None,
     as_json: bool = False,
+    disabled_groups: list[str] | None = None,
+    max_output_chars: int | None = None,
+    command_timeout: int | None = None,
 ) -> int:
     """Run one one-shot per line of a prompts file (blank lines skipped)."""
     import json as _json
@@ -473,7 +493,7 @@ def cmd_batch(
     for i, p in enumerate(prompts, start=1):
         render_info(f"[{i}/{len(prompts)}] {p[:60]}")
         try:
-            agent = build_agent(cfg, provider, model, auto_accept=auto_accept)
+            agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout)
             answer = _run_guarded(agent, p, lambda *a, **k: None, timeout)
         except Exception as e:  # noqa: BLE001
             results.append({"prompt": p, "answer": None, "error": str(e)})
@@ -498,13 +518,16 @@ def cmd_watch(
     with_screenshot: bool = False,
     auto_accept: bool = False,
     timeout: int | None = None,
+    disabled_groups: list[str] | None = None,
+    max_output_chars: int | None = None,
+    command_timeout: int | None = None,
 ) -> int:
     """Re-run a one-shot task every N seconds until Ctrl+C. Optionally re-attach a screenshot."""
     import time
 
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
-    agent = build_agent(cfg, provider, model, auto_accept=auto_accept)
+    agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout)
     render_info(f"Watching every {interval}s — press Ctrl+C to stop.")
     round_no = 0
     try:
@@ -798,6 +821,9 @@ def cmd_resume(
     as_json: bool = False,
     quiet: bool = False,
     stream: bool = False,
+    disabled_groups: list[str] | None = None,
+    max_output_chars: int | None = None,
+    command_timeout: int | None = None,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -812,7 +838,7 @@ def cmd_resume(
     if provider_name not in cfg.get("providers", {}):
         provider_name = cfg.get("provider", "zen")
     model = info.get("model") or None
-    agent = build_agent(cfg, provider_name, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens)
+    agent = build_agent(cfg, provider_name, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools=False, retries=None, no_fallback=False, extra_rules=None, system_prompt=None, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout)
     agent.messages = [{"role": "system", "content": agent.system_prompt}] + history
     if prompt:
         streamed = stream and not as_json and not quiet
@@ -1040,6 +1066,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rules", metavar="FILE", help="Add extra instructions to the system prompt (like AGENTS.md but per-invocation)")
     parser.add_argument("--system-prompt", dest="system_prompt_file", metavar="FILE", help="Replace the entire system prompt with the file contents (custom persona)")
     parser.add_argument("--context", action="store_true", help="Add device context (battery/wifi/time, via termux-api) to the system prompt")
+    parser.add_argument("--no-shell", action="store_true", help="Disable the run_command tool")
+    parser.add_argument("--no-web", action="store_true", help="Disable web_fetch and web_search tools")
+    parser.add_argument("--no-git", action="store_true", help="Disable all git tools")
+    parser.add_argument("--max-output-chars", type=int, metavar="N", help="Cap tool output size (default from config, e.g. 60000)")
+    parser.add_argument("--command-timeout", type=int, metavar="SECONDS", help="Per-command timeout for run_command (default from config)")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP server bind host (with --serve)")
     parser.add_argument("--port", type=int, default=8787, help="HTTP server port (with --serve)")
@@ -1227,6 +1258,9 @@ def main(argv: list[str] | None = None) -> int:
             as_json=args.json,
             quiet=args.quiet,
             stream=args.stream,
+            disabled_groups=_disabled_groups_from(args),
+            max_output_chars=args.max_output_chars,
+            command_timeout=args.command_timeout,
         )
 
     if args.watch:
@@ -1242,6 +1276,9 @@ def main(argv: list[str] | None = None) -> int:
             with_screenshot=args.screenshot,
             auto_accept=args.yes,
             timeout=args.timeout,
+            disabled_groups=_disabled_groups_from(args),
+            max_output_chars=args.max_output_chars,
+            command_timeout=args.command_timeout,
         )
 
     if args.batch:
@@ -1254,6 +1291,9 @@ def main(argv: list[str] | None = None) -> int:
             auto_accept=args.yes,
             timeout=args.timeout,
             as_json=args.json,
+            disabled_groups=_disabled_groups_from(args),
+            max_output_chars=args.max_output_chars,
+            command_timeout=args.command_timeout,
         )
 
     if prompt:
@@ -1287,6 +1327,9 @@ def main(argv: list[str] | None = None) -> int:
             rules_file=args.rules,
             system_prompt_file=args.system_prompt_file,
             context=args.context,
+            disabled_groups=_disabled_groups_from(args),
+            max_output_chars=args.max_output_chars,
+            command_timeout=args.command_timeout,
         )
 
     if args.json:

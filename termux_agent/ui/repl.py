@@ -57,6 +57,7 @@ Special commands (start with /):
   /cd DIR         change the working directory (and file-access boundary)
   /plan           toggle plan-first mode (propose, approve, then execute)
   /system         show the effective system prompt
+  /context        attach/refresh device context (battery/wifi/time) in the system prompt
 Type a normal message to ask; Ctrl+C to cancel."""
 
 
@@ -250,6 +251,17 @@ class Repl:
             render_info(f"Plan-first mode {'ON' if self.plan_mode else 'OFF'}.")
         elif c == "/system":
             console.print(self.agent.system_prompt)
+        elif c == "/context":
+            import re
+
+            from termux_agent.notify import device_context
+
+            ctx = device_context()
+            base = re.sub(r"\n\n\[Device context\].*", "", self.agent.system_prompt, flags=re.S)
+            self.agent.system_prompt = base + (f"\n\n[Device context]\n{ctx}" if ctx else "")
+            if self.agent.messages and self.agent.messages[0].get("role") == "system":
+                self.agent.messages[0]["content"] = self.agent.system_prompt
+            render_info(f"Device context {'attached' if ctx else 'unavailable'}.")
         else:
             render_error(f"Unknown command: {c}")
         return False

@@ -2169,6 +2169,60 @@ def test_config_show_json(monkeypatch):
     assert _json.loads(out.getvalue())["provider"] == "zen"
 
 
+# --- tool groups / resource limits / repl context ---
+def test_without_groups_removes_specs():
+    from termux_agent.agent import Agent
+
+    agent = Agent.__new__(Agent)
+    agent.allowed_tools = None
+    assert agent._without_groups(["shell", "web"]) is agent
+    assert "run_command" not in agent.allowed_tools
+    assert "web_fetch" not in agent.allowed_tools
+    assert "read_file" in agent.allowed_tools
+    assert "git_status" in agent.allowed_tools
+
+
+def test_without_groups_preserves_agent_spec():
+    from termux_agent.agent import Agent
+
+    agent = Agent.__new__(Agent)
+    agent.allowed_tools = {"read_file", "git_status"}
+    agent._without_groups(["git"])
+    assert agent.allowed_tools == {"read_file"}
+
+
+def test_build_agent_tool_limits(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+    from termux_agent.agent import Agent
+
+    cfg = _min_cfg()
+    cfg["agents"]["root"] = {"prompt": "Be helpful."}
+    monkeypatch.setattr(cli, "create_provider", lambda *a, **k: SimpleNamespace(fallback_models=[], chat=None))
+    monkeypatch.setattr(cli, "resolve_working_dir", lambda cfg: tmp_path)
+    a = cli.build_agent(
+        cfg, "zen", "m", auto_accept=True,
+        disabled_groups=["shell", "web"],
+        max_output_chars=1000,
+        command_timeout=5,
+    )
+    assert isinstance(a, Agent)
+    assert "run_command" not in {s.name for s in a.tools}
+    assert "web_search" not in {s.name for s in a.tools}
+    assert a.ctx.max_output_chars == 1000
+    assert a.ctx.command_timeout == 5
+
+
+def test_disabled_groups_from(monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    args = SimpleNamespace(no_shell=True, no_web=False, no_git=True)
+    assert cli._disabled_groups_from(args) == ["shell", "git"]
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
