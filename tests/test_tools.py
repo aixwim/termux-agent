@@ -32,6 +32,7 @@ def test_all_tools_registered():
         "glob_find",
         "run_command",
         "web_fetch",
+            "web_search",
         "git_status",
         "git_diff",
         "git_commit",

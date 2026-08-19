@@ -175,6 +175,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--list-providers", action="store_true", help="Daftar preset provider")
     parser.add_argument("--list-agents", action="store_true", help="Daftar sub-agent tersedia")
     parser.add_argument(
+        "--install-completion",
+        nargs="?",
+        const="bash",
+        metavar="SHELL",
+        help="Pasang auto-completion ke .bashrc/.zshrc (default bash)",
+    )
+    parser.add_argument(
         "--resume",
         nargs="?",
         const="latest",
@@ -212,6 +219,17 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_list_providers(cfg)
     if args.list_agents:
         return cmd_list_agents(cfg)
+    if args.install_completion:
+        from termux_agent.completion import install
+
+        shell = args.install_completion.lower()
+        try:
+            rc = install(shell)
+            render_info(f"Auto-completion {shell} dipasang di {rc}. Buka terminal baru atau jalankan 'source {rc}'.")
+        except ValueError as e:
+            render_error(f"Error: {e}")
+            return 1
+        return 0
 
     prompt = " ".join(args.prompt).strip()
     if args.resume:

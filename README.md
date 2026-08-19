@@ -5,8 +5,10 @@ CLI coding agent untuk **Termux (Android)**, mirip [opencode](https://opencode.a
 ## Fitur
 
 - **Langsung jalan**: setelah install cukup ketik `termux-agent` — default memakai OpenCode Zen model free (tanpa API key), seperti opencode yang langsung bisa dipakai.
-- **Agent loop lengkap**: model bebas memilih jawab atau memanggil tool (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep_file`, `glob_find`, `run_command`, `web_fetch`, `git_status`, `git_diff`, `git_commit`) sampai tugas selesai.
+- **Agent loop lengkap**: model bebas memilih jawab atau memanggil tool (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep_file`, `glob_find`, `run_command`, `web_fetch`, `web_search`, `git_status`, `git_diff`, `git_commit`) sampai tugas selesai.
 - **Multi-agent / sub-agent**: agent khusus dengan peran & batasan tool berbeda — `root` (semua tool), `explore` (hanya baca/cari), `coder` (tulis/edit tanpa commit), `shell` (jalankan perintah). Pilih lewat `--agent` atau `/agent`.
+- **Web search tanpa API key**: `web_search` memakai DuckDuckGo, dengan fallback Wikipedia bila jaringan memblokir/menolak sertifikat.
+- **Auto-completion**: `--install-completion bash|zsh` menambah Tab-completion ke shell (provider, agent, dan opsi CLI).
 - **Rules proyek**: file `AGENTS.md`, `CLAUDE.md`, atau `.termux-agent/rules.md` di direktori kerja (dan parent sampai `$HOME`) otomatis dimuat ke instruksi agent — seperti opencode.
 - **Git terintegrasi**: agent bisa cek status, diff, dan commit (commit butuh konfirmasi).
 - **Resume sesi**: lanjutkan percakapan sebelumnya dengan `--resume` atau `/resume`.
@@ -71,6 +73,10 @@ termux-agent --list-agents   # daftar sub-agent
 
 # daftar preset provider
 termux-agent --list-providers
+
+# pasang Tab-completion (bash/zsh) sekali saja
+termux-agent --install-completion bash
+source ~/.bashrc
 
 # daftar sesi
 termux-agent --sessions
@@ -149,7 +155,7 @@ Model free yang tersedia saat ini: `nemotron-3-ultra-free`, `deepseek-v4-flash-f
 
 ```bash
 pip install -e ".[dev]"          # dependency dev (pytest)
-python -m pytest tests/ -q        # 37 test: tool, provider, agent, git, rules, resume
+python -m pytest tests/ -q        # 47 test: tool, provider, agent, git, rules, resume
 python tests/mock_server.py &     # mock OpenAI/Anthropic server (port 8765)
 termux-agent --model mock-model "..."   # tes tanpa API key
 ```
@@ -169,4 +175,4 @@ termux_agent/
 
 ## Lisensi
 
-MIT
+MIT — lihat [LICENSE](LICENSE).

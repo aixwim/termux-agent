@@ -246,3 +246,40 @@ def test_build_agent_unknown_agent_raises(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(Exception):
         build_agent(_min_cfg(), "zen", None, agent_name="nope")
+
+
+# --- web_search ---
+def test_web_search_ddg(monkeypatch):
+    from termux_agent.tools import web as webmod
+    from termux_agent.tools.base import ToolContext, run_tool
+
+    def fake(url):
+        assert "duckduckgo" in url
+        return {
+            "AbstractText": "Python requests ringkas",
+            "AbstractURL": "https://duckduckgo.com",
+            "RelatedTopics": [],
+        }
+
+    monkeypatch.setattr(webmod, "_http_json", fake)
+    out = run_tool("web_search", {"query": "python", "max_results": 1}, ToolContext(working_dir="/", confirm_commands=False))
+    assert "Ringkasan: Python requests" in out
+    assert "duckduckgo.com" in out
+
+
+def test_web_search_fallback_wikipedia(monkeypatch):
+    from termux_agent.tools import web as webmod
+    from termux_agent.tools.base import ToolContext, run_tool
+
+    def fake(url):
+        if "duckduckgo" in url:
+            raise ConnectionError("SSL gagal")
+        return {
+            "query": {"search": [{"title": "HTTPX", "snippet": "<b>python</b> http client"}]}
+        }
+
+    monkeypatch.setattr(webmod, "_http_json", fake)
+    out = run_tool("web_search", {"query": "httpx"}, ToolContext(working_dir="/", confirm_commands=False))
+    assert "Wikipedia" in out
+    assert "HTTPX" in out
+    assert "en.wikipedia.org/wiki/HTTPX" in out
