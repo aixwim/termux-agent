@@ -771,6 +771,115 @@ def test_repl_prompt_add_clear(tmp_path: Path, monkeypatch):
     assert repl.agent.messages[0]["content"] == "BASE"
 
 
+# --- transient retry ---
+def test_retry_transient_connection(tmp_path: Path):
+    from termux_agent.agent import Agent
+    from termux_agent.providers.base import Provider, ProviderError, StreamEvent
+    from termux_agent.tools.base import ToolContext
+
+    attempts = []
+
+    class P(Provider):
+        name = "p"
+        model = "m"
+
+        def stream(self, messages, tools=None, temperature=0.7, max_tokens=8192):
+            attempts.append(self.model)
+            if len(attempts) == 1:
+                raise ProviderError("p: connection failed - [Errno 110] timed out")
+            yield StreamEvent(kind="text_delta", text="recovered")
+            yield StreamEvent(kind="done")
+
+    agent = Agent(P(), ToolContext(working_dir=tmp_path), retries=1, retry_backoff=0)
+    assert agent.run("hi") == "recovered"
+    assert len(attempts) == 2
+
+
+def test_retry_transient_5xx(tmp_path: Path):
+    from termux_agent.agent import Agent
+    from termux_agent.providers.base import Provider, ProviderError, StreamEvent
+    from termux_agent.tools.base import ToolContext
+
+    attempts = []
+
+    class P(Provider):
+        name = "p"
+        model = "m"
+
+        def stream(self, messages, tools=None, temperature=0.7, max_tokens=8192):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise ProviderError("p: HTTP 502 - bad gateway")
+            yield StreamEvent(kind="text_delta", text="ok")
+            yield StreamEvent(kind="done")
+
+    agent = Agent(P(), ToolContext(working_dir=tmp_path), retries=1, retry_backoff=0)
+    assert agent.run("hi") == "ok"
+    assert len(attempts) == 2
+
+
+def test_retry_exhausted_returns_error(tmp_path: Path):
+    from termux_agent.agent import Agent
+    from termux_agent.providers.base import Provider, ProviderError
+    from termux_agent.tools.base import ToolContext
+
+    class P(Provider):
+        name = "p"
+        model = "m"
+
+        def stream(self, messages, tools=None, temperature=0.7, max_tokens=8192):
+            raise ProviderError("p: connection failed - timeout")
+
+    agent = Agent(P(), ToolContext(working_dir=tmp_path), retries=1, retry_backoff=0)
+    out = agent.run("hi")
+    assert out.startswith("Error:")
+
+
+# --- /cd ---
+def test_repl_cd(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.session import Session
+    from termux_agent.ui.repl import Repl
+
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    agent = SimpleNamespace(
+        system_prompt="BASE",
+        messages=[{"role": "system", "content": "BASE"}],
+        ctx=SimpleNamespace(working_dir=tmp_path),
+    )
+    monkeypatch.setattr("termux_agent.ui.repl.Session", lambda **k: Session())
+    repl = Repl(agent, provider_name="zen", model="m")
+    repl._handle_command("/cd sub", None)
+    assert agent.ctx.working_dir == sub
+    repl._handle_command("/cd nope", None)
+    assert agent.ctx.working_dir == sub  # unchanged
+
+
+# --- /remember ---
+def test_repl_remember(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent import config as cfgmod
+    from termux_agent.session import Session
+    from termux_agent.ui.repl import Repl
+
+    agent = SimpleNamespace(
+        system_prompt="BASE",
+        messages=[{"role": "system", "content": "BASE"}],
+        ctx=SimpleNamespace(working_dir=tmp_path),
+    )
+    monkeypatch.setattr(cfgmod, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr("termux_agent.ui.repl.CONFIG_DIR", tmp_path)
+    monkeypatch.setattr("termux_agent.ui.repl.Session", lambda **k: Session())
+    repl = Repl(agent, provider_name="zen", model="m")
+    repl._handle_command("/remember user prefers python", None)
+    mem = (tmp_path / "memory.md").read_text()
+    assert "prefers python" in mem
+    assert "[Memory]" in agent.system_prompt
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

@@ -53,6 +53,8 @@ Special commands (start with /):
   /models         list available models for the current provider
   /diff           show git working-tree changes & diff summary
   /prompt [TXT]   add a session instruction; /prompt clear removes them; no arg = show
+  /remember TXT   store a note in ~/.termux-agent/memory.md (loaded every session)
+  /cd DIR         change the working directory (and file-access boundary)
 Type a normal message to ask; Ctrl+C to cancel."""
 
 
@@ -211,6 +213,10 @@ class Repl:
             self._show_diff()
         elif c == "/prompt":
             self._prompt(rest)
+        elif c == "/remember":
+            self._remember(rest)
+        elif c == "/cd":
+            self._cd(rest)
         else:
             render_error(f"Unknown command: {c}")
         return False
@@ -309,6 +315,42 @@ class Repl:
 
         cmd_list_models(load_config(), self.provider_name)
 
+    def _rebuild_system_prompt(self) -> str:
+        p = self._base_prompt
+        if self._instructions:
+            p += "\n\n[Session instruction]\n" + "\n".join(f"- {s}" for s in self._instructions)
+        mem = CONFIG_DIR / "memory.md"
+        if mem.is_file():
+            content = mem.read_text(encoding="utf-8", errors="replace").strip()
+            if content:
+                p += f"\n\n[Memory]\n{content}"
+        return p
+
+    def _remember(self, text: str) -> None:
+        if not text:
+            render_error("Usage: /remember <text>")
+            return
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        mem = CONFIG_DIR / "memory.md"
+        with mem.open("a", encoding="utf-8") as f:
+            f.write(text.strip() + "\n")
+        self.agent.system_prompt = self._rebuild_system_prompt()
+        self.agent.messages[0] = {"role": "system", "content": self.agent.system_prompt}
+        render_info("Remembered (persists across sessions).")
+
+    def _cd(self, dest: str) -> None:
+        from pathlib import Path
+
+        target = Path(dest).expanduser()
+        if not target.is_absolute():
+            target = self.agent.ctx.working_dir / target
+        target = target.resolve()
+        if not target.is_dir():
+            render_error(f"Not a directory: {target}")
+            return
+        self.agent.ctx.working_dir = target
+        render_info(f"Working directory changed to: {target}")
+
     def _prompt(self, arg: str) -> None:
         if not arg:
             if self._instructions:
@@ -320,12 +362,12 @@ class Repl:
             return
         if arg.strip().lower() == "clear":
             self._instructions = []
-            self.agent.system_prompt = self._base_prompt
+            self.agent.system_prompt = self._rebuild_system_prompt()
             self.agent.messages[0] = {"role": "system", "content": self.agent.system_prompt}
             render_info("Session instructions cleared.")
             return
         self._instructions.append(arg.strip())
-        self.agent.system_prompt = self._base_prompt + "\n\n[Session instruction]\n" + "\n".join(f"- {s}" for s in self._instructions)
+        self.agent.system_prompt = self._rebuild_system_prompt()
         self.agent.messages[0] = {"role": "system", "content": self.agent.system_prompt}
         render_info(f"Instruction added ({len(self._instructions)} total).")
 

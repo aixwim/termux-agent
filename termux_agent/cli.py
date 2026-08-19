@@ -83,6 +83,8 @@ def build_agent(
         temperature=float(temperature if temperature is not None else cfg.get("temperature", 0.7)),
         agent_spec=agent_spec,
         max_context_tokens=int(max_context_tokens if max_context_tokens is not None else cfg.get("max_context_tokens", 0)),
+        retries=int(cfg.get("retries", 1)),
+        retry_backoff=float(cfg.get("retry_backoff", 1.0)),
     )
 
 

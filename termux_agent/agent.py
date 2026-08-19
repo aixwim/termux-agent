@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Callable, Iterable
 
+from termux_agent.config import CONFIG_DIR
 from termux_agent.providers.base import Provider, ProviderError, StreamEvent
 from termux_agent.tools.base import ToolContext, run_tool, tool_specs
 
@@ -53,6 +54,19 @@ def build_system_prompt(extra_rules: str = "", agent_prompt: str = "") -> str:
     return "\n\n".join(parts)
 
 
+MEMORY_FILE = CONFIG_DIR / "memory.md"
+
+
+def load_memory() -> str:
+    """Read the persistent memory file (~/.termux-agent/memory.md), if any."""
+    try:
+        if MEMORY_FILE.is_file():
+            return MEMORY_FILE.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        pass
+    return ""
+
+
 class Agent:
     def __init__(
         self,
@@ -63,12 +77,16 @@ class Agent:
         system_prompt: str | None = None,
         agent_spec: dict | None = None,
         max_context_tokens: int = 0,
+        retries: int = 1,
+        retry_backoff: float = 1.0,
     ) -> None:
         self.provider = provider
         self.ctx = ctx
         self.max_tool_rounds = max_tool_rounds
         self.temperature = temperature
         self.max_context_tokens = max_context_tokens
+        self.retries = retries
+        self.retry_backoff = retry_backoff
         self._compacted_this_turn = False
         self.agent_spec = agent_spec or {}
         self.allowed_tools: set[str] | None = None
@@ -78,6 +96,9 @@ class Agent:
         rules = load_rules(ctx.working_dir)
         agent_prompt = str(self.agent_spec.get("prompt", ""))
         self.system_prompt = system_prompt or build_system_prompt(rules, agent_prompt)
+        mem = load_memory()
+        if mem:
+            self.system_prompt += f"\n\n[Memory]\n{mem}"
         self.messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
         self.usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
@@ -95,6 +116,9 @@ class Agent:
         rules = load_rules(self.ctx.working_dir)
         agent_prompt = str(self.agent_spec.get("prompt", ""))
         self.system_prompt = build_system_prompt(rules, agent_prompt)
+        mem = load_memory()
+        if mem:
+            self.system_prompt += f"\n\n[Memory]\n{mem}"
         self.messages = [{"role": "system", "content": self.system_prompt}]
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
@@ -116,19 +140,43 @@ class Agent:
         self.messages.append({"role": "user", "content": user_input})
         self._compacted_this_turn = False
         models = [self.provider.model, *self.provider.fallback_models]
-        last_err: ProviderError | None = None
+        try:
+            return self._attempt(models, on_text_delta, on_tool_use)
+        except ProviderError as e:
+            self.messages.append({"role": "assistant", "content": f"[error] {e}"})
+            return f"Error: {e}"
+
+    @staticmethod
+    def _is_transient(msg: str) -> bool:
+        """Transient failures worth retrying on a mobile/flaky network."""
+        return "connection failed" in msg or __import__("re").search(r"HTTP 5\d\d", msg) is not None
+
+    def _attempt(
+        self,
+        models: list[str],
+        on_text_delta: Callable[[str], None] | None,
+        on_tool_use: Callable[[str, str], None] | None,
+    ) -> str:
+        import time
+
+        last: ProviderError | None = None
         for i, model in enumerate(models):
             if i:
                 self.provider.model = model
-            try:
-                return self._run_rounds(on_text_delta, on_tool_use)
-            except ProviderError as e:
-                last_err = e
-                # Rate limited? Retry with the next fallback model, else give up.
-                if "429" not in str(e) or i == len(models) - 1:
-                    break
-        self.messages.append({"role": "assistant", "content": f"[error] {last_err}"})
-        return f"Error: {last_err}"
+            for attempt in range(self.retries + 1):
+                try:
+                    return self._run_rounds(on_text_delta, on_tool_use)
+                except ProviderError as e:
+                    last = e
+                    msg = str(e)
+                    if "429" in msg:
+                        break  # rate limited -> try next fallback model
+                    if self._is_transient(msg) and attempt < self.retries:
+                        time.sleep(self.retry_backoff * (attempt + 1))
+                        continue
+                    raise  # not transient, or retries exhausted
+        assert last is not None
+        raise last
 
     def _run_rounds(
         self,

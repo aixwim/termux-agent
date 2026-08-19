@@ -22,6 +22,11 @@ max_tool_rounds: 20
 # auto-summarized (compact) to keep context small. 0 = disabled.
 max_context_tokens: 0
 
+# Retry transient failures (network blips, HTTP 5xx) before giving up;
+# useful on mobile connections. HTTP 429 instead switches to a fallback model.
+retries: 1
+retry_backoff: 1.0
+
 # Working directory: default boundary for read/write/command tools
 working_dir: "~"
 
