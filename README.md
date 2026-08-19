@@ -95,9 +95,10 @@ Model free yang tersedia saat ini: `nemotron-3-ultra-free`, `deepseek-v4-flash-f
 ## Pengembangan
 
 ```bash
-python tests/unit_tests.py      # unit test tool & konversi pesan
-python tests/mock_server.py &   # mock OpenAI/Anthropic server (port 8765)
-python -m termux_agent --model mock-model "..."   # tes tanpa API key
+pip install -e ".[dev]"          # dependency dev (pytest)
+python -m pytest tests/ -q        # 25 test: tool, provider, agent loop
+python tests/mock_server.py &     # mock OpenAI/Anthropic server (port 8765)
+termux-agent --model mock-model "..."   # tes tanpa API key
 ```
 
 Struktur:
