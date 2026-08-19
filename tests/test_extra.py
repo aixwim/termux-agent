@@ -2223,6 +2223,82 @@ def test_disabled_groups_from(monkeypatch):
     assert cli._disabled_groups_from(args) == ["shell", "git"]
 
 
+# --- show / tokens / markdown / no-save ---
+def test_cmd_show_markdown(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    sid = "20260820-000001"
+    (sdir / f"{sid}.jsonl").write_text(
+        '{"role":"user","content":"hello"}\n{"role":"assistant","content":"hi there"}\n'
+    )
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_show(sid) == 0
+    assert "# Session 20260820-000001" in out.getvalue()
+    assert "### user" in out.getvalue()
+    assert "hi there" in out.getvalue()
+
+
+def test_cmd_export_markdown(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text(
+        '{"role":"user","content":"hello"}\n{"role":"assistant","content":"hi"}\n'
+    )
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_export("20260820-000001", as_markdown=True) == 0
+    assert "- provider:" in out.getvalue()
+
+
+def test_cmd_tokens_file(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    f = tmp_path / "x.txt"
+    f.write_text("a" * 800)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_tokens(str(f)) == 0
+    assert "800 characters, ~200 tokens" in out.getvalue()
+
+
+def test_one_shot_no_save(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[{"role": "system", "content": "s"}],
+        )
+        agent.run = lambda p, on_tool_use=None, on_text_delta=None: "answer"
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr(session, "SESSIONS_DIR", tmp_path / "sessions")
+    assert cli.cmd_one_shot(_min_cfg(), "hi", "zen", None, no_save=True) == 0
+    assert not list(session.list_sessions())
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

@@ -204,6 +204,7 @@ def cmd_one_shot(
     disabled_groups: list[str] | None = None,
     max_output_chars: int | None = None,
     command_timeout: int | None = None,
+    no_save: bool = False,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -315,7 +316,7 @@ def cmd_one_shot(
             Path(output).write_text(answer + "\n", encoding="utf-8")
         except OSError as e:
             render_error(f"Cannot write output file {output}: {e}")
-    if getattr(agent, "messages", None):
+    if getattr(agent, "messages", None) and not no_save:
         from termux_agent.session import record_messages
 
         record_messages(agent.messages, agent.provider.name, agent.provider.model)
@@ -636,7 +637,7 @@ def cmd_plan(
     return 0
 
 
-def cmd_export(ref: str | None = None) -> int:
+def cmd_export(ref: str | None = None, as_markdown: bool = False) -> int:
     """Print a session as portable JSON (default: latest)."""
     from termux_agent.session import export_session
 
@@ -645,9 +646,69 @@ def cmd_export(ref: str | None = None) -> int:
     except FileNotFoundError:
         render_error("Session not found.")
         return 1
+    if as_markdown:
+        print(_session_to_markdown(data))
+        return 0
     import json as _json
 
     print(_json.dumps(data, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _session_to_markdown(data: dict) -> str:
+    lines = [
+        f"# Session {data.get('id', '?')}",
+        "",
+        f"- provider: {data.get('provider', '')}",
+        f"- model: {data.get('model', '')}",
+        f"- messages: {len(data.get('messages', []))}",
+        "",
+    ]
+    for m in data.get("messages", []):
+        role = m.get("role", "?")
+        content = m.get("content", "")
+        if role == "system":
+            lines += ["### system", "```", str(content), "```", ""]
+        elif role == "tool":
+            lines += [f"### tool ({m.get('name', '')})", "```", str(content)[:4000], "```", ""]
+        else:
+            lines += [f"### {role}", str(content), ""]
+    return "\n".join(lines)
+
+
+def cmd_show(ref: str | None, as_json: bool = False) -> int:
+    """Show a full session transcript (default: latest)."""
+    import json as _json
+
+    from termux_agent.session import export_session
+
+    try:
+        data = export_session(ref)
+    except FileNotFoundError:
+        render_error("Session not found.")
+        return 1
+    if as_json:
+        print(_json.dumps(data, ensure_ascii=False, indent=2))
+        return 0
+    print(_session_to_markdown(data))
+    return 0
+
+
+def cmd_tokens(path: str | None, text: str | None = None) -> int:
+    """Estimate token usage of a file or inline text."""
+    import sys as _sys
+
+    if path:
+        try:
+            text = Path(path).expanduser().read_text(encoding="utf-8")
+        except OSError as e:
+            render_error(f"Cannot read file: {e}")
+            return 1
+    if not text:
+        text = _sys.stdin.read() if not _sys.stdin.isatty() else ""
+    chars = len(text)
+    estimated = max(1, chars // 4)
+    render_info(f"{chars} characters, ~{estimated} tokens (rough heuristic: chars/4).")
     return 0
 
 
@@ -1069,6 +1130,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-shell", action="store_true", help="Disable the run_command tool")
     parser.add_argument("--no-web", action="store_true", help="Disable web_fetch and web_search tools")
     parser.add_argument("--no-git", action="store_true", help="Disable all git tools")
+    parser.add_argument("--no-save", action="store_true", help="Do not persist this one-shot run as a session")
+    parser.add_argument("--show", metavar="SESSION", help="Show a full session transcript (default: latest); use --json for raw output")
+    parser.add_argument("--tokens", metavar="FILE", help="Estimate the token count of a file (omit to read stdin)")
     parser.add_argument("--max-output-chars", type=int, metavar="N", help="Cap tool output size (default from config, e.g. 60000)")
     parser.add_argument("--command-timeout", type=int, metavar="SECONDS", help="Per-command timeout for run_command (default from config)")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
@@ -1079,7 +1143,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
     parser.add_argument("--search", help="Filter --sessions by keyword in the first message")
-    parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest)")
+    parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest); --markdown for a readable transcript")
+    parser.add_argument("--markdown", action="store_true", help="With --export/--show, print a readable Markdown transcript")
     parser.add_argument("--import", dest="import_path", metavar="FILE", help="Import a portable session JSON file")
     parser.add_argument("--prune", type=int, metavar="N", help="Delete all sessions except the newest N")
     parser.add_argument("--prune-days", type=int, metavar="DAYS", help="Delete sessions older than this many days")
@@ -1136,13 +1201,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.bench:
         return cmd_bench(cfg, args.bench, args.timeout or 60, as_json=args.json)
     if args.export:
-        return cmd_export(args.export)
+        return cmd_export(args.export, as_markdown=args.markdown)
     if args.export_all:
         return cmd_export_all(args.export_all)
     if args.forget:
         return cmd_forget(args.forget)
     if args.import_path:
         return cmd_import(args.import_path)
+    if args.show:
+        return cmd_show(args.show, as_json=args.json)
+    if args.tokens is not None:
+        return cmd_tokens(args.tokens)
     if args.prune is not None:
         return cmd_prune(args.prune, as_json=args.json)
     if args.prune_days is not None:
@@ -1330,6 +1399,7 @@ def main(argv: list[str] | None = None) -> int:
             disabled_groups=_disabled_groups_from(args),
             max_output_chars=args.max_output_chars,
             command_timeout=args.command_timeout,
+            no_save=args.no_save,
         )
 
     if args.json:

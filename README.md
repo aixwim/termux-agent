@@ -22,6 +22,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Device awareness & introspection**: `--context` injects battery/wifi/time into the system prompt (needs termux-api); `--list-tools` lists registered tools; `--config-show` prints the effective merged config; `--prune --json` reports what was deleted.
 - **Batch & housekeeping**: `--batch FILE` runs one one-shot per line (results to `--output` as JSON); `--sessions --search` now matches across all messages; `--prune-days N` deletes sessions older than N days.
 - **Safety & resource limits**: `--no-shell`, `--no-web`, `--no-git` disable whole tool groups (useful for untrusted/unattended use); `--max-output-chars N` and `--command-timeout SECONDS` override config limits. In the REPL, `/context` attaches or refreshes device context.
+- **Review & scripting**: `--show [SESSION]` prints a full transcript (`--json` for raw); `--export --markdown` writes a readable transcript; `--tokens FILE` estimates token usage; `--no-save` keeps one-shot runs out of the session store.
 - **Chat mode**: `--chat` disables all tools for a plain conversation (no file/command access).
 - **Timeouts & saving**: `--timeout SECONDS` aborts a slow one-shot task (exit 124); one-shot tasks are now saved as sessions too, so you can `--resume` them.
 - **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--export-all DIR` backs up every session, `--import FILE` restores one, `--prune N` / `--forget [ID]` delete sessions. `--bench [PROVIDER]` times one tiny request per model to help you pick a fast default.
@@ -171,6 +172,18 @@ termux-agent --config-show --json > effective-config.json
 # bulk: run one one-shot per line of a file, save results as JSON
 printf "summarize main.py\ncheck for bugs in utils.py\n" > tasks.txt
 termux-agent --batch tasks.txt --output results.json
+
+# review or audit a conversation; export it as a readable transcript
+termux-agent --show            # latest session
+termux-agent --show 20260820-000001
+termux-agent --export --markdown > session.md
+
+# estimate token usage before a big prompt
+termux-agent --tokens main.py
+wc -c < prompt.txt | xargs printf 'prompt chars: %s\n'
+
+# ephemeral runs leave no trace in the session store
+termux-agent --no-save "one-off question"
 
 # housekeeping by age instead of count
 termux-agent --prune-days 30

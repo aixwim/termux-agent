@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "termux-agent"
-version = "0.3.0"
+version = "0.4.0"
 description = "A CLI coding agent for Termux, like opencode - multi-provider LLM with a tool-use loop."
 readme = "README.md"
 requires-python = ">=3.10"
