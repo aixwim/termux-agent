@@ -1,4 +1,4 @@
-"""Pemasangan auto-completion untuk termux-agent (bash/zsh)."""
+"""Auto-completion installation for termux-agent (bash/zsh)."""
 from __future__ import annotations
 
 import os
@@ -38,13 +38,13 @@ _termux_agent() {
   agents=(${(f)"$(termux-agent --list-agents 2>/dev/null | awk '{print $1}')"})
   providers=(${(f)"$(termux-agent --list-providers 2>/dev/null | awk '{print $1}')"})
   opts=(
-    '--provider[Pilih provider]' '--model[Model yang dipakai]'
-    '--agent[Sub-agent]' '--resume[Lanjutkan sesi]'
-    '--sessions[Daftar sesi]' '--list-providers[Daftar provider]'
-    '--list-agents[Daftar sub-agent]' '--init[Setup konfigurasi]'
-    '--install-completion[Pasang auto-completion]'
-    '--yes[Lewati konfirmasi]' '-y[Lewati konfirmasi]'
-    '--help[Bantuan]' '-h[Bantuan]'
+    '--provider[Choose provider]' '--model[Model to use]'
+    '--agent[Sub-agent]' '--resume[Resume session]'
+    '--sessions[List sessions]' '--list-providers[List providers]'
+    '--list-agents[List sub-agents]' '--init[Setup configuration]'
+    '--install-completion[Install auto-completion]'
+    '--yes[Skip confirmations]' '-y[Skip confirmations]'
+    '--help[Help]' '-h[Help]'
   )
   case "${words[2]}" in
     --agent) _describe 'agent' agents ;;
@@ -66,7 +66,7 @@ def install(shell: str) -> str:
         rc = os.path.join(home, ".bashrc")
         script = BASH_SCRIPT
     else:
-        raise ValueError(f"Shell tidak didukung: {shell} (gunakan bash atau zsh)")
+        raise ValueError(f"Unsupported shell: {shell} (use bash or zsh)")
     block = f"\n# >>> termux-agent completion (v{__version__}) >>>\n{script}# <<< termux-agent completion <<<\n"
     if os.path.exists(rc):
         with open(rc, encoding="utf-8") as f:

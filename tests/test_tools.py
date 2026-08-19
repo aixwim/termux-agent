@@ -51,19 +51,19 @@ def test_write_read_edit_roundtrip(ctx: ToolContext, tmp_work: Path):
 def test_edit_non_unique_rejected(ctx: ToolContext, tmp_work: Path):
     (tmp_work / "dup.txt").write_text("x\nx\n")
     r = run_tool("edit_file", {"path": "dup.txt", "old_string": "x", "new_string": "y"}, ctx)
-    assert "lebih unik" in r
+    assert "make old_string more unique" in r
 
 
 def test_path_escape_blocked(ctx: ToolContext):
     outside = Path("/tmp/escape_test.txt")
     outside.write_text("secret")
     r = run_tool("read_file", {"path": str(outside)}, ctx)
-    assert "ditolak" in r
+    assert "Access denied" in r
     outside.unlink(missing_ok=True)
 
 
 def test_missing_file_reports_error(ctx: ToolContext):
-    assert "tidak ditemukan" in run_tool("read_file", {"path": "nope.txt"}, ctx)
+    assert "not found" in run_tool("read_file", {"path": "nope.txt"}, ctx)
 
 
 def test_grep_and_glob(ctx: ToolContext):
@@ -88,7 +88,7 @@ def test_run_command_non_whitelist_confirmed(tmp_work: Path):
 
 def test_run_command_refused(tmp_work: Path):
     c = ToolContext(working_dir=tmp_work, confirm_commands=True, confirm=lambda _: False)
-    assert "Dibatalkan" in run_tool("run_command", {"command": "touch y"}, c)
+    assert "Cancelled by user." in run_tool("run_command", {"command": "touch y"}, c)
 
 
 def test_run_command_failure(ctx: ToolContext):
@@ -97,7 +97,7 @@ def test_run_command_failure(ctx: ToolContext):
 
 def test_run_command_timeout(tmp_work: Path):
     c = ToolContext(working_dir=tmp_work, confirm_commands=False, command_timeout=1)
-    assert "batas waktu" in run_tool("run_command", {"command": "sleep 5"}, c)
+    assert "exceeded timeout" in run_tool("run_command", {"command": "sleep 5"}, c)
 
 
 def test_run_command_cwd(ctx: ToolContext):
@@ -107,4 +107,4 @@ def test_run_command_cwd(ctx: ToolContext):
 def test_output_truncation(tmp_work: Path):
     c = ToolContext(working_dir=tmp_work, confirm_commands=False, max_output_chars=50)
     r = run_tool("run_command", {"command": "seq 1 100"}, c)
-    assert "terpotong" in r and len(r) <= 200
+    assert "output truncated" in r and len(r) <= 200

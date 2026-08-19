@@ -1,40 +1,40 @@
-# Konfigurasi termux-agent. Salin ke ~/.termux-agent/config.yaml lalu edit.
+# termux-agent configuration. Copy to ~/.termux-agent/config.yaml and edit.
 #
-# Cara pakai:
-#   1. termux-agent init            -> membuat file ini di ~/.termux-agent/
-#   2. isi API key di env (atau file ini):
-#        export OPENAI_API_KEY=sk-...        # atau ANTHROPIC_API_KEY, GROQ_API_KEY, dsb.
-#   3. termux-agent                 -> mode interaktif
-#      termux-agent "perintah"      -> mode one-shot
+# How to use:
+#   1. termux-agent init            -> creates this file in ~/.termux-agent/
+#   2. set the API key in the env (or in this file):
+#        export OPENAI_API_KEY=sk-...        # or ANTHROPIC_API_KEY, GROQ_API_KEY, etc.
+#   3. termux-agent                 -> interactive mode
+#      termux-agent "prompt"        -> one-shot mode
 
-# Provider default yang dipakai. Zen = OpenCode Zen; model free jalan tanpa API key.
+# Default provider. zen = OpenCode Zen; free models work without an API key.
 provider: zen
 
-# Model default (boleh kosong -> pakai model pertama dari preset provider)
+# Default model (may be empty -> uses the first model from the provider preset)
 model: nemotron-3-ultra-free
 
 temperature: 0.7
 
-# Maksimal putaran tool-call sebelum dipaksa selesai (cegah loop tak terbatas)
+# Max tool-call rounds before being forced to finish (prevents infinite loops)
 max_tool_rounds: 20
 
-# Direktori kerja: batas default untuk tool read/write/command
+# Working directory: default boundary for read/write/command tools
 working_dir: "~"
 
-# Minta konfirmasi sebelum menjalankan perintah yang tidak ada di whitelist
+# Ask for confirmation before running commands that are not in the whitelist
 confirm_commands: true
 
-# Timeout (detik) untuk perintah shell
+# Timeout (seconds) for shell commands
 command_timeout: 60
 
-# Potong output tool agar hemat memori di perangkat mobile
+# Truncate tool output to save memory on mobile devices
 max_output_chars: 60000
 
-# Izinkan tool file mengakses penyimpanan Android (/storage/emulated/0).
-# Jalankan dulu: termux-setup-storage (membuat ~/storage).
+# Allow file tools to access Android storage (/storage/emulated/0).
+# Run this first: termux-setup-storage (creates ~/storage).
 allow_storage: false
 
-# Preset provider. api_key_env = nama env var yang memegang API key.
+# Provider presets. api_key_env = name of the env var holding the API key.
 providers:
   openai:
     type: openai_compat
@@ -54,7 +54,7 @@ providers:
     models: [anthropic/claude-3.5-sonnet, openai/gpt-4o, meta-llama/llama-3.3-70b-instruct]
     api_key_env: OPENROUTER_API_KEY
 
-  # Model lokal di device. Install: pkg install ollama && ollama pull llama3.2
+  # Local models on the device. Install: pkg install ollama && ollama pull llama3.2
   ollama:
     type: openai_compat
     base_url: http://localhost:11434/v1
@@ -79,8 +79,8 @@ providers:
     models: [gemini-2.0-flash, gemini-2.5-flash]
     api_key_env: GEMINI_API_KEY
 
-  # OpenCode Zen (https://opencode.ai/zen): model "free" jalan tanpa API key,
-  # model lain butuh OPENCODE_API_KEY dari https://opencode.ai/auth.
+  # OpenCode Zen (https://opencode.ai/zen): "free" models work without an API key,
+  # other models need OPENCODE_API_KEY from https://opencode.ai/auth.
   zen:
     type: openai_compat
     base_url: https://opencode.ai/zen/v1

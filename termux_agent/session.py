@@ -1,4 +1,4 @@
-"""Persistensi sesi ke JSONL di ~/.termux-agent/sessions/."""
+"""Session persistence to JSONL in ~/.termux-agent/sessions/."""
 from __future__ import annotations
 
 import json
@@ -47,7 +47,7 @@ def read_session(path: Path) -> list[dict]:
 
 
 def session_messages(path: Path) -> list[dict]:
-    """Bangun ulang riwayat percakapan (user/assistant) dari file sesi."""
+    """Rebuild the conversation history (user/assistant) from a session file."""
     msgs = []
     for rec in read_session(path):
         if rec.get("role") in ("user", "assistant"):

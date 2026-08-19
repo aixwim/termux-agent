@@ -1,4 +1,4 @@
-"""Tool shell: jalankan perintah di Termux via subprocess."""
+"""Shell tool: run commands in Termux via subprocess."""
 from __future__ import annotations
 
 import shlex
@@ -6,7 +6,7 @@ import subprocess
 
 from termux_agent.tools.base import ToolContext, tool
 
-# Perintah baca-saja yang aman dijalankan tanpa konfirmasi.
+# Read-only commands safe to run without confirmation.
 SAFE_COMMANDS = {
     "ls", "pwd", "cat", "echo", "head", "tail", "wc", "whoami", "uname",
     "date", "env", "type", "which", "find", "grep", "rg", "du", "df", "free",
@@ -18,13 +18,13 @@ SAFE_COMMANDS = {
 
 @tool(
     "run_command",
-    "Jalankan perintah shell di Termux. Berjalan di working_dir. "
-    "Perintah selain daftar aman akan minta konfirmasi. Hasil dipotong bila terlalu besar.",
+    "Run a shell command in Termux. Runs in working_dir. "
+    "Commands outside the safe list ask for confirmation. Output is truncated when too large.",
     {
         "type": "object",
         "properties": {
-            "command": {"type": "string", "description": "Perintah shell (satu baris)"},
-            "timeout": {"type": "integer", "description": "Timeout detik (default: config)"},
+            "command": {"type": "string", "description": "Shell command (single line)"},
+            "timeout": {"type": "integer", "description": "Timeout in seconds (default: config)"},
         },
         "required": ["command"],
     },
@@ -32,18 +32,18 @@ SAFE_COMMANDS = {
 def run_command(args: dict, ctx: ToolContext) -> str:
     command = str(args.get("command", "")).strip()
     if not command:
-        return "Error: command kosong"
+        return "Error: empty command"
     base_cmd = shlex.split(command)[0]
     needs_confirm = base_cmd not in SAFE_COMMANDS
     if needs_confirm and ctx.confirm_commands:
         if ctx.confirm is None:
             return (
-                f"Error: perintah '{base_cmd}' tidak ada di whitelist dan konfirmasi nonaktif. "
-                "Jalankan ulang dalam mode interaktif atau tambahkan ke SAFE_COMMANDS."
+                f"Error: command '{base_cmd}' is not in the whitelist and confirmation is disabled. "
+                "Run again in interactive mode or add it to SAFE_COMMANDS."
             )
         ok = ctx.confirm(command)
         if not ok:
-            return "Dibatalkan oleh pengguna."
+            return "Cancelled by user."
     timeout = int(args.get("timeout", ctx.command_timeout))
     try:
         proc = subprocess.run(
@@ -55,9 +55,9 @@ def run_command(args: dict, ctx: ToolContext) -> str:
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        return f"Error: perintah melebihi batas waktu {timeout}s"
+        return f"Error: command exceeded timeout of {timeout}s"
     except OSError as e:
-        return f"Error: gagal menjalankan: {e}"
+        return f"Error: failed to run: {e}"
     out = ""
     if proc.stdout:
         out += proc.stdout
@@ -65,6 +65,6 @@ def run_command(args: dict, ctx: ToolContext) -> str:
         out += "\n[stderr]\n" + proc.stderr
     out = out.strip()
     if not out:
-        out = f"(selesai, exit {proc.returncode}, tanpa output)"
+        out = f"(done, exit {proc.returncode}, no output)"
     prefix = f"$ {command}\nexit {proc.returncode}\n"
     return prefix + out

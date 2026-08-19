@@ -1,4 +1,4 @@
-"""Konfigurasi termux-agent: load YAML, env override, preset provider."""
+"""termux-agent configuration: YAML loading, env overrides, provider presets."""
 from __future__ import annotations
 
 import copy
@@ -12,8 +12,8 @@ CONFIG_DIR = Path(os.environ.get("TERMUX_AGENT_HOME", "~/.termux-agent")).expand
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 
 DEFAULTS: dict[str, Any] = {
-    # Default ke OpenCode Zen model free: langsung jalan tanpa API key,
-    # seperti opencode yang langsung bisa dipakai setelah install.
+    # Default to a free OpenCode Zen model: works right away without an API key,
+    # just like opencode is usable right after install.
     "provider": "zen",
     "model": "nemotron-3-ultra-free",
     "agent": "root",
@@ -23,8 +23,8 @@ DEFAULTS: dict[str, Any] = {
     "confirm_commands": True,
     "command_timeout": 60,
     "max_output_chars": 60000,
-    # Izinkan akses ke penyimpanan Android (/storage/emulated/0) oleh tool file.
-    # Jalankan dulu: termux-setup-storage (membuat ~/storage).
+    # Allow file tools to access Android storage (/storage/emulated/0).
+    # Run this first: termux-setup-storage (creates ~/storage).
     "allow_storage": False,
     "providers": {
         "openai": {
@@ -69,8 +69,8 @@ DEFAULTS: dict[str, Any] = {
             "models": ["gemini-2.0-flash", "gemini-2.5-flash"],
             "api_key_env": "GEMINI_API_KEY",
         },
-        # OpenCode Zen: gratis (model free tanpa API key), atau berbayar dengan OPENCODE_API_KEY
-        # dari https://opencode.ai/auth. Endpoint OpenAI-compatible.
+        # OpenCode Zen: free models work without an API key; paid ones need
+        # OPENCODE_API_KEY from https://opencode.ai/auth. OpenAI-compatible endpoint.
         "zen": {
             "type": "openai_compat",
             "base_url": "https://opencode.ai/zen/v1",
@@ -83,36 +83,36 @@ DEFAULTS: dict[str, Any] = {
             "api_key_env": "OPENCODE_API_KEY",
         },
     },
-    # Sub-agent: nama -> prompt tambahan + daftar tool yang diizinkan (opsional).
-    # Kunci "tools" memuat daftar nama tool yang boleh dipakai (kosong = semua).
+    # Sub-agents: name -> extra prompt + allowed tool list (optional).
+    # The "tools" key lists tool names the agent may use (empty = all tools).
     "agents": {
         "root": {
-            "description": "Asisten utama dengan semua tool",
-            "prompt": "Kamu adalah agent utama dengan akses penuh.",
+            "description": "Main assistant with all tools",
+            "prompt": "You are the main agent with full access.",
             "tools": [],
         },
         "explore": {
-            "description": "Baca & cari kode tanpa mengubah apa pun",
+            "description": "Read and search code without changing anything",
             "prompt": (
-                "Kamu adalah agent eksplorasi. Tugasmu hanya MEMBACA dan MENCARI: "
-                "baca file, daftar direktori, grep, glob, status git. "
-                "JANGAN menulis, mengedit, atau menjalankan perintah yang mengubah sistem."
+                "You are an exploration agent. Your task is to only READ and SEARCH: "
+                "read files, list directories, grep, glob, git status. "
+                "Do NOT write, edit, or run commands that modify the system."
             ),
             "tools": ["read_file", "list_dir", "grep_file", "glob_find", "git_status", "git_diff"],
         },
         "coder": {
-            "description": "Tulis/edit kode, tanpa commit git",
+            "description": "Write/edit code, without git commits",
             "prompt": (
-                "Kamu adalah agent koding. Fokus menulis dan mengedit kode dengan benar "
-                "mengikuti aturan proyek. Jangan commit ke git."
+                "You are a coding agent. Focus on writing and editing code correctly "
+                "following the project rules. Do not commit to git."
             ),
             "tools": ["read_file", "write_file", "edit_file", "list_dir", "grep_file", "glob_find", "run_command", "git_status", "git_diff"],
         },
         "shell": {
-            "description": "Hanya menjalankan perintah shell",
+            "description": "Only run shell commands",
             "prompt": (
-                "Kamu adalah agent shell. Fokus menjalankan perintah Termux dan melaporkan output. "
-                "Gunakan run_command untuk semua tugas."
+                "You are a shell agent. Focus on running Termux commands and reporting output. "
+                "Use run_command for all tasks."
             ),
             "tools": ["run_command", "read_file", "list_dir"],
         },
@@ -140,7 +140,7 @@ def load_config() -> dict[str, Any]:
         try:
             user = yaml.safe_load(CONFIG_FILE.read_text()) or {}
         except yaml.YAMLError as e:
-            raise ConfigError(f"Gagal parse {CONFIG_FILE}: {e}")
+            raise ConfigError(f"Failed to parse {CONFIG_FILE}: {e}")
         cfg = _deep_merge(cfg, user)
     return cfg
 
@@ -161,11 +161,11 @@ def resolve_working_dir(cfg: dict[str, Any]) -> Path:
 
 
 def detect_storage_roots() -> list[Path]:
-    """Deteksi root penyimpanan Android yang bisa diakses Termux."""
+    """Detect Android storage roots accessible from Termux."""
     roots: list[Path] = []
     candidates = [
         Path("/storage/emulated/0"),
-        Path.home() / "storage" / "shared",  # hasil termux-setup-storage
+        Path.home() / "storage" / "shared",  # result of termux-setup-storage
         Path.home() / "storage" / "downloads",
     ]
     for c in candidates:
@@ -175,7 +175,7 @@ def detect_storage_roots() -> list[Path]:
 
 
 def ensure_config_file() -> Path:
-    """Salin config.example.yaml ke ~/.termux-agent/config.yaml bila belum ada."""
+    """Copy config.example.yaml to ~/.termux-agent/config.yaml if missing."""
     if CONFIG_FILE.exists():
         return CONFIG_FILE
     example = Path(__file__).resolve().parent.parent / "config.example.yaml"

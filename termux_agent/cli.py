@@ -1,4 +1,4 @@
-"""Entry point CLI: mode interaktif, one-shot, init-config, sessions."""
+"""CLI entry point: interactive mode, one-shot, init-config, sessions."""
 from __future__ import annotations
 
 import argparse
@@ -63,11 +63,11 @@ def build_agent(
     agent_key = agent_name or cfg.get("agent", "root")
     agent_spec = cfg.get("agents", {}).get(agent_key)
     if agent_spec is None:
-        raise ConfigError(f"Agent '{agent_key}' tidak dikenal. Tersedia: {', '.join(cfg.get('agents', {}))}")
+        raise ConfigError(f"Unknown agent '{agent_key}'. Available: {', '.join(cfg.get('agents', {}))}")
     if readonly:
         base = agent_spec.get("tools") or READONLY_TOOLS
         agent_spec = {
-            "prompt": f"{agent_spec.get('prompt', '')}\nMode read-only aktif: JANGAN menulis/mengedit file, dan JANGAN menjalankan perintah apa pun. Hanya baca, cari, dan web.",
+            "prompt": f"{agent_spec.get('prompt', '')}\nRead-only mode is active: DO NOT write or edit files, and DO NOT run any commands. Only read, search, and browse the web.",
             "tools": [t for t in base if t in READONLY_TOOLS],
         }
     return Agent(
@@ -81,8 +81,8 @@ def build_agent(
 
 def cmd_init() -> int:
     path = ensure_config_file()
-    render_info(f"Konfigurasi dibuat: {path}\n")
-    render_info("Langkah berikutnya:\n  1. Edit API key di env var (mis. export OPENAI_API_KEY=...)\n  2. Jalankan: termux-agent")
+    render_info(f"Configuration created: {path}\n")
+    render_info("Next steps:\n  1. Set the API key in an env var (e.g. export OPENAI_API_KEY=...)\n  2. Run: termux-agent")
     return 0
 
 
@@ -106,11 +106,11 @@ def cmd_one_shot(
         f"agent: {agent_name or cfg.get('agent', 'root')} | cwd: {agent.ctx.working_dir}"
     )
     if auto_accept:
-        render_info("Mode --yes: semua konfirmasi dilewati otomatis.")
+        render_info("Mode --yes: all confirmations are skipped automatically.")
     try:
         answer = agent.run(prompt, on_tool_use=render_tool_use)
     except KeyboardInterrupt:
-        render_error("\nDibatalkan.")
+        render_error("\nCancelled.")
         return 130
     render_answer(answer)
     return 0
@@ -121,17 +121,17 @@ def cmd_sessions() -> int:
 
     sessions = list_sessions()
     if not sessions:
-        render_info("Belum ada sesi di ~/.termux-agent/sessions/.")
+        render_info("No sessions saved yet in ~/.termux-agent/sessions/.")
         return 0
     for s in sessions[:20]:
         recs = read_session(s)
         first_user = next((r["content"] for r in recs if r.get("role") == "user"), "")
-        render_info(f"{s.stem}  [{len(recs)} pesan]  {first_user[:60]}")
+        render_info(f"{s.stem}  [{len(recs)} messages]  {first_user[:60]}")
     return 0
 
 
 def find_session(session_ref: str | None) -> "tuple[Path, dict, list[dict]] | None":
-    """Cari file sesi + info provider + riwayat pesan."""
+    """Find a session file + provider info + message history."""
     from termux_agent.session import latest_session, list_sessions, read_session, session_messages
 
     path: Path | None = None
@@ -162,10 +162,10 @@ def cmd_resume(
 
     found = find_session(session_ref)
     if not found:
-        render_error("Sesi tidak ditemukan. Jalankan 'termux-agent --sessions' untuk daftar.")
+        render_error("Session not found. Run 'termux-agent --sessions' to list them.")
         return 1
     path, info, history = found
-    render_info(f"Melanjutkan sesi {path.stem} ({len(history)} pesan)")
+    render_info(f"Resuming session {path.stem} ({len(history)} messages)")
     provider_name = info.get("provider") or cfg.get("provider", "zen")
     if provider_name not in cfg.get("providers", {}):
         provider_name = cfg.get("provider", "zen")
@@ -190,13 +190,13 @@ def cmd_list_providers(cfg: dict) -> int:
 def cmd_list_agents(cfg: dict) -> int:
     for name, spec in cfg.get("agents", {}).items():
         tools = spec.get("tools") or []
-        label = "semua tool" if not tools else ", ".join(tools)
+        label = "all tools" if not tools else ", ".join(tools)
         render_info(f"{name:10} {spec.get('description', '')}  [{label}]")
     return 0
 
 
 def cmd_doctor(cfg: dict, network: bool = False) -> int:
-    """Diagnostik lingkungan: versi, Termux, config, PATH, koneksi provider."""
+    """Environment diagnostics: versions, Termux, config, PATH, provider connectivity."""
     import os
     import platform
     import shutil
@@ -218,16 +218,16 @@ def cmd_doctor(cfg: dict, network: bool = False) -> int:
         issues += 1
         render_error(f"  [!!]  {label}" + (f": {detail}" if detail else ""))
 
-    render_info("== lingkungan ==")
+    render_info("== environment ==")
     ok("python", f"{_sys.version.split()[0]} ({_sys.executable})")
     ok("platform", platform.platform())
     is_termux = "TERMUX_VERSION" in os.environ or os.path.isdir("/data/data/com.termux")
     if is_termux:
-        ok("termux", "terdeteksi")
+        ok("termux", "detected")
     else:
-        warn("termux", "tidak terdeteksi — mungkin bukan Termux")
+        warn("termux", "not detected - this might not be Termux")
 
-    render_info("== konfigurasi ==")
+    render_info("== configuration ==")
     ok("config", str(CONFIG_FILE))
     try:
         render_info(f"  provider: {cfg.get('provider')} | model: {cfg.get('model')} | agent: {cfg.get('agent')}")
@@ -236,94 +236,94 @@ def cmd_doctor(cfg: dict, network: bool = False) -> int:
     try:
         cwd = resolve_working_dir(cfg)
         if os.access(cwd, os.W_OK):
-            ok("working_dir dapat ditulis", str(cwd))
+            ok("working_dir writable", str(cwd))
         else:
-            warn("working_dir", f"tidak dapat ditulis: {cwd}")
+            warn("working_dir", f"not writable: {cwd}")
     except Exception as e:  # noqa: BLE001
         warn("working_dir", str(e))
     if cfg.get("allow_storage"):
         from termux_agent.config import detect_storage_roots
 
         roots = detect_storage_roots()
-        ok("storage roots", ", ".join(map(str, roots)) or "tidak ada")
+        ok("storage roots", ", ".join(map(str, roots)) or "none")
 
     render_info("== PATH & tools ==")
     for name in ("git", "pip", "python"):
         path = shutil.which(name)
-        ok(name, path or "TIDAK ADA") if path else warn(name, "tidak ditemukan di PATH")
-    ok("tool terdaftar", str(n_tools))
+        ok(name, path or "NOT FOUND") if path else warn(name, "not found in PATH")
+    ok("registered tools", str(n_tools))
 
     render_info("== provider ==")
     pname = cfg.get("provider", "zen")
     pc = cfg.get("providers", {}).get(pname, {})
-    ok("provider aktif", f"{pname} ({pc.get('type')})")
+    ok("active provider", f"{pname} ({pc.get('type')})")
     if pc.get("api_key_env"):
         key = os.environ.get(pc["api_key_env"])
         model = cfg.get("model", "")
         is_free = pname == "zen" and "free" in str(model)
         if key:
-            ok("api key", f"{pc['api_key_env']} terisi ({key[:4]}...)")
+            ok("api key", f"{pc['api_key_env']} set ({key[:4]}...)")
         elif is_free:
-            ok("api key", f"{pc['api_key_env']} kosong — tidak wajib untuk model free zen")
+            ok("api key", f"{pc['api_key_env']} empty - not required for zen free models")
         else:
-            warn("api key", f"{pc['api_key_env']} kosong — pakai env var atau isi di config")
+            warn("api key", f"{pc['api_key_env']} empty - set the env var or fill it in the config")
     if network and pc.get("base_url"):
         import urllib.request
 
         try:
             req = urllib.request.Request(pc["base_url"], method="HEAD")
             urllib.request.urlopen(req, timeout=10).close()
-            ok("koneksi", f"{pc['base_url']} terjangkau")
+            ok("connectivity", f"{pc['base_url']} reachable")
         except Exception as e:  # noqa: BLE001
-            warn("koneksi", f"{pc['base_url']}: {type(e).__name__}")
+            warn("connectivity", f"{pc['base_url']}: {type(e).__name__}")
 
     from termux_agent.session import list_sessions
 
-    ok("sesi tersimpan", str(len(list_sessions())))
-    render_info("\nJika ada tanda [!!], jalankan kembali dengan TERMUX_AGENT_DEBUG=1 untuk log detail.")
+    ok("saved sessions", str(len(list_sessions())))
+    render_info("\nIf you see [!!] markers, rerun with TERMUX_AGENT_DEBUG=1 for detailed logs.")
     return 1 if issues else 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="termux-agent",
-        description="CLI coding agent untuk Termux, seperti opencode.",
+        description="A CLI coding agent for Termux, like opencode.",
     )
     parser.add_argument("--version", action="version", version=f"termux-agent {__version__}")
-    parser.add_argument("--provider", help="Nama provider (mis. openai, anthropic, ollama)")
-    parser.add_argument("--model", help="Nama model (mengganti default config)")
-    parser.add_argument("--agent", help="Nama sub-agent (mis. explore, coder, shell)")
-    parser.add_argument("--cwd", help="Direktori kerja (mengganti working_dir config)")
-    parser.add_argument("--temperature", type=float, help="Suhu sampling (0.0-2.0)")
-    parser.add_argument("--max-tool-rounds", type=int, help="Batas iterasi tool per pesan")
-    parser.add_argument("--verbose", action="store_true", help="Log request/response provider (setara TERMUX_AGENT_DEBUG=1)")
-    parser.add_argument("--readonly", action="store_true", help="Mode baca-saja: tidak bisa menulis/mengedit/menjalankan perintah")
-    parser.add_argument("prompt", nargs="*", help="Prompt one-shot (tanpa argumen = mode interaktif)")
-    parser.add_argument("--init", action="store_true", help="Buat config.example -> ~/.termux-agent/config.yaml")
-    parser.add_argument("--sessions", action="store_true", help="Daftar sesi tersimpan")
-    parser.add_argument("--list-providers", action="store_true", help="Daftar preset provider")
-    parser.add_argument("--list-agents", action="store_true", help="Daftar sub-agent tersedia")
-    parser.add_argument("--doctor", action="store_true", help="Diagnostik lingkungan & config")
-    parser.add_argument("--doctor-network", action="store_true", help="Sertakan cek koneksi provider (butuh internet)")
+    parser.add_argument("--provider", help="Provider name (e.g. openai, anthropic, ollama)")
+    parser.add_argument("--model", help="Model name (overrides the config default)")
+    parser.add_argument("--agent", help="Sub-agent name (e.g. explore, coder, shell)")
+    parser.add_argument("--cwd", help="Working directory (overrides config working_dir)")
+    parser.add_argument("--temperature", type=float, help="Sampling temperature (0.0-2.0)")
+    parser.add_argument("--max-tool-rounds", type=int, help="Max tool iterations per message")
+    parser.add_argument("--verbose", action="store_true", help="Log provider requests/responses (same as TERMUX_AGENT_DEBUG=1)")
+    parser.add_argument("--readonly", action="store_true", help="Read-only mode: cannot write/edit/run commands")
+    parser.add_argument("prompt", nargs="*", help="One-shot prompt (no arguments = interactive mode)")
+    parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
+    parser.add_argument("--sessions", action="store_true", help="List saved sessions")
+    parser.add_argument("--list-providers", action="store_true", help="List provider presets")
+    parser.add_argument("--list-agents", action="store_true", help="List available sub-agents")
+    parser.add_argument("--doctor", action="store_true", help="Diagnose environment & config")
+    parser.add_argument("--doctor-network", action="store_true", help="Also check provider connectivity (needs internet)")
     parser.add_argument(
         "--install-completion",
         nargs="?",
         const="bash",
         metavar="SHELL",
-        help="Pasang auto-completion ke .bashrc/.zshrc (default bash)",
+        help="Install auto-completion into .bashrc/.zshrc (default bash)",
     )
     parser.add_argument(
         "--resume",
         nargs="?",
         const="latest",
         metavar="ID",
-        help="Lanjutkan sesi sebelumnya (default: sesi terbaru)",
+        help="Resume a previous session (default: latest)",
     )
     parser.add_argument(
         "--yes",
         "-y",
         action="store_true",
-        help="Lewati semua konfirmasi (berbahaya: izinkan perintah & commit apa pun)",
+        help="Skip all confirmations (dangerous: allows any command & commit)",
     )
     args = parser.parse_args(argv)
 
@@ -338,12 +338,12 @@ def main(argv: list[str] | None = None) -> int:
         render_error(str(e))
         return 1
 
-    # Auto-buat ~/.termux-agent/config.yaml saat run pertama (seperti opencode).
+    # Auto-create ~/.termux-agent/config.yaml on first run (like opencode).
     if not CONFIG_FILE.exists():
         ensure_config_file()
         render_info(
-            f"Konfigurasi pertama dibuat di {CONFIG_FILE} — edit bila perlu, "
-            "atau langsung pakai (default: OpenCode Zen free)."
+            f"First-run configuration created at {CONFIG_FILE} - edit it if needed, "
+            "or just start using it (default: free OpenCode Zen)."
         )
 
     if args.doctor or args.doctor_network:
@@ -364,7 +364,7 @@ def main(argv: list[str] | None = None) -> int:
         shell = args.install_completion.lower()
         try:
             rc = install(shell)
-            render_info(f"Auto-completion {shell} dipasang di {rc}. Buka terminal baru atau jalankan 'source {rc}'.")
+            render_info(f"Auto-completion {shell} installed in {rc}. Open a new terminal or run 'source {rc}'.")
         except ValueError as e:
             render_error(f"Error: {e}")
             return 1
@@ -412,10 +412,10 @@ def main(argv: list[str] | None = None) -> int:
             readonly=args.readonly,
         )
     except (ConfigError, KeyError) as e:
-        render_error(f"Error: {e}\nJalankan 'termux-agent --init' dulu, lalu isi API key.")
+        render_error(f"Error: {e}\nRun 'termux-agent --init' first, then set the API key.")
         return 1
     if args.yes:
-        render_info("Mode --yes: semua konfirmasi dilewati otomatis.")
+        render_info("Mode --yes: all confirmations are skipped automatically.")
     try:
         Repl(
             agent,

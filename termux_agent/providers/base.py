@@ -1,4 +1,4 @@
-"""Interface provider LLM yang seragam untuk semua backend."""
+"""Uniform LLM provider interface for all backends."""
 from __future__ import annotations
 
 import json
@@ -11,7 +11,7 @@ from typing import Any, Iterable
 class ToolSpec:
     name: str
     description: str
-    parameters: dict[str, Any]  # JSON Schema (subset OpenAI format)
+    parameters: dict[str, Any]  # JSON Schema (OpenAI-style subset)
 
 
 @dataclass
@@ -23,9 +23,9 @@ class StreamEvent:
 
 
 def normalize_messages(messages: list[dict]) -> list[dict]:
-    """Normalisasi semua pesan internal ke bentuk netral:
-    - system/user/assistant dengan content str
-    - assistant dgn tool_calls: [{"id","name","arguments"(str)}]
+    """Normalize all internal messages into a neutral form:
+    - system/user/assistant with str content
+    - assistant with tool_calls: [{"id","name","arguments"(str)}]
     - tool: {"role":"tool","tool_call_id","content"}
     """
     out = []

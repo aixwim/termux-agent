@@ -1,5 +1,5 @@
-"""Provider untuk API yang kompatibel dengan OpenAI Chat Completions.
-Mencakup: OpenAI, OpenRouter, Ollama, Groq, DeepSeek, Gemini (endpoint compat)."""
+"""Provider for OpenAI Chat Completions-compatible APIs.
+Covers: OpenAI, OpenRouter, Ollama, Groq, DeepSeek, Gemini (compat endpoint)."""
 from __future__ import annotations
 
 import json
@@ -20,7 +20,7 @@ DEFAULT_TIMEOUT = httpx.Timeout(120.0, connect=30.0)
 
 
 def _iter_sse(response: httpx.Response) -> Iterable[str]:
-    """Iterasi baris data: dari stream SSE."""
+    """Iterate data lines from an SSE stream."""
     buffer = ""
     for chunk in response.iter_lines():
         if chunk is None:
@@ -42,7 +42,7 @@ def _iter_sse(response: httpx.Response) -> Iterable[str]:
 
 
 def _to_openai_wire(messages: list[dict]) -> list[dict]:
-    """Ubah pesan internal (flat) kembali ke format wire OpenAI untuk dikirim."""
+    """Convert internal (flat) messages back to the OpenAI wire format for sending."""
     out: list[dict] = []
     for m in normalize_messages(messages):
         role = m["role"]
@@ -163,7 +163,7 @@ class OpenAICompatProvider(Provider):
                     yield StreamEvent(kind="tool_calls", tool_calls=tool_calls)
                 yield StreamEvent(kind="done")
         except httpx.HTTPError as e:
-            raise ProviderError(f"{self.name}: koneksi gagal - {e}") from e
+            raise ProviderError(f"{self.name}: connection failed - {e}") from e
 
     def list_models(self) -> list[str]:
         url = f"{self.base_url}/models"

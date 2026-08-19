@@ -1,4 +1,4 @@
-"""Tool git: status, diff, dan commit (dengan konfirmasi)."""
+"""Git tools: status, diff, and commit (with confirmation)."""
 from __future__ import annotations
 
 import subprocess
@@ -17,23 +17,23 @@ def _git(ctx: ToolContext, *args: str, timeout: int = 30) -> tuple[int, str, str
         )
         return proc.returncode, proc.stdout, proc.stderr
     except subprocess.TimeoutExpired:
-        return -1, "", "perintah git melebihi batas waktu"
+        return -1, "", "git command exceeded the timeout"
     except OSError as e:
-        return -1, "", f"gagal menjalankan git: {e}"
+        return -1, "", f"failed to run git: {e}"
 
 
 def _git_output(rc: int, out: str, err: str) -> str:
     text = (out + ("\n[stderr]\n" + err if err else "")).strip()
-    return text or f"(selesai, exit {rc}, tanpa output)"
+    return text or f"(done, exit {rc}, no output)"
 
 
 @tool(
     "git_status",
-    "Lihat status repo git di working_dir (file berubah/baru/terhapus).",
+    "Show git repo status in working_dir (modified/new/deleted files).",
     {
         "type": "object",
         "properties": {
-            "short": {"type": "boolean", "description": "Format singkat (default true)"},
+            "short": {"type": "boolean", "description": "Short format (default true)"},
         },
         "required": [],
     },
@@ -48,11 +48,11 @@ def git_status(args: dict, ctx: ToolContext) -> str:
 
 @tool(
     "git_diff",
-    "Lihat diff perubahan yang belum di-commit di repo git.",
+    "Show uncommitted changes diff in the git repo.",
     {
         "type": "object",
         "properties": {
-            "stat": {"type": "boolean", "description": "Hanya statistik perubahan (default true)"},
+            "stat": {"type": "boolean", "description": "Show only change statistics (default true)"},
         },
         "required": [],
     },
@@ -67,11 +67,11 @@ def git_diff(args: dict, ctx: ToolContext) -> str:
 
 @tool(
     "git_commit",
-    "Commit semua perubahan di working_dir dengan pesan tertentu. Perlu konfirmasi pengguna.",
+    "Commit all changes in working_dir with a given message. Requires user confirmation.",
     {
         "type": "object",
         "properties": {
-            "message": {"type": "string", "description": "Pesan commit"},
+            "message": {"type": "string", "description": "Commit message"},
         },
         "required": ["message"],
     },
@@ -79,22 +79,22 @@ def git_diff(args: dict, ctx: ToolContext) -> str:
 def git_commit(args: dict, ctx: ToolContext) -> str:
     message = str(args.get("message", "")).strip()
     if not message:
-        return "Error: message commit kosong"
+        return "Error: empty commit message"
     rc, out, err = _git(ctx, "status", "--short")
     if rc != 0:
-        return "Error: bukan repo git atau git bermasalah: " + (err or out).strip()
+        return "Error: not a git repo or git has an issue: " + (err or out).strip()
     if not (out.strip()):
-        return "Tidak ada perubahan untuk di-commit."
+        return "No changes to commit."
     confirm = f"git add -A && git commit -m \"{message}\""
     if ctx.confirm_commands:
         if ctx.confirm is None:
-            return "Error: commit butuh konfirmasi interaktif. Jalankan 'termux-agent' (mode interaktif) untuk izinkan commit."
+            return "Error: commit needs interactive confirmation. Run 'termux-agent' (interactive mode) to allow commits."
         if not ctx.confirm(confirm):
-            return "Dibatalkan oleh pengguna."
+            return "Cancelled by user."
     rc1, _, err1 = _git(ctx, "add", "-A")
     if rc1 != 0:
         return f"Error git add: {err1}"
     rc2, out2, err2 = _git(ctx, "commit", "-m", message)
     if rc2 != 0:
         return f"Error git commit: {err2 or out2}"
-    return out2.strip() or f"OK: commit dibuat ({message})"
+    return out2.strip() or f"OK: commit created ({message})"

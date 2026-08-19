@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
-# Instalasi termux-agent di Termux (Android).
+# Install termux-agent on Termux (Android).
 set -euo pipefail
 
-echo "==> Memperbarui pkg..."
+echo "==> Updating pkg..."
 pkg update -y
 pkg install -y python git
 
 cd "$HOME"
 if [ ! -d termux-agent ]; then
-  echo "==> Clone repo..."
+  echo "==> Cloning repo..."
   git clone https://github.com/ANDA/termux-agent.git
 fi
 cd termux-agent
 
-echo "==> Memasang dependensi (menciptakan perintah termux-agent)..."
+echo "==> Installing dependencies (creates the termux-agent command)..."
 pip install .
 
 echo ""
-echo "Selesai. Langsung pakai:"
-echo "  termux-agent                                      # mode interaktif (default: OpenCode Zen free)"
-echo "  termux-agent \"baca main.py lalu perbaiki bug\"     # one-shot"
+echo "Done. Start using it:"
+echo "  termux-agent                                    # interactive mode (default: free OpenCode Zen)"
+echo "  termux-agent \"read main.py and fix the bug\"     # one-shot"
 echo ""
-echo "Opsional, untuk provider berbayar:"
-echo "  export OPENCODE_API_KEY=...   # atau OPENAI_API_KEY, ANTHROPIC_API_KEY, dst."
+echo "Optional, for paid providers:"
+echo "  export OPENCODE_API_KEY=...   # or OPENAI_API_KEY, ANTHROPIC_API_KEY, etc."

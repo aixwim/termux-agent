@@ -1,4 +1,4 @@
-"""Provider Anthropic native (Messages API) dengan streaming SSE."""
+"""Native Anthropic provider (Messages API) with SSE streaming."""
 from __future__ import annotations
 
 import json
@@ -184,4 +184,4 @@ class AnthropicProvider(Provider):
                 pass
             yield StreamEvent(kind="done")
         except httpx.HTTPError as e:
-            raise ProviderError(f"{self.name}: koneksi gagal - {e}") from e
+            raise ProviderError(f"{self.name}: connection failed - {e}") from e

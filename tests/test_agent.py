@@ -62,7 +62,7 @@ def test_agent_empty_answer_guard(tmp_path: Path):
     provider = FakeProvider([[StreamEvent(kind="done")]])
     agent = Agent(provider, ToolContext(working_dir=tmp_path, confirm_commands=False))
     out = agent.run("x")
-    assert "kosong" in out
+    assert "empty response" in out
 
 
 def test_agent_max_rounds(tmp_path: Path):
@@ -73,7 +73,7 @@ def test_agent_max_rounds(tmp_path: Path):
     provider = FakeProvider([[call]] * 3)
     agent = Agent(provider, ToolContext(working_dir=tmp_path, confirm_commands=False), max_tool_rounds=2)
     out = agent.run("x")
-    assert "batas" in out
+    assert "maximum tool rounds" in out
 
 
 def test_openai_compat_streams_tool_calls():

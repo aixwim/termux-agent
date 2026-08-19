@@ -62,7 +62,7 @@ check("run_command aman", "exit 0" in run_tool("run_command", {"command": "echo 
 ctx_confirm = ToolContext(working_dir=tmp, confirm_commands=True, confirm=lambda c: True)
 check("run_command non-whitelist dikonfirmasi", "exit 0" in run_tool("run_command", {"command": "touch x"}, ctx_confirm))
 ctx_refuse = ToolContext(working_dir=tmp, confirm_commands=True, confirm=lambda c: False)
-check("perintah ditolak", "Dibatalkan" in run_tool("run_command", {"command": "touch y"}, ctx_refuse))
+check("perintah ditolak", "Cancelled by user." in run_tool("run_command", {"command": "touch y"}, ctx_refuse))
 check("perintah gagal", "exit 1" in run_tool("run_command", {"command": "false"}, ctx_shell))
 check("shell di working_dir", "hello.py" in run_tool("run_command", {"command": "ls"}, ctx_shell))
 check("timeout", "batas waktu" in run_tool("run_command", {"command": "sleep 5"}, ToolContext(working_dir=tmp, confirm_commands=False, command_timeout=1)))

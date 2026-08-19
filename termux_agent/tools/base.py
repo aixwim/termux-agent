@@ -1,4 +1,4 @@
-"""Registri tool dan konteks eksekusi yang dibagi semua tool."""
+"""Tool registry and shared execution context for all tools."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -32,7 +32,7 @@ class ToolContext:
 
     def require_allowed(self, path: Path) -> Path:
         if not self.is_allowed(path):
-            raise PermissionError(f"Akses ditolak: di luar direktori kerja ({self.working_dir})")
+            raise PermissionError(f"Access denied: outside working directory ({self.working_dir})")
         return path
 
 
@@ -52,7 +52,7 @@ def tool(name: str, description: str, parameters: dict[str, Any]):
 def run_tool(name: str, args: dict[str, Any], ctx: ToolContext) -> str:
     entry = TOOL_REGISTRY.get(name)
     if not entry:
-        return f"Error: tool '{name}' tidak dikenal."
+        return f"Error: unknown tool '{name}'."
     try:
         result = entry["fn"](args, ctx)
     except PermissionError as e:
@@ -60,7 +60,7 @@ def run_tool(name: str, args: dict[str, Any], ctx: ToolContext) -> str:
     except Exception as e:  # noqa: BLE001
         return f"Error ({type(e).__name__}): {e}"
     if len(result) > ctx.max_output_chars:
-        result = result[: ctx.max_output_chars] + "\n... [output terpotong]"
+        result = result[: ctx.max_output_chars] + "\n... [output truncated]"
     return result
 
 

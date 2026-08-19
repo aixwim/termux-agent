@@ -1,4 +1,4 @@
-"""Loop utama agent: chat -> (tool-call -> jalankan tool) -> selesai."""
+"""Core agent loop: chat -> (tool-call -> run tool) -> done."""
 from __future__ import annotations
 
 import json
@@ -9,25 +9,25 @@ from typing import Callable, Iterable
 from termux_agent.providers.base import Provider, ProviderError, StreamEvent
 from termux_agent.tools.base import ToolContext, run_tool, tool_specs
 
-SYSTEM_PROMPT = """Kamu adalah termux-agent, asisten coding yang berjalan di Termux (Android).
-Kamu membantu pengguna menulis, membaca, mengedit, dan menjalankan perintah di perangkat mereka.
+SYSTEM_PROMPT = """You are termux-agent, a coding assistant running on Termux (Android).
+You help the user write, read, edit, and run commands on their device.
 
-Aturan:
-- Gunakan tool hanya bila diperlukan. Untuk pertanyaan umum, jawab langsung.
-- Selalu pakai path relatif terhadap working_dir bila memungkinkan.
-- Jangan menjalankan perintah destruktif (rm -rf, format, dsb) tanpa konfirmasi pengguna.
-- Bila perintah butuh konfirmasi dan ditolak, jangan mengulanginya.
-- Output yang terpotong ("[output terpotong]") menandakan hasil dibatasi; lakukan pencarian yang lebih spesifik.
-- Jawab dalam bahasa yang sama dengan pertanyaan pengguna.
-- Saat selesai, ringkas singkat apa yang kamu ubah atau jalankan.
+Rules:
+- Use tools only when needed. For general questions, answer directly.
+- Always prefer paths relative to working_dir when possible.
+- Do not run destructive commands (rm -rf, format, etc.) without user confirmation.
+- If a command needs confirmation and is refused, do not retry it.
+- Truncated output ("[output truncated]") means the result was limited; do a more specific search.
+- Answer in the same language as the user's question.
+- When done, briefly summarize what you changed or ran.
 """
 
-# Nama file aturan proyek yang otomatis dibaca (seperti AGENTS.md di opencode).
+# Project rule files that are auto-loaded (like AGENTS.md in opencode).
 RULES_FILES = ("AGENTS.md", "CLAUDE.md", ".termux-agent/rules.md")
 
 
 def load_rules(working_dir: Path) -> str:
-    """Baca file aturan proyek dari working_dir (dan parent sampai $HOME)."""
+    """Read project rule files from working_dir (and parents up to $HOME)."""
     parts: list[str] = []
     home = Path.home()
     start = working_dir.resolve()
@@ -36,7 +36,7 @@ def load_rules(working_dir: Path) -> str:
             f = directory / name
             if f.is_file():
                 try:
-                    parts.append(f"[Aturan dari {f.relative_to(start) if f.is_relative_to(start) else f}]\n{f.read_text(encoding='utf-8', errors='replace').strip()}")
+                    parts.append(f"[Rules from {f.relative_to(start) if f.is_relative_to(start) else f}]\n{f.read_text(encoding='utf-8', errors='replace').strip()}")
                 except OSError:
                     continue
         if directory == home:
@@ -47,7 +47,7 @@ def load_rules(working_dir: Path) -> str:
 def build_system_prompt(extra_rules: str = "", agent_prompt: str = "") -> str:
     parts = [SYSTEM_PROMPT]
     if agent_prompt.strip():
-        parts.append(f"[Peran agent]\n{agent_prompt.strip()}")
+        parts.append(f"[Agent role]\n{agent_prompt.strip()}")
     if extra_rules.strip():
         parts.append(extra_rules)
     return "\n\n".join(parts)
@@ -78,7 +78,7 @@ class Agent:
         self.messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
 
     def set_agent(self, spec: dict | None) -> None:
-        """Ganti peran agent (prompt + batasan tool) dan reset riwayat."""
+        """Switch agent role (prompt + tool restrictions) and reset history."""
         self.agent_spec = spec or {}
         spec_tools = self.agent_spec.get("tools") or []
         self.allowed_tools = set(spec_tools) if spec_tools else None
@@ -100,8 +100,8 @@ class Agent:
         on_text_delta: Callable[[str], None] | None = None,
         on_tool_use: Callable[[str, str], None] | None = None,
     ) -> str:
-        """Kirim satu pesan pengguna dan jalankan loop tool-call sampai selesai.
-        Mengembalikan teks jawaban akhir."""
+        """Send one user message and run the tool-call loop until done.
+        Returns the final answer text."""
         self.messages.append({"role": "user", "content": user_input})
         for _round in range(self.max_tool_rounds):
             text_parts: list[str] = []
@@ -125,7 +125,7 @@ class Agent:
             if not tool_calls:
                 self.messages.append({"role": "assistant", "content": text})
                 if not text.strip():
-                    return "(model mengembalikan jawaban kosong — coba ajukan ulang dengan pertanyaan lebih spesifik)"
+                    return "(model returned an empty response - try rephrasing with a more specific prompt)"
                 return text
 
             self.messages.append(
@@ -150,11 +150,11 @@ class Agent:
                         "content": result,
                     }
                 )
-        return "(mencapai batas maksimal putaran tool; hentikan agar tidak berulang)"
+        return "(reached the maximum tool rounds; stopping to avoid a loop)"
 
     def compact(self, keep_recent: int = 4) -> str:
-        """Ringkas pesan lama (selain N terakhir) menjadi satu ringkasan,
-        lalu ganti dengan ringkasan itu agar konteks tetap hemat."""
+        """Summarize old messages (besides the last N) into one summary,
+        then replace them with it to keep context small."""
         if len(self.messages) <= keep_recent + 1:
             return ""
         system = self.messages[0]
@@ -166,9 +166,9 @@ class Agent:
         if not history.strip():
             return ""
         prompt = (
-            "Ringkas percakapan berikut dalam bahasa yang sama dengan percakapan. "
-            "Pertahankan semua keputusan, file yang dibuat/diubah, perintah yang dijalankan, "
-            "dan kesimpulan penting. Format: paragraf ringkas.\n\n" + history
+            "Summarize the following conversation in the same language as the conversation. "
+            "Keep all decisions, files created/changed, commands run, "
+            "and important conclusions. Format: a concise paragraph.\n\n" + history
         )
         summary_parts: list[str] = []
         try:
@@ -180,7 +180,7 @@ class Agent:
                 if ev.kind == "text_delta":
                     summary_parts.append(ev.text)
         except ProviderError as e:
-            return f"(gagal compact: {e})"
+            return f"(compact failed: {e})"
         summary = "".join(summary_parts).strip()
         if not summary:
             return ""
@@ -188,7 +188,7 @@ class Agent:
             system,
             {
                 "role": "user",
-                "content": f"[Ringkasan percakapan sebelumnya]\n{summary}",
+                "content": f"[Summary of previous conversation]\n{summary}",
             },
             *recent,
         ]

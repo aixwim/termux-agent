@@ -1,192 +1,192 @@
 # termux-agent
 
-CLI coding agent untuk **Termux (Android)**, mirip [opencode](https://opencode.ai): chat dengan LLM + tool-use loop untuk membaca/menulis file, mencari kode, dan menjalankan perintah — dengan dukungan **multi-provider**.
+A CLI coding agent for **Termux (Android)**, similar to [opencode](https://opencode.ai): chat with an LLM + a tool-use loop for reading/writing files, searching code, and running commands — with **multi-provider** support.
 
-## Fitur
+## Features
 
-- **Langsung jalan**: setelah install cukup ketik `termux-agent` — default memakai OpenCode Zen model free (tanpa API key), seperti opencode yang langsung bisa dipakai.
-- **Agent loop lengkap**: model bebas memilih jawab atau memanggil tool (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep_file`, `glob_find`, `run_command`, `web_fetch`, `web_search`, `git_status`, `git_diff`, `git_commit`) sampai tugas selesai.
-- **Multi-agent / sub-agent**: agent khusus dengan peran & batasan tool berbeda — `root` (semua tool), `explore` (hanya baca/cari), `coder` (tulis/edit tanpa commit), `shell` (jalankan perintah). Pilih lewat `--agent` atau `/agent`.
-- **Mode read-only (`--readonly`)**: agent hanya bisa baca, cari, dan akses web — tidak bisa menulis/mengedit/menjalankan perintah. Cocok untuk meninjau kode tanpa risiko.
-- **Web search tanpa API key**: `web_search` memakai DuckDuckGo, dengan fallback Wikipedia bila jaringan memblokir/menolak sertifikat.
-- **Auto-completion**: `--install-completion bash|zsh` menambah Tab-completion ke shell (provider, agent, dan opsi CLI).
-- **Diagnostik**: `--doctor` memeriksa lingkungan Termux, config, PATH, dan API key; `--doctor-network` ikut mengetes koneksi provider.
-- **Rules proyek**: file `AGENTS.md`, `CLAUDE.md`, atau `.termux-agent/rules.md` di direktori kerja (dan parent sampai `$HOME`) otomatis dimuat ke instruksi agent — seperti opencode.
-- **Git terintegrasi**: agent bisa cek status, diff, dan commit (commit butuh konfirmasi).
-- **Resume sesi**: lanjutkan percakapan sebelumnya dengan `--resume` atau `/resume`.
-- **Compact konteks**: `/compact` merangkum riwayat lama agar hemat token.
-- **Mode otomatis**: `--yes` melewati semua konfirmasi (cocok untuk skrip).
-- **Akses storage Android**: aktifkan `allow_storage: true` di config untuk akses file di `/storage/emulated/0` (jalankan `termux-setup-storage` dulu).
-- **Multi-provider** via preset: OpenAI, Anthropic, OpenRouter, Ollama, Groq, DeepSeek, Gemini, dan **OpenCode Zen**.
-- **Mode interaktif & one-shot**.
-- **Sesi tersimpan** ke `~/.termux-agent/sessions/`.
-- **Aman untuk mobile**: batas direktori kerja, konfirmasi perintah non-whitelist, timeout, dan pemotongan output agar hemat memori.
+- **Works right away**: after installing, just type `termux-agent` — the default uses a free OpenCode Zen model (no API key needed), just like opencode is usable immediately.
+- **Full agent loop**: the model can answer or call tools (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep_file`, `glob_find`, `run_command`, `web_fetch`, `web_search`, `git_status`, `git_diff`, `git_commit`) until the task is done.
+- **Multi-agent / sub-agents**: specialized agents with different roles & tool restrictions — `root` (all tools), `explore` (read/search only), `coder` (write/edit without commits), `shell` (run commands). Pick one with `--agent` or `/agent`.
+- **Read-only mode (`--readonly`)**: the agent can only read, search, and browse the web — no writing/editing/running commands. Great for reviewing code without risk.
+- **Web search without an API key**: `web_search` uses DuckDuckGo, with a Wikipedia fallback when the network blocks/rejects certificates.
+- **Auto-completion**: `--install-completion bash|zsh` adds Tab-completion to your shell (providers, agents, and CLI options).
+- **Diagnostics**: `--doctor` checks the Termux environment, config, PATH, and API key; `--doctor-network` also tests provider connectivity.
+- **Project rules**: `AGENTS.md`, `CLAUDE.md`, or `.termux-agent/rules.md` in the working directory (and parents up to `$HOME`) are auto-loaded into the agent's instructions — like opencode.
+- **Git integration**: the agent can check status, diff, and commit (commit requires confirmation).
+- **Session resume**: continue a previous conversation with `--resume` or `/resume`.
+- **Context compacting**: `/compact` summarizes old history to save tokens.
+- **Automation mode**: `--yes` skips all confirmations (good for scripts).
+- **Android storage access**: enable `allow_storage: true` in config to access files in `/storage/emulated/0` (run `termux-setup-storage` first).
+- **Multi-provider** presets: OpenAI, Anthropic, OpenRouter, Ollama, Groq, DeepSeek, Gemini, and **OpenCode Zen**.
+- **Interactive & one-shot modes**.
+- **Sessions saved** to `~/.termux-agent/sessions/`.
+- **Mobile-friendly safety**: working directory boundary, confirmation for non-whitelisted commands, timeouts, and output truncation to save memory.
 
-## Instalasi di Termux
+## Install on Termux
 
 ```bash
-# 1. siapkan storage (opsional, untuk akses file Android)
+# 1. prepare storage (optional, for Android file access)
 termux-setup-storage
 
-# 2. pasang Python + git
+# 2. install Python + git
 pkg update && pkg install -y python git
 
-# 3. clone & install (menciptakan perintah `termux-agent`)
+# 3. clone & install (creates the `termux-agent` command)
 cd ~
 git clone https://github.com/ANDA/termux-agent.git
 cd termux-agent
 pip install .
 
-# 4. pakai — langsung jalan, tanpa konfigurasi apa pun
-termux-agent                       # mode interaktif
+# 4. use it — works right away, no configuration needed
+termux-agent                       # interactive mode
 ```
 
-Pada run pertama `~/.termux-agent/config.yaml` dibuat otomatis; kamu bisa mengabaikannya karena default sudah memakai model free. Untuk provider berbayar, cukup set API key di env:
+On the first run, `~/.termux-agent/config.yaml` is created automatically; you can ignore it because the default already uses a free model. For paid providers, just set the API key in the environment:
 
 ```bash
-export OPENAI_API_KEY=sk-...        # atau ANTHROPIC_API_KEY, GROQ_API_KEY, OPENCODE_API_KEY, dst.
+export OPENAI_API_KEY=sk-...        # or ANTHROPIC_API_KEY, GROQ_API_KEY, OPENCODE_API_KEY, etc.
 ```
 
-Skrip satu-perintah juga tersedia: `bash scripts/install-termux.sh`.
+A one-command script is also available: `bash scripts/install-termux.sh`.
 
-## Pemakaian
+## Usage
 
 ```bash
-# mode interaktif (default provider dari config)
+# interactive mode (default provider from config)
 termux-agent
 
-# mode one-shot
-termux-agent "baca file main.py lalu perbaiki bug-nya"
+# one-shot mode
+termux-agent "read file main.py and fix its bugs"
 
-# lanjutkan sesi terakhir
+# resume the latest session
 termux-agent --resume
-termux-agent --resume 20260819-233713 "lanjutan: ..."
+termux-agent --resume 20260819-233713 "continue: ..."
 
-# lewati semua konfirmasi (berbahaya; cocok untuk skrip)
-termux-agent --yes "git commit semua perubahan"
+# skip all confirmations (dangerous; good for scripts)
+termux-agent --yes "commit all changes"
 
-# pilih provider/model
-termux-agent --provider zen --model nemotron-3-ultra-free "cek isi direktori ini"
+# choose provider/model
+termux-agent --provider zen --model nemotron-3-ultra-free "check the contents of this directory"
 
-# gunakan sub-agent khusus
-termux-agent --agent explore "cari di mana fungsi main didefinisikan"  # baca saja
-termux-agent --agent coder "tambahkan unit test untuk kalkulator.py"
-termux-agent --list-agents   # daftar sub-agent
+# use a specialized sub-agent
+termux-agent --agent explore "find where the main function is defined"  # read-only
+termux-agent --agent coder "add unit tests for kalkulator.py"
+termux-agent --list-agents   # list sub-agents
 
-# daftar preset provider
+# list provider presets
 termux-agent --list-providers
 
-# pasang Tab-completion (bash/zsh) sekali saja
+# install Tab-completion (bash/zsh) once
 termux-agent --install-completion bash
 source ~/.bashrc
 
-# diagnostik lingkungan & config
+# diagnose environment & config
 termux-agent --doctor
-termux-agent --doctor-network      # tambah cek koneksi provider
+termux-agent --doctor-network      # also check provider connectivity
 
-# override cepat tanpa ubah config
-termux-agent --cwd /sdcard/Documents --temperature 0.2 --max-tool-rounds 30 "rapikan proyek ini"
+# quick overrides without editing config
+termux-agent --cwd /sdcard/Documents --temperature 0.2 --max-tool-rounds 30 "tidy up this project"
 
-# mode read-only: tinjau kode tanpa bisa mengubah apa pun
-termux-agent --readonly "periksa keamanan kode ini dan sarankan perbaikan"
+# read-only mode: review code without being able to change anything
+termux-agent --readonly "review the security of this code and suggest fixes"
 
-# daftar sesi
+# list sessions
 termux-agent --sessions
 ```
 
-### Rules proyek
+### Project rules
 
-Letakkan `AGENTS.md` (atau `CLAUDE.md`, `.termux-agent/rules.md`) di direktori kerja — isinya otomatis jadi instruksi untuk agent:
+Put `AGENTS.md` (or `CLAUDE.md`, `.termux-agent/rules.md`) in the working directory — its contents automatically become instructions for the agent:
 
 ```bash
-echo "Selalu tulis docstring di tiap fungsi." > AGENTS.md
-termux-agent "tambah docstring ke app.py"   # mengikuti aturan itu
+echo "Always write a docstring in every function." > AGENTS.md
+termux-agent "add docstrings to app.py"   # follows that rule
 ```
 
-### Perintah di mode interaktif
+### Interactive mode commands
 
 ```
-/exit, /quit   keluar
-/new           mulai sesi baru
-/provider NAME ganti provider (mis. /provider ollama)
-/model MODEL   ganti model
-/help          bantuan
-/cwd           tampilkan direktori kerja
-/sessions      daftar sesi
-/resume [ID]   lanjutkan sesi (ID opsional, default terbaru)
-  /compact       ringkas riwayat sesi agar hemat konteks
-  /agent [NAME]  lihat/ganti sub-agent (explore, coder, shell, ...)
-  /export [PATH] ekspor percakapan ke Markdown (default: ~/.termux-agent/exports/)
-  /copy          salin jawaban terakhir ke clipboard (butuh termux-api)
-Ketikan pesan biasa untuk bertanya; Ctrl+C untuk membatalkan.
+/exit, /quit   quit
+/new           start a new session
+/provider NAME switch provider (e.g. /provider ollama)
+/model MODEL   switch model
+/help          show help
+/cwd           show the working directory
+/sessions      list sessions
+/resume [ID]   resume a session (ID optional, default: latest)
+/compact       summarize session history to save context
+/agent [NAME]  view/switch sub-agent (explore, coder, shell, ...)
+/export [PATH] export the conversation to Markdown (default: ~/.termux-agent/exports/)
+/copy          copy the last answer to the clipboard (requires termux-api)
+Type a normal message to ask; Ctrl+C to cancel.
 ```
 
-Sub-agent juga bisa dibuat sendiri di `~/.termux-agent/config.yaml`:
+You can also define your own sub-agents in `~/.termux-agent/config.yaml`:
 
 ```yaml
 agents:
   myhelper:
-    description: "Asisten khusus saya"
-    prompt: "Kamu hanya membantu soal shell."
+    description: "My custom assistant"
+    prompt: "You only help with shell questions."
     tools: [run_command, read_file]
 ```
 
-### Akses file Android (storage)
+### Android file access (storage)
 
-Agar agent bisa membaca/menulis file di penyimpanan Android (foto, dokumen, dll):
+To let the agent read/write files in Android storage (photos, documents, etc.):
 
 ```bash
-termux-setup-storage          # sekali: membuat ~/storage -> /storage/emulated/0
-# lalu aktifkan di ~/.termux-agent/config.yaml:
+termux-setup-storage          # once: creates ~/storage -> /storage/emulated/0
+# then enable it in ~/.termux-agent/config.yaml:
 #   allow_storage: true
-termux-agent "baca file terbaru di folder Download"
+termux-agent "read the latest file in the Download folder"
 ```
 
-## Provider & API key
+## Providers & API keys
 
-| Provider   | Env var               | Catatan                                  |
-|------------|-----------------------|------------------------------------------|
-| openai     | `OPENAI_API_KEY`      | OpenAI GPT                                 |
-| anthropic  | `ANTHROPIC_API_KEY`   | Claude (Messages API)                     |
-| openrouter | `OPENROUTER_API_KEY`  | Banyak model via satu key                  |
-| ollama     | (tanpa key)           | Model lokal di perangkat (`pkg install ollama`) |
-| groq       | `GROQ_API_KEY`        | Model cepat & murah                        |
-| deepseek   | `DEEPSEEK_API_KEY`    | DeepSeek chat/reasoner                     |
-| gemini     | `GEMINI_API_KEY`      | Google Gemini (endpoint OpenAI-compat)     |
-| zen        | `OPENCODE_API_KEY` (opsional) | OpenCode Zen — model free jalan tanpa key |
+| Provider   | Env var               | Notes                                   |
+|------------|-----------------------|-----------------------------------------|
+| openai     | `OPENAI_API_KEY`      | OpenAI GPT                              |
+| anthropic  | `ANTHROPIC_API_KEY`   | Claude (Messages API)                   |
+| openrouter | `OPENROUTER_API_KEY`  | Many models via one key                 |
+| ollama     | (no key)              | Local models on the device (`pkg install ollama`) |
+| groq       | `GROQ_API_KEY`        | Fast & cheap models                     |
+| deepseek   | `DEEPSEEK_API_KEY`    | DeepSeek chat/reasoner                  |
+| gemini     | `GEMINI_API_KEY`      | Google Gemini (OpenAI-compat endpoint)  |
+| zen        | `OPENCODE_API_KEY` (optional) | OpenCode Zen — free models work without a key |
 
-### Model free OpenCode Zen
+### Free OpenCode Zen models
 
-Tanpa API key, gunakan model `*free`:
+Without an API key, use a `*free` model:
 
 ```bash
-termux-agent --provider zen --model nemotron-3-ultra-free "berapa 2+2?"
+termux-agent --provider zen --model nemotron-3-ultra-free "what is 2+2?"
 ```
 
-Model free yang tersedia saat ini: `nemotron-3-ultra-free`, `deepseek-v4-flash-free`, `mimo-v2.5-free`, `big-pickle`. Model lain butuh `OPENCODE_API_KEY` dari <https://opencode.ai/auth>.
+Currently available free models: `nemotron-3-ultra-free`, `deepseek-v4-flash-free`, `mimo-v2.5-free`, `big-pickle`. Other models require `OPENCODE_API_KEY` from <https://opencode.ai/auth>.
 
-## Pengembangan
+## Development
 
 ```bash
-pip install -e ".[dev]"          # dependency dev (pytest)
-python -m pytest tests/ -q        # 52 test: tool, provider, agent, git, rules, resume
+pip install -e ".[dev]"          # dev dependencies (pytest)
+python -m pytest tests/ -q        # 52 tests: tools, providers, agent, git, rules, resume
 python tests/mock_server.py &     # mock OpenAI/Anthropic server (port 8765)
-termux-agent --model mock-model "..."   # tes tanpa API key
+termux-agent --model mock-model "..."   # test without an API key
 ```
 
-Struktur:
+Structure:
 
 ```
 termux_agent/
 ├── cli.py          # CLI entry point
-├── config.py       # konfigurasi + preset provider
-├── agent.py        # loop agent + tool-call
-├── session.py      # simpan sesi JSONL
+├── config.py       # configuration + provider presets
+├── agent.py        # agent loop + tool-call
+├── session.py      # JSONL session storage
 ├── providers/      # base, openai_compat, anthropic
-├── tools/          # files, search, shell, web + registri
+├── tools/          # files, search, shell, web + registry
 └── ui/             # renderer (rich) + REPL (prompt_toolkit)
 ```
 
-## Lisensi
+## License
 
-MIT — lihat [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

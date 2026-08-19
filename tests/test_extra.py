@@ -79,7 +79,7 @@ def test_git_commit_needs_confirm(git_repo: Path):
     (git_repo / "a.txt").write_text("v2\n")
     ctx = ToolContext(working_dir=git_repo, confirm_commands=True, confirm=lambda _: False)
     r = run_tool("git_commit", {"message": "perbaikan"}, ctx)
-    assert "Dibatalkan" in r
+    assert "Cancelled by user." in r
 
 
 def test_git_commit_confirmed(git_repo: Path):
@@ -93,7 +93,7 @@ def test_git_commit_confirmed(git_repo: Path):
 
 def test_git_commit_no_changes(git_repo: Path):
     ctx = ToolContext(working_dir=git_repo, confirm_commands=False)
-    assert "Tidak ada perubahan" in run_tool("git_commit", {"message": "x"}, ctx)
+    assert "No changes to commit." in run_tool("git_commit", {"message": "x"}, ctx)
 
 
 def test_git_status_not_a_repo(tmp_path: Path):
@@ -338,7 +338,7 @@ def test_web_search_ddg(monkeypatch):
 
     monkeypatch.setattr(webmod, "_http_json", fake)
     out = run_tool("web_search", {"query": "python", "max_results": 1}, ToolContext(working_dir="/", confirm_commands=False))
-    assert "Ringkasan: Python requests" in out
+    assert "Summary: Python requests" in out
     assert "duckduckgo.com" in out
 
 
