@@ -1449,6 +1449,77 @@ def test_one_shot_output_file(tmp_path: Path, monkeypatch):
     assert out_path.read_text() == "RESULT LINE\n"
 
 
+# --- clip / screenshot / parser ---
+def test_clipboard_as_prompt(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    seen = {}
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            run=lambda prompt, on_tool_use=None: seen.update(prompt=prompt) or "OK",
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr("termux_agent.notify.clipboard_get", lambda: "FROM CLIPBOARD")
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_one_shot(_min_cfg(), "", "zen", None, quiet=True, clip=True) == 0
+    assert seen.get("prompt") == "FROM CLIPBOARD"
+
+
+def test_clipboard_empty(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    monkeypatch.setattr("termux_agent.notify.clipboard_get", lambda: None)
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_one_shot(_min_cfg(), "", "zen", None, clip=True) == 2
+
+
+def test_screenshot_attached(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    shot = tmp_path / "s.png"
+    shot.write_bytes(b"png")
+    seen = {}
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            run=lambda prompt, on_tool_use=None: seen.update(prompt=prompt) or "OK",
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr("termux_agent.notify.screenshot", lambda path=None: str(shot))
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_one_shot(_min_cfg(), "what is this?", "zen", None, quiet=True, screenshot=True) == 0
+    assert f"[image: {shot}]" in seen.get("prompt", "")
+
+
+def test_parser_all_flags_present():
+    from termux_agent.cli import build_parser
+
+    help_txt = build_parser().format_help()
+    for flag in (
+        "--clip --screenshot --export --import --prune --output --timeout --speak --wakelock --notify "
+        "--chat --json --quiet --resume --serve --models --smoke --plan --copy --stats --doctor "
+        "--install-completion --list-providers --list-agents --image --prompt-file --api-key --search"
+    ).split():
+        assert flag in help_txt, f"missing {flag}"
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

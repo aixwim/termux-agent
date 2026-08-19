@@ -157,8 +157,28 @@ def cmd_one_shot(
     speak: bool = False,
     timeout: int | None = None,
     output: str | None = None,
+    clip: bool = False,
+    screenshot: bool = False,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
+
+    if clip and not prompt:
+        from termux_agent.notify import clipboard_get
+
+        prompt = clipboard_get() or prompt
+        if not prompt:
+            render_error("Clipboard is empty (or termux-api is not installed).")
+            return 2
+        render_info("Using clipboard as prompt.")
+    if screenshot:
+        from termux_agent.notify import screenshot as _screenshot
+
+        img = _screenshot()
+        if not img:
+            render_error("Could not take a screenshot (is termux-api installed and screen sharing granted?).")
+            return 2
+        prompt = f"{prompt}\n\n[image: {img}]".strip() if prompt else f"Describe this screenshot:\n\n[image: {img}]"
+        render_info(f"Attached screenshot: {img}")
 
     agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools)
     if plan and not readonly:
@@ -644,7 +664,7 @@ def cmd_smoke(cfg: dict, provider: str | None, model: str | None) -> int:
     return 0 if ok else 1
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="termux-agent",
         description="A CLI coding agent for Termux, like opencode.",
@@ -673,6 +693,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--speak", action="store_true", help="Read the answer aloud with termux-tts-speak (needs termux-api)")
     parser.add_argument("--timeout", type=int, metavar="SECONDS", help="Abort a one-shot task if it takes longer than this")
     parser.add_argument("--output", metavar="FILE", help="Also write the answer to this file (plain text)")
+    parser.add_argument("--clip", action="store_true", help="Use the clipboard as the prompt (needs termux-api)")
+    parser.add_argument("--screenshot", action="store_true", help="Attach a screenshot of the screen to the prompt (needs termux-api + screen share)")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP server bind host (with --serve)")
     parser.add_argument("--port", type=int, default=8787, help="HTTP server port (with --serve)")
@@ -709,6 +731,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip all confirmations (dangerous: allows any command & commit)",
     )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     if args.init:
@@ -847,6 +874,8 @@ def main(argv: list[str] | None = None) -> int:
             speak=args.speak,
             timeout=args.timeout,
             output=args.output,
+            clip=args.clip,
+            screenshot=args.screenshot,
         )
 
     if args.json:

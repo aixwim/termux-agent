@@ -6,23 +6,34 @@ import os
 from termux_agent import __version__
 
 BASH_SCRIPT = '''\
+_termux_agent_flags() {
+  termux-agent --help 2>/dev/null | grep -oE '\\-\\-[a-z0-9-]+' | sort -u
+}
+
 _termux_agent() {
   local cur prev
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  local opts="--provider --model --agent --resume --sessions --list-providers --list-agents --init --install-completion --yes -y --help -h"
   case "$prev" in
     --agent)
       COMPREPLY=($(compgen -W "$(termux-agent --list-agents 2>/dev/null | awk '{print $1}')" -- "$cur"))
       return 0
       ;;
-    --provider)
+    --provider|--models)
       COMPREPLY=($(compgen -W "$(termux-agent --list-providers 2>/dev/null | awk '{print $1}')" -- "$cur"))
+      return 0
+      ;;
+    --import|--output|--prompt-file|--cwd|--image|--api-key)
+      COMPREPLY=($(compgen -f -- "$cur"))
+      return 0
+      ;;
+    --resume|--export|--search|--timeout|--port|--max-context-tokens|--max-tool-rounds|--temperature|--prune)
+      COMPREPLY=($(compgen -W "" -- "$cur"))
       return 0
       ;;
   esac
   if [[ "$cur" == -* ]]; then
-    COMPREPLY=($(compgen -W "$opts" -- "$cur"))
+    COMPREPLY=($(compgen -W "$(_termux_agent_flags)" -- "$cur"))
   else
     COMPREPLY=($(compgen -f -- "$cur"))
   fi
@@ -34,22 +45,15 @@ complete -o default -F _termux_agent termux-agent
 ZSH_SCRIPT = '''\
 #compdef termux-agent
 _termux_agent() {
-  local -a agents providers opts
+  local -a agents providers flags
   agents=(${(f)"$(termux-agent --list-agents 2>/dev/null | awk '{print $1}')"})
   providers=(${(f)"$(termux-agent --list-providers 2>/dev/null | awk '{print $1}')"})
-  opts=(
-    '--provider[Choose provider]' '--model[Model to use]'
-    '--agent[Sub-agent]' '--resume[Resume session]'
-    '--sessions[List sessions]' '--list-providers[List providers]'
-    '--list-agents[List sub-agents]' '--init[Setup configuration]'
-    '--install-completion[Install auto-completion]'
-    '--yes[Skip confirmations]' '-y[Skip confirmations]'
-    '--help[Help]' '-h[Help]'
-  )
+  flags=(${(f)"$(termux-agent --help 2>/dev/null | grep -oE '\\-\\-[a-z0-9-]+' | sort -u)"})
   case "${words[2]}" in
     --agent) _describe 'agent' agents ;;
-    --provider) _describe 'provider' providers ;;
-    *) _describe 'opsi' opts ;;
+    --provider|--models) _describe 'provider' providers ;;
+    --import|--output|--prompt-file|--cwd|--image|--api-key) _files ;;
+    *) _arguments '*:option:(${flags})' ;;
   esac
 }
 compdef _termux_agent termux-agent

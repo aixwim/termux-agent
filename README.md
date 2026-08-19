@@ -19,6 +19,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Chat mode**: `--chat` disables all tools for a plain conversation (no file/command access).
 - **Timeouts & saving**: `--timeout SECONDS` aborts a slow one-shot task (exit 124); one-shot tasks are now saved as sessions too, so you can `--resume` them.
 - **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--import FILE` restores it, and `--prune N` deletes all but the newest N sessions.
+- **Phone-native input**: `--clip` reads the prompt from the clipboard, `--screenshot` captures the screen with `termux-screenshot` and attaches it as an image (both need termux-api). Auto-completion (`--install-completion`) derives flags from `--help`, so it never goes stale.
 - **Scriptable resumes**: `--resume` supports `--json` and `--quiet` for automated continuation; `--sessions --search "keyword"` filters sessions.
 - **Scripting output**: `--json` (structured result) and `--quiet` (only the answer, no banner) for pipelines; `--copy` sends the answer to the clipboard; `--stats` prints token usage after the answer.
 - **Pipe-friendly**: `echo "fix the bug" | termux-agent` runs a one-shot using stdin as the prompt.
@@ -193,6 +194,15 @@ termux-agent --prune 20
 
 # save a one-shot answer to a file too (works with --quiet / --json)
 termux-agent --quiet --output out.txt "summarize this repo"
+
+# use the clipboard as the prompt (handy paired with --copy)
+termux-agent --clip --copy "improve my clipboard text"
+
+# attach a screenshot of the screen to the prompt (needs screen-share permission)
+termux-agent --screenshot "what error is on my screen?"
+
+# regenerate auto-completion (derives all flags from --help, never goes stale)
+termux-agent --install-completion
 ```
 
 ### Project rules

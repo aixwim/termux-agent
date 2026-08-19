@@ -65,3 +65,33 @@ def speak(text: str) -> bool:
         return True
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def clipboard_get() -> str | None:
+    """Read the clipboard via termux-clipboard-get (needs termux-api)."""
+    if not _have("termux-clipboard-get"):
+        return None
+    try:
+        proc = subprocess.run(
+            ["termux-clipboard-get"], timeout=10, capture_output=True, text=True
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return (proc.stdout or "").strip() or None
+
+
+def screenshot(path: str | None = None) -> str | None:
+    """Capture the phone screen with termux-screenshot (needs termux-api + screen share).
+
+    Returns the PNG path, or None if unavailable/failed.
+    """
+    if not _have("termux-screenshot"):
+        return None
+    target = path or os.path.join(os.getcwd(), f"screenshot-{int(__import__('time').time())}.png")
+    try:
+        subprocess.run(["termux-screenshot", "-o", target], timeout=30, capture_output=True)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return target if os.path.exists(target) else None
