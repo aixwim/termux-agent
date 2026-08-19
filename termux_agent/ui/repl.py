@@ -303,7 +303,8 @@ class Repl:
     def _show_stats(self) -> None:
         u = self.agent.usage
         if not u or not any(u.values()):
-            render_info("No usage recorded yet.")
+            total = sum(len(str(m.get("content", ""))) // 4 for m in self.agent.messages if m.get("content"))
+            render_info(f"Provider reports no usage; estimated context so far: ~{total} tokens.")
             return
         render_info(
             f"Tokens: prompt {u.get('prompt_tokens', 0)} | "

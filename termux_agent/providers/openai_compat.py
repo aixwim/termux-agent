@@ -2,8 +2,12 @@
 Covers: OpenAI, OpenRouter, Ollama, Groq, DeepSeek, Gemini (compat endpoint)."""
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import os
+import re
+from pathlib import Path
 from typing import Any, Iterable
 
 import httpx
@@ -17,6 +21,39 @@ from termux_agent.providers.base import (
 )
 
 DEFAULT_TIMEOUT = httpx.Timeout(120.0, connect=30.0)
+
+_IMAGE_PATTERN = re.compile(r"\[image:\s*([^\]]+)\]")
+
+
+def _read_image_data_uri(path: str) -> str | None:
+    """Read an image file into a data: URI for vision-capable models."""
+    p = Path(path).expanduser()
+    if not p.is_file():
+        return None
+    mime = mimetypes.guess_type(str(p))[0] or "image/png"
+    return f"data:{mime};base64,{base64.b64encode(p.read_bytes()).decode()}"
+
+
+def _embed_images(content: str) -> list[dict] | str:
+    """Turn '[image: path]' markers in a user message into OpenAI content parts."""
+    if "[image:" not in content:
+        return content
+    parts: list[dict] = []
+    pos = 0
+    for m in _IMAGE_PATTERN.finditer(content):
+        before = content[pos : m.start()]
+        if before.strip():
+            parts.append({"type": "text", "text": before})
+        data_uri = _read_image_data_uri(m.group(1).strip())
+        if data_uri:
+            parts.append({"type": "image_url", "image_url": {"url": data_uri}})
+        else:
+            parts.append({"type": "text", "text": f"[image not found: {m.group(1).strip()}]"})
+        pos = m.end()
+    tail = content[pos:]
+    if tail.strip():
+        parts.append({"type": "text", "text": tail})
+    return parts
 
 
 def _iter_sse(response: httpx.Response) -> Iterable[str]:
@@ -59,6 +96,8 @@ def _to_openai_wire(messages: list[dict]) -> list[dict]:
                 for tc in m["tool_calls"]
             ]
             out.append({"role": "assistant", "content": m.get("content", ""), "tool_calls": tcs})
+        elif role == "user" and isinstance(m.get("content"), str) and "[image:" in m["content"]:
+            out.append({"role": "user", "content": _embed_images(m["content"])})
         else:
             out.append(m)
     return out

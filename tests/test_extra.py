@@ -924,6 +924,89 @@ def test_git_log_tool(tmp_path: Path):
     assert "first commit" in out
 
 
+# --- vision: [image:] embedding ---
+def test_embed_images_converts_to_parts(tmp_path: Path):
+    from termux_agent.providers import openai_compat as oc
+
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"\x89PNG fake")
+    out = oc._embed_images(f"look at [image: {img}] and describe it")
+    assert isinstance(out, list)
+    assert out[0]["type"] == "text"
+    assert out[1]["type"] == "image_url"
+    assert out[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert out[2]["type"] == "text"
+
+
+def test_embed_images_missing_file(tmp_path: Path):
+    from termux_agent.providers import openai_compat as oc
+
+    out = oc._embed_images("see [image: nope.png] ok")
+    assert isinstance(out, list)
+    joined = " ".join(p.get("text", "") for p in out if p.get("type") == "text")
+    assert "image not found" in joined
+
+
+def test_embed_images_no_marker_passthrough(tmp_path: Path):
+    from termux_agent.providers import openai_compat as oc
+
+    assert oc._embed_images("plain text") == "plain text"
+
+
+def test_wire_message_embeds_image(tmp_path: Path):
+    from termux_agent.providers.openai_compat import _to_openai_wire
+
+    img = tmp_path / "a.jpg"
+    img.write_bytes(b"jpegdata")
+    out = _to_openai_wire([{"role": "user", "content": f"what is in [image: {img}]"}])
+    assert out[0]["role"] == "user"
+    assert isinstance(out[0]["content"], list)
+    assert any(p["type"] == "image_url" for p in out[0]["content"])
+
+
+# --- --prompt-file / --image flags ---
+def test_main_prompt_file(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    f = tmp_path / "prompt.txt"
+    f.write_text("do the thing please")
+    seen = {}
+
+    def fake_one_shot(cfg, prompt, provider, model, **kw):
+        seen["prompt"] = prompt
+        return 0
+
+    monkeypatch.setattr(cli, "cmd_one_shot", fake_one_shot)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO())
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    code = cli.main(["--prompt-file", str(f)])
+    assert code == 0
+    assert seen["prompt"] == "do the thing please"
+
+
+def test_main_image_flag(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    img = tmp_path / "x.png"
+    img.write_bytes(b"data")
+    seen = {}
+
+    def fake_one_shot(cfg, prompt, provider, model, **kw):
+        seen["prompt"] = prompt
+        return 0
+
+    monkeypatch.setattr(cli, "cmd_one_shot", fake_one_shot)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO())
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+    code = cli.main(["--image", str(img), "describe this"])
+    assert code == 0
+    assert f"[image: {img}]" in seen["prompt"]
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import copy
 import sys
+from pathlib import Path
 
 import yaml
 
@@ -508,6 +509,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="One-shot mode: print the result as JSON (answer, tool_calls, usage)")
     parser.add_argument("--quiet", action="store_true", help="One-shot mode: print only the answer (no banner/tool logs)")
     parser.add_argument("--copy", action="store_true", help="One-shot mode: copy the answer to the clipboard")
+    parser.add_argument("--image", help="Attach an image to the one-shot prompt (vision-capable models, e.g. a screenshot)")
+    parser.add_argument("--prompt-file", help="Read the prompt from a file (UTF-8)")
     parser.add_argument("prompt", nargs="*", help="One-shot prompt (no arguments = interactive mode)")
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
@@ -591,6 +594,24 @@ def main(argv: list[str] | None = None) -> int:
     if not prompt and not sys.stdin.isatty():
         # Pipelines: read the whole stdin as a one-shot prompt.
         prompt = sys.stdin.read().strip()
+    if args.prompt_file:
+        from pathlib import Path as _Path
+
+        try:
+            file_prompt = _Path(args.prompt_file).expanduser().read_text(encoding="utf-8").strip()
+        except OSError as e:
+            render_error(f"Cannot read --prompt-file: {e}")
+            return 1
+        prompt = (prompt + "\n\n" + file_prompt).strip() if prompt else file_prompt
+    if args.image:
+        if not prompt:
+            render_error("--image requires a one-shot prompt (or --prompt-file).")
+            return 2
+        img = args.image
+        if not Path(img).expanduser().is_file():
+            render_error(f"Image not found: {img}")
+            return 1
+        prompt = f"{prompt}\n[image: {img}]"
     if args.resume:
         return cmd_resume(
             cfg,

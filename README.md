@@ -20,6 +20,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Undo file changes**: `/undo` in interactive mode restores the most recent file write/edit (the agent keeps a snapshot of every changed file).
 - **JSON output**: `termux-agent --json "prompt"` prints a machine-readable result `{ok, answer, tool_calls, usage, provider, model}`.
 - **Web search without an API key**: `web_search` uses DuckDuckGo, with a Wikipedia fallback when the network blocks/rejects certificates.
+- **Image / vision input**: `--image photo.jpg` or the inline marker `[image: path]` in a prompt attach a picture (e.g. a screenshot) for vision-capable models.
 - **Auto-completion**: `--install-completion bash|zsh` adds Tab-completion to your shell (providers, agents, and CLI options).
 - **Diagnostics**: `--doctor` checks the Termux environment, config, PATH, and API key; `--doctor-network` also tests provider connectivity; `--smoke` sends a tiny real prompt end-to-end to verify the whole pipeline.
 - **Project rules**: `AGENTS.md`, `CLAUDE.md`, or `.termux-agent/rules.md` in the working directory (and parents up to `$HOME`) are auto-loaded into the agent's instructions — like opencode.
@@ -133,6 +134,12 @@ termux-agent --quiet "what files changed?"
 
 # copy the answer to the clipboard (needs termux-api)
 termux-agent --copy "fix the bugs in main.py"
+
+# attach an image (e.g. a screenshot) for vision-capable models
+termux-agent --image /sdcard/DCIM/screenshot.png "explain what this screen shows"
+
+# read the prompt from a file
+termux-agent --prompt-file review.txt --json
 
 # list sessions
 termux-agent --sessions
