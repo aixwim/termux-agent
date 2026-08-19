@@ -248,6 +248,31 @@ def test_build_agent_unknown_agent_raises(tmp_path: Path, monkeypatch):
         build_agent(_min_cfg(), "zen", None, agent_name="nope")
 
 
+def test_build_agent_overrides(tmp_path: Path, monkeypatch):
+    from termux_agent.cli import build_agent
+
+    monkeypatch.chdir(tmp_path)
+    agent = build_agent(
+        _min_cfg(),
+        "zen",
+        None,
+        working_dir=str(tmp_path / "sub"),
+        temperature=0.1,
+        max_tool_rounds=3,
+    )
+    assert agent.ctx.working_dir == tmp_path / "sub"
+    assert agent.temperature == 0.1
+    assert agent.max_tool_rounds == 3
+
+
+def test_doctor_runs(tmp_path: Path, monkeypatch):
+    from termux_agent.cli import cmd_doctor
+
+    monkeypatch.chdir(tmp_path)
+    code = cmd_doctor(_min_cfg(), network=False)
+    assert code in (0, 1)
+
+
 # --- web_search ---
 def test_web_search_ddg(monkeypatch):
     from termux_agent.tools import web as webmod

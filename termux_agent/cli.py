@@ -25,12 +25,21 @@ def build_agent(
     model: str | None,
     auto_accept: bool = False,
     agent_name: str | None = None,
+    working_dir: str | None = None,
+    temperature: float | None = None,
+    max_tool_rounds: int | None = None,
 ) -> Agent:
     name = provider_name or cfg.get("provider", "zen")
     provider = create_provider(name, cfg, model)
-    working_dir = resolve_working_dir(cfg)
+    if working_dir:
+        from pathlib import Path
+
+        cwd = Path(working_dir).expanduser().resolve()
+        cwd.mkdir(parents=True, exist_ok=True)
+    else:
+        cwd = resolve_working_dir(cfg)
     ctx = ToolContext(
-        working_dir=working_dir,
+        working_dir=cwd,
         max_output_chars=int(cfg.get("max_output_chars", 60000)),
         command_timeout=int(cfg.get("command_timeout", 60)),
         confirm_commands=not auto_accept and bool(cfg.get("confirm_commands", True)),
@@ -46,8 +55,8 @@ def build_agent(
     return Agent(
         provider,
         ctx,
-        max_tool_rounds=int(cfg.get("max_tool_rounds", 20)),
-        temperature=float(cfg.get("temperature", 0.7)),
+        max_tool_rounds=int(max_tool_rounds or cfg.get("max_tool_rounds", 20)),
+        temperature=float(temperature if temperature is not None else cfg.get("temperature", 0.7)),
         agent_spec=agent_spec,
     )
 
@@ -66,8 +75,11 @@ def cmd_one_shot(
     model: str | None,
     auto_accept: bool = False,
     agent_name: str | None = None,
+    working_dir: str | None = None,
+    temperature: float | None = None,
+    max_tool_rounds: int | None = None,
 ) -> int:
-    agent = build_agent(cfg, provider, model, auto_accept, agent_name)
+    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds)
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
     render_info(
@@ -122,6 +134,9 @@ def cmd_resume(
     prompt: str,
     auto_accept: bool = False,
     agent_name: str | None = None,
+    working_dir: str | None = None,
+    temperature: float | None = None,
+    max_tool_rounds: int | None = None,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -135,7 +150,7 @@ def cmd_resume(
     if provider_name not in cfg.get("providers", {}):
         provider_name = cfg.get("provider", "zen")
     model = info.get("model") or None
-    agent = build_agent(cfg, provider_name, model, auto_accept, agent_name)
+    agent = build_agent(cfg, provider_name, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds)
     agent.messages = [{"role": "system", "content": agent.system_prompt}] + history
     if prompt:
         answer = agent.run(prompt, on_tool_use=render_tool_use)
@@ -160,6 +175,95 @@ def cmd_list_agents(cfg: dict) -> int:
     return 0
 
 
+def cmd_doctor(cfg: dict, network: bool = False) -> int:
+    """Diagnostik lingkungan: versi, Termux, config, PATH, koneksi provider."""
+    import os
+    import platform
+    import shutil
+    import sys as _sys
+
+    issues = 0
+    try:
+        import termux_agent.tools.base as tbase
+
+        n_tools = len(tbase.tool_specs())
+    except Exception:  # noqa: BLE001
+        n_tools = 0
+
+    def ok(label: str, detail: str = "") -> None:
+        render_info(f"  [OK]  {label}" + (f": {detail}" if detail else ""))
+
+    def warn(label: str, detail: str = "") -> None:
+        nonlocal issues
+        issues += 1
+        render_error(f"  [!!]  {label}" + (f": {detail}" if detail else ""))
+
+    render_info("== lingkungan ==")
+    ok("python", f"{_sys.version.split()[0]} ({_sys.executable})")
+    ok("platform", platform.platform())
+    is_termux = "TERMUX_VERSION" in os.environ or os.path.isdir("/data/data/com.termux")
+    if is_termux:
+        ok("termux", "terdeteksi")
+    else:
+        warn("termux", "tidak terdeteksi — mungkin bukan Termux")
+
+    render_info("== konfigurasi ==")
+    ok("config", str(CONFIG_FILE))
+    try:
+        render_info(f"  provider: {cfg.get('provider')} | model: {cfg.get('model')} | agent: {cfg.get('agent')}")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        cwd = resolve_working_dir(cfg)
+        if os.access(cwd, os.W_OK):
+            ok("working_dir dapat ditulis", str(cwd))
+        else:
+            warn("working_dir", f"tidak dapat ditulis: {cwd}")
+    except Exception as e:  # noqa: BLE001
+        warn("working_dir", str(e))
+    if cfg.get("allow_storage"):
+        from termux_agent.config import detect_storage_roots
+
+        roots = detect_storage_roots()
+        ok("storage roots", ", ".join(map(str, roots)) or "tidak ada")
+
+    render_info("== PATH & tools ==")
+    for name in ("git", "pip", "python"):
+        path = shutil.which(name)
+        ok(name, path or "TIDAK ADA") if path else warn(name, "tidak ditemukan di PATH")
+    ok("tool terdaftar", str(n_tools))
+
+    render_info("== provider ==")
+    pname = cfg.get("provider", "zen")
+    pc = cfg.get("providers", {}).get(pname, {})
+    ok("provider aktif", f"{pname} ({pc.get('type')})")
+    if pc.get("api_key_env"):
+        key = os.environ.get(pc["api_key_env"])
+        model = cfg.get("model", "")
+        is_free = pname == "zen" and "free" in str(model)
+        if key:
+            ok("api key", f"{pc['api_key_env']} terisi ({key[:4]}...)")
+        elif is_free:
+            ok("api key", f"{pc['api_key_env']} kosong — tidak wajib untuk model free zen")
+        else:
+            warn("api key", f"{pc['api_key_env']} kosong — pakai env var atau isi di config")
+    if network and pc.get("base_url"):
+        import urllib.request
+
+        try:
+            req = urllib.request.Request(pc["base_url"], method="HEAD")
+            urllib.request.urlopen(req, timeout=10).close()
+            ok("koneksi", f"{pc['base_url']} terjangkau")
+        except Exception as e:  # noqa: BLE001
+            warn("koneksi", f"{pc['base_url']}: {type(e).__name__}")
+
+    from termux_agent.session import list_sessions
+
+    ok("sesi tersimpan", str(len(list_sessions())))
+    render_info("\nJika ada tanda [!!], jalankan kembali dengan TERMUX_AGENT_DEBUG=1 untuk log detail.")
+    return 1 if issues else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="termux-agent",
@@ -169,11 +273,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--provider", help="Nama provider (mis. openai, anthropic, ollama)")
     parser.add_argument("--model", help="Nama model (mengganti default config)")
     parser.add_argument("--agent", help="Nama sub-agent (mis. explore, coder, shell)")
+    parser.add_argument("--cwd", help="Direktori kerja (mengganti working_dir config)")
+    parser.add_argument("--temperature", type=float, help="Suhu sampling (0.0-2.0)")
+    parser.add_argument("--max-tool-rounds", type=int, help="Batas iterasi tool per pesan")
+    parser.add_argument("--verbose", action="store_true", help="Log request/response provider (setara TERMUX_AGENT_DEBUG=1)")
     parser.add_argument("prompt", nargs="*", help="Prompt one-shot (tanpa argumen = mode interaktif)")
     parser.add_argument("--init", action="store_true", help="Buat config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="Daftar sesi tersimpan")
     parser.add_argument("--list-providers", action="store_true", help="Daftar preset provider")
     parser.add_argument("--list-agents", action="store_true", help="Daftar sub-agent tersedia")
+    parser.add_argument("--doctor", action="store_true", help="Diagnostik lingkungan & config")
+    parser.add_argument("--doctor-network", action="store_true", help="Sertakan cek koneksi provider (butuh internet)")
     parser.add_argument(
         "--install-completion",
         nargs="?",
@@ -215,6 +325,14 @@ def main(argv: list[str] | None = None) -> int:
             "atau langsung pakai (default: OpenCode Zen free)."
         )
 
+    if args.doctor or args.doctor_network:
+        return cmd_doctor(cfg, network=args.doctor_network)
+
+    if args.verbose:
+        import os
+
+        os.environ["TERMUX_AGENT_DEBUG"] = "1"
+
     if args.list_providers:
         return cmd_list_providers(cfg)
     if args.list_agents:
@@ -233,14 +351,42 @@ def main(argv: list[str] | None = None) -> int:
 
     prompt = " ".join(args.prompt).strip()
     if args.resume:
-        return cmd_resume(cfg, args.resume, prompt, auto_accept=args.yes, agent_name=args.agent)
+        return cmd_resume(
+            cfg,
+            args.resume,
+            prompt,
+            auto_accept=args.yes,
+            agent_name=args.agent,
+            working_dir=args.cwd,
+            temperature=args.temperature,
+            max_tool_rounds=args.max_tool_rounds,
+        )
 
     if prompt:
-        return cmd_one_shot(cfg, prompt, args.provider, args.model, auto_accept=args.yes, agent_name=args.agent)
+        return cmd_one_shot(
+            cfg,
+            prompt,
+            args.provider,
+            args.model,
+            auto_accept=args.yes,
+            agent_name=args.agent,
+            working_dir=args.cwd,
+            temperature=args.temperature,
+            max_tool_rounds=args.max_tool_rounds,
+        )
 
     provider_key = args.provider or cfg.get("provider", "zen")
     try:
-        agent = build_agent(cfg, provider_key, args.model, auto_accept=args.yes, agent_name=args.agent)
+        agent = build_agent(
+            cfg,
+            provider_key,
+            args.model,
+            auto_accept=args.yes,
+            agent_name=args.agent,
+            working_dir=args.cwd,
+            temperature=args.temperature,
+            max_tool_rounds=args.max_tool_rounds,
+        )
     except (ConfigError, KeyError) as e:
         render_error(f"Error: {e}\nJalankan 'termux-agent --init' dulu, lalu isi API key.")
         return 1

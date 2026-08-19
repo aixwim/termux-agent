@@ -9,6 +9,7 @@ CLI coding agent untuk **Termux (Android)**, mirip [opencode](https://opencode.a
 - **Multi-agent / sub-agent**: agent khusus dengan peran & batasan tool berbeda — `root` (semua tool), `explore` (hanya baca/cari), `coder` (tulis/edit tanpa commit), `shell` (jalankan perintah). Pilih lewat `--agent` atau `/agent`.
 - **Web search tanpa API key**: `web_search` memakai DuckDuckGo, dengan fallback Wikipedia bila jaringan memblokir/menolak sertifikat.
 - **Auto-completion**: `--install-completion bash|zsh` menambah Tab-completion ke shell (provider, agent, dan opsi CLI).
+- **Diagnostik**: `--doctor` memeriksa lingkungan Termux, config, PATH, dan API key; `--doctor-network` ikut mengetes koneksi provider.
 - **Rules proyek**: file `AGENTS.md`, `CLAUDE.md`, atau `.termux-agent/rules.md` di direktori kerja (dan parent sampai `$HOME`) otomatis dimuat ke instruksi agent — seperti opencode.
 - **Git terintegrasi**: agent bisa cek status, diff, dan commit (commit butuh konfirmasi).
 - **Resume sesi**: lanjutkan percakapan sebelumnya dengan `--resume` atau `/resume`.
@@ -77,6 +78,13 @@ termux-agent --list-providers
 # pasang Tab-completion (bash/zsh) sekali saja
 termux-agent --install-completion bash
 source ~/.bashrc
+
+# diagnostik lingkungan & config
+termux-agent --doctor
+termux-agent --doctor-network      # tambah cek koneksi provider
+
+# override cepat tanpa ubah config
+termux-agent --cwd /sdcard/Documents --temperature 0.2 --max-tool-rounds 30 "rapikan proyek ini"
 
 # daftar sesi
 termux-agent --sessions
@@ -155,7 +163,7 @@ Model free yang tersedia saat ini: `nemotron-3-ultra-free`, `deepseek-v4-flash-f
 
 ```bash
 pip install -e ".[dev]"          # dependency dev (pytest)
-python -m pytest tests/ -q        # 47 test: tool, provider, agent, git, rules, resume
+python -m pytest tests/ -q        # 49 test: tool, provider, agent, git, rules, resume
 python tests/mock_server.py &     # mock OpenAI/Anthropic server (port 8765)
 termux-agent --model mock-model "..."   # tes tanpa API key
 ```
