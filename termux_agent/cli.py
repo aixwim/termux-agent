@@ -24,6 +24,7 @@ def build_agent(
     provider_name: str | None,
     model: str | None,
     auto_accept: bool = False,
+    agent_name: str | None = None,
 ) -> Agent:
     name = provider_name or cfg.get("provider", "zen")
     provider = create_provider(name, cfg, model)
@@ -38,11 +39,16 @@ def build_agent(
         from termux_agent.config import detect_storage_roots
 
         ctx._allowed_dirs = [*ctx._allowed_dirs, *detect_storage_roots()]
+    agent_key = agent_name or cfg.get("agent", "root")
+    agent_spec = cfg.get("agents", {}).get(agent_key)
+    if agent_spec is None:
+        raise ConfigError(f"Agent '{agent_key}' tidak dikenal. Tersedia: {', '.join(cfg.get('agents', {}))}")
     return Agent(
         provider,
         ctx,
         max_tool_rounds=int(cfg.get("max_tool_rounds", 20)),
         temperature=float(cfg.get("temperature", 0.7)),
+        agent_spec=agent_spec,
     )
 
 
@@ -59,12 +65,14 @@ def cmd_one_shot(
     provider: str | None,
     model: str | None,
     auto_accept: bool = False,
+    agent_name: str | None = None,
 ) -> int:
-    agent = build_agent(cfg, provider, model, auto_accept)
+    agent = build_agent(cfg, provider, model, auto_accept, agent_name)
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
     render_info(
-        f"provider: {agent.provider.name} | model: {agent.provider.model} | cwd: {agent.ctx.working_dir}"
+        f"provider: {agent.provider.name} | model: {agent.provider.model} | "
+        f"agent: {agent_name or cfg.get('agent', 'root')} | cwd: {agent.ctx.working_dir}"
     )
     if auto_accept:
         render_info("Mode --yes: semua konfirmasi dilewati otomatis.")
@@ -108,7 +116,13 @@ def find_session(session_ref: str | None) -> "tuple[Path, dict, list[dict]] | No
     return path, info, session_messages(path)
 
 
-def cmd_resume(cfg: dict, session_ref: str | None, prompt: str, auto_accept: bool = False) -> int:
+def cmd_resume(
+    cfg: dict,
+    session_ref: str | None,
+    prompt: str,
+    auto_accept: bool = False,
+    agent_name: str | None = None,
+) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
     found = find_session(session_ref)
@@ -121,13 +135,13 @@ def cmd_resume(cfg: dict, session_ref: str | None, prompt: str, auto_accept: boo
     if provider_name not in cfg.get("providers", {}):
         provider_name = cfg.get("provider", "zen")
     model = info.get("model") or None
-    agent = build_agent(cfg, provider_name, model, auto_accept=auto_accept)
+    agent = build_agent(cfg, provider_name, model, auto_accept, agent_name)
     agent.messages = [{"role": "system", "content": agent.system_prompt}] + history
     if prompt:
         answer = agent.run(prompt, on_tool_use=render_tool_use)
         render_answer(answer)
         return 0
-    Repl(agent, provider_name=provider_name, model=agent.provider.model).run()
+    Repl(agent, provider_name=provider_name, model=agent.provider.model, agent_name=agent_name).run()
     return 0
 
 
@@ -135,6 +149,14 @@ def cmd_list_providers(cfg: dict) -> int:
     for name, pc in cfg.get("providers", {}).items():
         models = ", ".join(pc.get("models") or [])
         render_info(f"{name:12} {pc.get('type'):16} models: {models}")
+    return 0
+
+
+def cmd_list_agents(cfg: dict) -> int:
+    for name, spec in cfg.get("agents", {}).items():
+        tools = spec.get("tools") or []
+        label = "semua tool" if not tools else ", ".join(tools)
+        render_info(f"{name:10} {spec.get('description', '')}  [{label}]")
     return 0
 
 
@@ -146,10 +168,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"termux-agent {__version__}")
     parser.add_argument("--provider", help="Nama provider (mis. openai, anthropic, ollama)")
     parser.add_argument("--model", help="Nama model (mengganti default config)")
+    parser.add_argument("--agent", help="Nama sub-agent (mis. explore, coder, shell)")
     parser.add_argument("prompt", nargs="*", help="Prompt one-shot (tanpa argumen = mode interaktif)")
     parser.add_argument("--init", action="store_true", help="Buat config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="Daftar sesi tersimpan")
     parser.add_argument("--list-providers", action="store_true", help="Daftar preset provider")
+    parser.add_argument("--list-agents", action="store_true", help="Daftar sub-agent tersedia")
     parser.add_argument(
         "--resume",
         nargs="?",
@@ -186,24 +210,31 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list_providers:
         return cmd_list_providers(cfg)
+    if args.list_agents:
+        return cmd_list_agents(cfg)
 
     prompt = " ".join(args.prompt).strip()
     if args.resume:
-        return cmd_resume(cfg, args.resume, prompt, auto_accept=args.yes)
+        return cmd_resume(cfg, args.resume, prompt, auto_accept=args.yes, agent_name=args.agent)
 
     if prompt:
-        return cmd_one_shot(cfg, prompt, args.provider, args.model, auto_accept=args.yes)
+        return cmd_one_shot(cfg, prompt, args.provider, args.model, auto_accept=args.yes, agent_name=args.agent)
 
     provider_key = args.provider or cfg.get("provider", "zen")
     try:
-        agent = build_agent(cfg, provider_key, args.model, auto_accept=args.yes)
+        agent = build_agent(cfg, provider_key, args.model, auto_accept=args.yes, agent_name=args.agent)
     except (ConfigError, KeyError) as e:
         render_error(f"Error: {e}\nJalankan 'termux-agent --init' dulu, lalu isi API key.")
         return 1
     if args.yes:
         render_info("Mode --yes: semua konfirmasi dilewati otomatis.")
     try:
-        Repl(agent, provider_name=provider_key, model=agent.provider.model).run()
+        Repl(
+            agent,
+            provider_name=provider_key,
+            model=agent.provider.model,
+            agent_name=args.agent or cfg.get("agent", "root"),
+        ).run()
     except KeyboardInterrupt:
         pass
     return 0

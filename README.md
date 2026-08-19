@@ -6,6 +6,7 @@ CLI coding agent untuk **Termux (Android)**, mirip [opencode](https://opencode.a
 
 - **Langsung jalan**: setelah install cukup ketik `termux-agent` — default memakai OpenCode Zen model free (tanpa API key), seperti opencode yang langsung bisa dipakai.
 - **Agent loop lengkap**: model bebas memilih jawab atau memanggil tool (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep_file`, `glob_find`, `run_command`, `web_fetch`, `git_status`, `git_diff`, `git_commit`) sampai tugas selesai.
+- **Multi-agent / sub-agent**: agent khusus dengan peran & batasan tool berbeda — `root` (semua tool), `explore` (hanya baca/cari), `coder` (tulis/edit tanpa commit), `shell` (jalankan perintah). Pilih lewat `--agent` atau `/agent`.
 - **Rules proyek**: file `AGENTS.md`, `CLAUDE.md`, atau `.termux-agent/rules.md` di direktori kerja (dan parent sampai `$HOME`) otomatis dimuat ke instruksi agent — seperti opencode.
 - **Git terintegrasi**: agent bisa cek status, diff, dan commit (commit butuh konfirmasi).
 - **Resume sesi**: lanjutkan percakapan sebelumnya dengan `--resume` atau `/resume`.
@@ -63,6 +64,11 @@ termux-agent --yes "git commit semua perubahan"
 # pilih provider/model
 termux-agent --provider zen --model nemotron-3-ultra-free "cek isi direktori ini"
 
+# gunakan sub-agent khusus
+termux-agent --agent explore "cari di mana fungsi main didefinisikan"  # baca saja
+termux-agent --agent coder "tambahkan unit test untuk kalkulator.py"
+termux-agent --list-agents   # daftar sub-agent
+
 # daftar preset provider
 termux-agent --list-providers
 
@@ -90,7 +96,19 @@ termux-agent "tambah docstring ke app.py"   # mengikuti aturan itu
 /cwd           tampilkan direktori kerja
 /sessions      daftar sesi
 /resume [ID]   lanjutkan sesi (ID opsional, default terbaru)
-/compact       ringkas riwayat sesi agar hemat konteks
+  /compact       ringkas riwayat sesi agar hemat konteks
+  /agent [NAME]  lihat/ganti sub-agent (explore, coder, shell, ...)
+Ketikan pesan biasa untuk bertanya; Ctrl+C untuk membatalkan.
+```
+
+Sub-agent juga bisa dibuat sendiri di `~/.termux-agent/config.yaml`:
+
+```yaml
+agents:
+  myhelper:
+    description: "Asisten khusus saya"
+    prompt: "Kamu hanya membantu soal shell."
+    tools: [run_command, read_file]
 ```
 
 ### Akses file Android (storage)

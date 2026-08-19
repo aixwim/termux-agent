@@ -158,9 +158,7 @@ def test_compact_skips_short_history(tmp_path: Path):
 
 
 # --- auto-accept / --yes ---
-def test_build_agent_auto_accept(tmp_path: Path, monkeypatch):
-    from termux_agent.cli import build_agent
-
+def _min_cfg(**overrides) -> dict:
     cfg = {
         "provider": "zen",
         "providers": {
@@ -171,7 +169,23 @@ def test_build_agent_auto_accept(tmp_path: Path, monkeypatch):
                 "api_key_env": "",
             }
         },
+        "agents": {
+            "root": {"description": "utama", "prompt": "", "tools": []},
+            "explore": {
+                "description": "baca saja",
+                "prompt": "jangan mengubah",
+                "tools": ["read_file"],
+            },
+        },
     }
+    cfg.update(overrides)
+    return cfg
+
+
+def test_build_agent_auto_accept(tmp_path: Path, monkeypatch):
+    from termux_agent.cli import build_agent
+
+    cfg = _min_cfg()
     monkeypatch.chdir(tmp_path)
     agent = build_agent(cfg, "zen", None, auto_accept=True)
     assert agent.ctx.confirm_commands is False
@@ -188,19 +202,47 @@ def test_detect_storage_roots():
 def test_allow_storage_adds_allowed_dirs(tmp_path: Path, monkeypatch):
     from termux_agent.cli import build_agent
 
-    cfg = {
-        "provider": "zen",
-        "providers": {
-            "zen": {
-                "type": "openai_compat",
-                "base_url": "http://localhost:9/v1",
-                "models": ["m"],
-                "api_key_env": "",
-            }
-        },
-        "allow_storage": True,
-    }
+    cfg = _min_cfg(allow_storage=True)
     monkeypatch.chdir(tmp_path)
     agent = build_agent(cfg, "zen", None)
     allowed = [d for d in agent.ctx._allowed_dirs if "storage" in str(d)]
     assert allowed, "storage roots harus ditambahkan ke _allowed_dirs"
+
+
+# --- sub-agent ---
+def test_build_agent_selects_agent(tmp_path: Path, monkeypatch):
+    from termux_agent.cli import build_agent
+
+    monkeypatch.chdir(tmp_path)
+    agent = build_agent(_min_cfg(), "zen", None, agent_name="explore")
+    assert agent.allowed_tools == {"read_file"}
+    assert "jangan mengubah" in agent.system_prompt
+    names = {t.name for t in agent.tools}
+    assert names == {"read_file"}
+
+
+def test_set_agent_switches_tools_and_prompt(tmp_path: Path):
+    from termux_agent.providers.base import Provider
+
+    class P(Provider):
+        name = "p"
+        model = "m"
+
+        def stream(self, messages, tools=None, temperature=0.7, max_tokens=8192):
+            return []
+
+    agent = Agent(P(), ToolContext(working_dir=tmp_path, confirm_commands=False))
+    full = {t.name for t in agent.tools}
+    assert len(full) >= 10
+    agent.set_agent({"prompt": "baca saja", "tools": ["read_file", "list_dir"]})
+    assert agent.allowed_tools == {"read_file", "list_dir"}
+    assert {t.name for t in agent.tools} == {"read_file", "list_dir"}
+    assert "baca saja" in agent.messages[0]["content"]
+
+
+def test_build_agent_unknown_agent_raises(tmp_path: Path, monkeypatch):
+    from termux_agent.cli import build_agent
+
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(Exception):
+        build_agent(_min_cfg(), "zen", None, agent_name="nope")

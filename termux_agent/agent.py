@@ -44,10 +44,13 @@ def load_rules(working_dir: Path) -> str:
     return "\n\n".join(parts)
 
 
-def build_system_prompt(extra_rules: str = "") -> str:
+def build_system_prompt(extra_rules: str = "", agent_prompt: str = "") -> str:
+    parts = [SYSTEM_PROMPT]
+    if agent_prompt.strip():
+        parts.append(f"[Peran agent]\n{agent_prompt.strip()}")
     if extra_rules.strip():
-        return SYSTEM_PROMPT + "\n\n" + extra_rules
-    return SYSTEM_PROMPT
+        parts.append(extra_rules)
+    return "\n\n".join(parts)
 
 
 class Agent:
@@ -58,17 +61,38 @@ class Agent:
         max_tool_rounds: int = 20,
         temperature: float = 0.7,
         system_prompt: str | None = None,
+        agent_spec: dict | None = None,
     ) -> None:
         self.provider = provider
         self.ctx = ctx
         self.max_tool_rounds = max_tool_rounds
         self.temperature = temperature
-        self.system_prompt = system_prompt or build_system_prompt(load_rules(ctx.working_dir))
+        self.agent_spec = agent_spec or {}
+        self.allowed_tools: set[str] | None = None
+        spec_tools = self.agent_spec.get("tools") or []
+        if spec_tools:
+            self.allowed_tools = set(spec_tools)
+        rules = load_rules(ctx.working_dir)
+        agent_prompt = str(self.agent_spec.get("prompt", ""))
+        self.system_prompt = system_prompt or build_system_prompt(rules, agent_prompt)
         self.messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
+
+    def set_agent(self, spec: dict | None) -> None:
+        """Ganti peran agent (prompt + batasan tool) dan reset riwayat."""
+        self.agent_spec = spec or {}
+        spec_tools = self.agent_spec.get("tools") or []
+        self.allowed_tools = set(spec_tools) if spec_tools else None
+        rules = load_rules(self.ctx.working_dir)
+        agent_prompt = str(self.agent_spec.get("prompt", ""))
+        self.system_prompt = build_system_prompt(rules, agent_prompt)
+        self.messages = [{"role": "system", "content": self.system_prompt}]
 
     @property
     def tools(self) -> list:
-        return tool_specs()
+        specs = tool_specs()
+        if self.allowed_tools is None:
+            return specs
+        return [s for s in specs if s.name in self.allowed_tools]
 
     def run(
         self,

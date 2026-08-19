@@ -31,6 +31,7 @@ Perintah khusus (diawali /):
   /sessions       daftar sesi tersimpan
   /resume [ID]    lanjutkan sesi (ID opsional, default terbaru)
   /compact        ringkas riwayat sesi agar hemat konteks
+  /agent [NAME]   lihat/ganti sub-agent (explore, coder, shell, ...)
 Ketikan pesan biasa untuk bertanya; Ctrl+C untuk membatalkan."""
 
 
@@ -43,10 +44,17 @@ def make_prompt_session(history_file: str) -> PromptSession:
 
 
 class Repl:
-    def __init__(self, agent: Agent, provider_name: str, model: str) -> None:
+    def __init__(
+        self,
+        agent: Agent,
+        provider_name: str,
+        model: str,
+        agent_name: str = "root",
+    ) -> None:
         self.agent = agent
         self.provider_name = provider_name
         self.model = model
+        self.agent_name = agent_name
         self.session = Session(provider_name=provider_name, model=model)
 
     def _confirm(self, command: str) -> bool:
@@ -64,7 +72,7 @@ class Repl:
     def _banner(self) -> None:
         render_info(
             f"termux-agent | provider: {self.provider_name} | model: {self.model} | "
-            f"cwd: {self.agent.ctx.working_dir}\nKetik /help untuk bantuan."
+            f"agent: {self.agent_name} | cwd: {self.agent.ctx.working_dir}\nKetik /help untuk bantuan."
         )
 
     def run(self) -> None:
@@ -148,9 +156,41 @@ class Repl:
             self._resume(rest)
         elif c == "/compact":
             self._compact()
+        elif c == "/agent":
+            self._switch_agent(rest)
         else:
             render_error(f"Perintah tidak dikenal: {c}")
         return False
+
+    def _switch_agent(self, name: str) -> None:
+        from termux_agent.config import load_config
+
+        name = name.strip()
+        if not name:
+            self._list_agents()
+            return
+        cfg = load_config()
+        spec = cfg.get("agents", {}).get(name)
+        if spec is None:
+            render_error(
+                f"Agent '{name}' tidak dikenal. Tersedia: {', '.join(cfg.get('agents', {}))}"
+            )
+            return
+        self.agent.set_agent(spec)
+        self.agent_name = name
+        self.session = Session(provider_name=self.provider_name, model=self.model)
+        render_info(
+            f"Agent diganti: {name} — {spec.get('description', '')} "
+            f"(tool dibatasi: {len(self.agent.tools)} buah)."
+        )
+
+    def _list_agents(self) -> None:
+        from termux_agent.config import load_config
+
+        for name, spec in load_config().get("agents", {}).items():
+            tools = spec.get("tools") or []
+            label = "semua tool" if not tools else ", ".join(tools)
+            render_info(f"  {name:8} {spec.get('description', '')}  [{label}]")
 
     def _compact(self) -> None:
         render_info("Merangkum riwayat sesi...")

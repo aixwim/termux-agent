@@ -16,6 +16,7 @@ DEFAULTS: dict[str, Any] = {
     # seperti opencode yang langsung bisa dipakai setelah install.
     "provider": "zen",
     "model": "nemotron-3-ultra-free",
+    "agent": "root",
     "temperature": 0.7,
     "max_tool_rounds": 20,
     "working_dir": "~",
@@ -80,6 +81,40 @@ DEFAULTS: dict[str, Any] = {
                 "big-pickle",
             ],
             "api_key_env": "OPENCODE_API_KEY",
+        },
+    },
+    # Sub-agent: nama -> prompt tambahan + daftar tool yang diizinkan (opsional).
+    # Kunci "tools" memuat daftar nama tool yang boleh dipakai (kosong = semua).
+    "agents": {
+        "root": {
+            "description": "Asisten utama dengan semua tool",
+            "prompt": "Kamu adalah agent utama dengan akses penuh.",
+            "tools": [],
+        },
+        "explore": {
+            "description": "Baca & cari kode tanpa mengubah apa pun",
+            "prompt": (
+                "Kamu adalah agent eksplorasi. Tugasmu hanya MEMBACA dan MENCARI: "
+                "baca file, daftar direktori, grep, glob, status git. "
+                "JANGAN menulis, mengedit, atau menjalankan perintah yang mengubah sistem."
+            ),
+            "tools": ["read_file", "list_dir", "grep_file", "glob_find", "git_status", "git_diff"],
+        },
+        "coder": {
+            "description": "Tulis/edit kode, tanpa commit git",
+            "prompt": (
+                "Kamu adalah agent koding. Fokus menulis dan mengedit kode dengan benar "
+                "mengikuti aturan proyek. Jangan commit ke git."
+            ),
+            "tools": ["read_file", "write_file", "edit_file", "list_dir", "grep_file", "glob_find", "run_command", "git_status", "git_diff"],
+        },
+        "shell": {
+            "description": "Hanya menjalankan perintah shell",
+            "prompt": (
+                "Kamu adalah agent shell. Fokus menjalankan perintah Termux dan melaporkan output. "
+                "Gunakan run_command untuk semua tugas."
+            ),
+            "tools": ["run_command", "read_file", "list_dir"],
         },
     },
 }
