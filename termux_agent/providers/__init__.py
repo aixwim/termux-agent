@@ -21,9 +21,10 @@ def create_provider(name: str, cfg: dict, model: str | None = None) -> Provider:
     if not chosen:
         raise ConfigError(f"Provider '{name}' has no models. Set 'model' or add one to its models list.")
     api_key = resolve_api_key(pc)
+    fallback = list(pc.get("fallback_models") or [])
     if ptype == "anthropic":
-        return AnthropicProvider(base_url, chosen, api_key=api_key)
-    return OpenAICompatProvider(base_url, chosen, api_key=api_key)
+        return AnthropicProvider(base_url, chosen, api_key=api_key, fallback_models=fallback)
+    return OpenAICompatProvider(base_url, chosen, api_key=api_key, fallback_models=fallback)
 
 
 __all__ = [

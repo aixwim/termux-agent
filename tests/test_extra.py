@@ -430,6 +430,106 @@ def test_cmd_plan_executes_when_approved(tmp_path: Path, monkeypatch):
     assert calls["exec"] == 1
 
 
+# --- fallback models on 429 ---
+def test_agent_falls_back_on_rate_limit(tmp_path: Path):
+    from termux_agent.agent import Agent
+    from termux_agent.providers.base import Provider, ProviderError, StreamEvent
+    from termux_agent.tools.base import ToolContext
+
+    attempts = []
+
+    class P(Provider):
+        name = "p"
+        model = "m1"
+        fallback_models = ["m2", "m3"]
+
+        def stream(self, messages, tools=None, temperature=0.7, max_tokens=8192):
+            attempts.append(self.model)
+            if self.model == "m1":
+                raise ProviderError("p: HTTP 429 - rate limited")
+            yield StreamEvent(kind="text_delta", text=f"ok from {self.model}")
+            yield StreamEvent(kind="done")
+
+    agent = Agent(P(), ToolContext(working_dir=tmp_path, confirm_commands=False))
+    out = agent.run("hello")
+    assert out == "ok from m2"
+    assert attempts == ["m1", "m2"]
+    assert agent.provider.model == "m2"
+
+
+def test_agent_non_rate_limit_not_retried(tmp_path: Path):
+    from termux_agent.agent import Agent
+    from termux_agent.providers.base import Provider, ProviderError
+    from termux_agent.tools.base import ToolContext
+
+    attempts = []
+
+    class P(Provider):
+        name = "p"
+        model = "m1"
+        fallback_models = ["m2"]
+
+        def stream(self, messages, tools=None, temperature=0.7, max_tokens=8192):
+            attempts.append(self.model)
+            raise ProviderError("p: HTTP 401 - unauthorized")
+
+    agent = Agent(P(), ToolContext(working_dir=tmp_path, confirm_commands=False))
+    out = agent.run("hello")
+    assert out.startswith("Error:")
+    assert "401" in out
+    assert attempts == ["m1"]
+
+
+# --- --models ---
+def test_cmd_list_models_preset(tmp_path: Path, monkeypatch):
+    from termux_agent import cli
+
+    cfg = _min_cfg()
+    code = cli.cmd_list_models(cfg, "zen")
+    assert code == 0
+
+
+def test_cmd_list_models_live(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+    from termux_agent.providers.base import Provider
+
+    class FakeProv(Provider):
+        name = "fake"
+        model = "m"
+
+        def list_models(self):
+            return ["a", "b"]
+
+        def stream(self, *a, **k):
+            return iter([])
+
+    monkeypatch.setattr(cli, "create_provider", lambda *a, **k: FakeProv())
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_list_models(_min_cfg(), "zen") == 0
+
+
+# --- init wizard ---
+def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+    from termux_agent.config import CONFIG_DIR, CONFIG_FILE
+
+    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path / "ta")
+    monkeypatch.setattr(cli, "CONFIG_FILE", tmp_path / "ta" / "config.yaml")
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO())
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+    it = iter(["zen", "m-model"])
+    monkeypatch.setattr("builtins.input", lambda *a, **k: next(it))
+    code = cli.cmd_init()
+    assert code == 0
+    out = (tmp_path / "ta" / "config.yaml").read_text()
+    assert "provider: zen" in out
+    assert "m-model" in out
+
+
 # --- web_search ---
 def test_web_search_ddg(monkeypatch):
     from termux_agent.tools import web as webmod

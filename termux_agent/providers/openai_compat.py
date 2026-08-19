@@ -73,10 +73,12 @@ class OpenAICompatProvider(Provider):
         model: str,
         api_key: str | None = None,
         client: httpx.Client | None = None,
+        fallback_models: list[str] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
+        self.fallback_models = fallback_models or []
         self._client = client or httpx.Client(timeout=DEFAULT_TIMEOUT)
 
     def _headers(self) -> dict[str, str]:

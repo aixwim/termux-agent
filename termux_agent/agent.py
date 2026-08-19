@@ -111,25 +111,41 @@ class Agent:
         """Send one user message and run the tool-call loop until done.
         Returns the final answer text."""
         self.messages.append({"role": "user", "content": user_input})
+        models = [self.provider.model, *self.provider.fallback_models]
+        last_err: ProviderError | None = None
+        for i, model in enumerate(models):
+            if i:
+                self.provider.model = model
+            try:
+                return self._run_rounds(on_text_delta, on_tool_use)
+            except ProviderError as e:
+                last_err = e
+                # Rate limited? Retry with the next fallback model, else give up.
+                if "429" not in str(e) or i == len(models) - 1:
+                    break
+        self.messages.append({"role": "assistant", "content": f"[error] {last_err}"})
+        return f"Error: {last_err}"
+
+    def _run_rounds(
+        self,
+        on_text_delta: Callable[[str], None] | None,
+        on_tool_use: Callable[[str, str], None] | None,
+    ) -> str:
         for _round in range(self.max_tool_rounds):
             text_parts: list[str] = []
             tool_calls: list[dict] = []
-            try:
-                events: Iterable[StreamEvent] = self.provider.stream(
-                    self.messages, tools=self.tools, temperature=self.temperature
-                )
-                for ev in events:
-                    if ev.kind == "text_delta":
-                        text_parts.append(ev.text)
-                        if on_text_delta:
-                            on_text_delta(ev.text)
-                    elif ev.kind == "usage":
-                        self._add_usage(ev.usage)
-                    elif ev.kind == "tool_calls":
-                        tool_calls = ev.tool_calls
-            except ProviderError as e:
-                self.messages.append({"role": "assistant", "content": f"[error] {e}"})
-                return f"Error: {e}"
+            events: Iterable[StreamEvent] = self.provider.stream(
+                self.messages, tools=self.tools, temperature=self.temperature
+            )
+            for ev in events:
+                if ev.kind == "text_delta":
+                    text_parts.append(ev.text)
+                    if on_text_delta:
+                        on_text_delta(ev.text)
+                elif ev.kind == "usage":
+                    self._add_usage(ev.usage)
+                elif ev.kind == "tool_calls":
+                    tool_calls = ev.tool_calls
             text = "".join(text_parts)
 
             if not tool_calls:

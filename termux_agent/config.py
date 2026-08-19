@@ -71,11 +71,17 @@ DEFAULTS: dict[str, Any] = {
         },
         # OpenCode Zen: free models work without an API key; paid ones need
         # OPENCODE_API_KEY from https://opencode.ai/auth. OpenAI-compatible endpoint.
+        # fallback_models: automatic retry with another model on rate limits (429).
         "zen": {
             "type": "openai_compat",
             "base_url": "https://opencode.ai/zen/v1",
             "models": [
                 "nemotron-3-ultra-free",
+                "deepseek-v4-flash-free",
+                "mimo-v2.5-free",
+                "big-pickle",
+            ],
+            "fallback_models": [
                 "deepseek-v4-flash-free",
                 "mimo-v2.5-free",
                 "big-pickle",

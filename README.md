@@ -11,6 +11,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Plan mode (`--plan`)**: the agent first proposes a step-by-step plan read-only, then executes it only after you approve (auto-approved with `--yes`).
 - **Token usage tracking**: `/stats` shows prompt/completion/total tokens used in the session (when the provider reports usage).
 - **Pipe-friendly**: `echo "fix the bug" | termux-agent` runs a one-shot using stdin as the prompt.
+- **Rate-limit fallback**: `fallback_models` in the provider config are tried automatically when the main model returns HTTP 429 (rate limited).
 - **Web search without an API key**: `web_search` uses DuckDuckGo, with a Wikipedia fallback when the network blocks/rejects certificates.
 - **Auto-completion**: `--install-completion bash|zsh` adds Tab-completion to your shell (providers, agents, and CLI options).
 - **Diagnostics**: `--doctor` checks the Termux environment, config, PATH, and API key; `--doctor-network` also tests provider connectivity.
@@ -78,6 +79,13 @@ termux-agent --list-agents   # list sub-agents
 
 # list provider presets
 termux-agent --list-providers
+
+# list models for a provider (live, or preset fallback)
+termux-agent --models
+termux-agent --models zen
+
+# interactive first-time setup (provider + model + API key hint)
+termux-agent --init
 
 # install Tab-completion (bash/zsh) once
 termux-agent --install-completion bash

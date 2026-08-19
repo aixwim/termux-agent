@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import sys
+
+import yaml
 
 from termux_agent import __version__
 from termux_agent.agent import Agent
 from termux_agent.config import (
+    CONFIG_DIR,
     CONFIG_FILE,
+    DEFAULTS,
     ConfigError,
     ensure_config_file,
     load_config,
@@ -80,9 +85,38 @@ def build_agent(
 
 
 def cmd_init() -> int:
+    if sys.stdin.isatty():
+        return _init_wizard()
     path = ensure_config_file()
     render_info(f"Configuration created: {path}\n")
     render_info("Next steps:\n  1. Set the API key in an env var (e.g. export OPENAI_API_KEY=...)\n  2. Run: termux-agent")
+    return 0
+
+
+def _init_wizard() -> int:
+    render_info("termux-agent setup (press Enter to keep the default)")
+    providers = sorted(DEFAULTS.get("providers", {}))
+    p = input(f"Provider [{'/'.join(providers)}] (default: zen) > ").strip() or "zen"
+    pc = DEFAULTS.get("providers", {}).get(p)
+    if pc is None:
+        render_error(f"Unknown provider: {p}")
+        return 1
+    models = pc.get("models") or []
+    default_model = models[0] if models else ""
+    m = input(f"Model (default: {default_model or '(none)'}) > ").strip() or default_model
+    cfg = copy.deepcopy(DEFAULTS)
+    cfg["provider"] = p
+    if m:
+        cfg["model"] = m
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
+    render_info(f"Configuration created: {CONFIG_FILE}")
+    key_env = pc.get("api_key_env")
+    if key_env:
+        render_info(
+            f"API key: set the env var {key_env} (e.g. export {key_env}=...). "
+            "Keys are never stored in the config file."
+        )
     return 0
 
 
@@ -257,6 +291,25 @@ def cmd_list_agents(cfg: dict) -> int:
     return 0
 
 
+def cmd_list_models(cfg: dict, provider_name: str | None = None) -> int:
+    name = provider_name or cfg.get("provider", "zen")
+    try:
+        provider = create_provider(name, cfg)
+    except ConfigError as e:
+        render_error(str(e))
+        return 1
+    live = provider.list_models()
+    if live:
+        render_info(f"Models for '{name}':")
+        for m in live:
+            render_info(f"  {m}")
+        return 0
+    render_info(f"'{name}' does not expose a live model list; showing presets:")
+    for m in cfg.get("providers", {}).get(name, {}).get("models", []):
+        render_info(f"  {m}")
+    return 0
+
+
 def cmd_doctor(cfg: dict, network: bool = False) -> int:
     """Environment diagnostics: versions, Termux, config, PATH, provider connectivity."""
     import os
@@ -366,6 +419,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
     parser.add_argument("--list-providers", action="store_true", help="List provider presets")
     parser.add_argument("--list-agents", action="store_true", help="List available sub-agents")
+    parser.add_argument("--models", nargs="?", const="__default__", metavar="PROVIDER", help="List models for a provider (live, or preset fallback)")
     parser.add_argument("--doctor", action="store_true", help="Diagnose environment & config")
     parser.add_argument("--doctor-network", action="store_true", help="Also check provider connectivity (needs internet)")
     parser.add_argument(
@@ -421,6 +475,9 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_list_providers(cfg)
     if args.list_agents:
         return cmd_list_agents(cfg)
+    if args.models is not None:
+        pname = None if args.models == "__default__" else args.models
+        return cmd_list_models(cfg, pname)
     if args.install_completion:
         from termux_agent.completion import install
 

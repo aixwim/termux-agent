@@ -67,6 +67,7 @@ class Provider(ABC):
     api_key: str | None = None
     base_url: str = ""
     supports_streaming: bool = True
+    fallback_models: list[str] = []
 
     @abstractmethod
     def stream(

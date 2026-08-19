@@ -86,3 +86,5 @@ providers:
     base_url: https://opencode.ai/zen/v1
     models: [nemotron-3-ultra-free, deepseek-v4-flash-free, mimo-v2.5-free, big-pickle]
     api_key_env: OPENCODE_API_KEY
+    # automatically retried in order when the main model is rate limited (HTTP 429)
+    fallback_models: [deepseek-v4-flash-free, mimo-v2.5-free, big-pickle]
