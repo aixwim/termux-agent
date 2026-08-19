@@ -50,9 +50,13 @@ def build_agent(
     readonly: bool = False,
     max_context_tokens: int | None = None,
     no_tools: bool = False,
+    retries: int | None = None,
+    no_fallback: bool = False,
 ) -> Agent:
     name = provider_name or cfg.get("provider", "zen")
     provider = create_provider(name, cfg, model)
+    if no_fallback:
+        provider.fallback_models = []
     if working_dir:
         from pathlib import Path
 
@@ -88,7 +92,7 @@ def build_agent(
         temperature=float(temperature if temperature is not None else cfg.get("temperature", 0.7)),
         agent_spec=agent_spec,
         max_context_tokens=int(max_context_tokens if max_context_tokens is not None else cfg.get("max_context_tokens", 0)),
-        retries=int(cfg.get("retries", 1)),
+        retries=int(retries if retries is not None else cfg.get("retries", 1)),
         retry_backoff=float(cfg.get("retry_backoff", 1.0)),
     )._with_tools(not no_tools)
 
@@ -183,6 +187,8 @@ def cmd_one_shot(
     clip: bool = False,
     screenshot: bool = False,
     stream: bool = False,
+    retries: int | None = None,
+    no_fallback: bool = False,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -204,7 +210,7 @@ def cmd_one_shot(
         prompt = f"{prompt}\n\n[image: {img}]".strip() if prompt else f"Describe this screenshot:\n\n[image: {img}]"
         render_info(f"Attached screenshot: {img}")
 
-    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools)
+    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools, retries, no_fallback)
     if plan and not readonly:
         return cmd_plan(cfg, prompt, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, max_context_tokens, as_json)
     if not as_json and not quiet:
@@ -809,6 +815,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--clip", action="store_true", help="Use the clipboard as the prompt (needs termux-api)")
     parser.add_argument("--screenshot", action="store_true", help="Attach a screenshot of the screen to the prompt (needs termux-api + screen share)")
     parser.add_argument("--stream", action="store_true", help="Stream the answer to the terminal as it is generated (typewriter mode)")
+    parser.add_argument("--retries", type=int, metavar="N", help="Override transient retry count for network hiccups")
+    parser.add_argument("--no-fallback", action="store_true", help="Disable fallback models on 429/errors (use only the selected model)")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP server bind host (with --serve)")
     parser.add_argument("--port", type=int, default=8787, help="HTTP server port (with --serve)")
@@ -1005,6 +1013,8 @@ def main(argv: list[str] | None = None) -> int:
             clip=args.clip,
             screenshot=args.screenshot,
             stream=args.stream,
+            retries=args.retries,
+            no_fallback=args.no_fallback,
         )
 
     if args.json:

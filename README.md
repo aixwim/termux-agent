@@ -15,7 +15,8 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Command whitelist**: `whitelisted_commands` in config lists extra command prefixes that skip confirmation (e.g. `["pip install", "python app.py"]`).
 - **Termux notifications**: `--notify` (or `notify_on_done: true` in config) sends a `termux-notification` when a one-shot task finishes (needs termux-api).
 - **Wake lock & TTS**: `--wakelock` holds a Termux wake lock while a long task runs (prevents CPU sleep), and `--speak` reads the answer aloud with `termux-tts-speak` (both need termux-api).
-- **HTTP API**: `--serve` runs a tiny local server (`POST /chat`, `GET /health`, `GET /models`, `GET /sessions`, with CORS enabled for browser clients). Every request is saved as a session and the id is returned in the response; pass `"session": "<id>"` to resume that conversation. Use `--token` to require a bearer token on all endpoints except `/health`.
+- **HTTP API**: `--serve` runs a tiny local server (`POST /chat`, `GET /health`, `GET /models`, `GET /sessions`, with CORS enabled for browser clients). Every request is saved as a session and the id is returned in the response; pass `"session": "<id>"` to resume that conversation, or `"stream": true` for Server-Sent Event output. Use `--token` to require a bearer token on all endpoints except `/health`.
+- **Resilience knobs**: `--retries N` overrides the transient retry count and `--no-fallback` disables fallback models on 429/errors.
 - **Chat mode**: `--chat` disables all tools for a plain conversation (no file/command access).
 - **Timeouts & saving**: `--timeout SECONDS` aborts a slow one-shot task (exit 124); one-shot tasks are now saved as sessions too, so you can `--resume` them.
 - **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--export-all DIR` backs up every session, `--import FILE` restores one, `--prune N` / `--forget [ID]` delete sessions. `--bench [PROVIDER]` times one tiny request per model to help you pick a fast default.
@@ -183,6 +184,10 @@ termux-agent --wakelock --speak "summarize this repo and read the summary"
 # abort if a task takes longer than 5 minutes (exit code 124 on timeout)
 termux-agent --timeout 300 "run the full test suite and fix failures"
 
+# tune resilience: more transient retries, or never fall back to another model
+termux-agent --retries 3 --timeout 300 "deploy everything"
+termux-agent --no-fallback "use exactly my configured model"
+
 # run a local HTTP API (for Tasker / Termux:API / scripts)
 termux-agent --serve --host 127.0.0.1 --port 8787
 curl -X POST http://127.0.0.1:8787/chat -d '{"prompt":"hello"}' -H 'Content-Type: application/json'
@@ -193,6 +198,9 @@ curl -X POST http://127.0.0.1:8787/chat -d '{"prompt":"continue","session":"2026
 termux-agent --serve --token "a-long-random-string"
 curl -X POST http://127.0.0.1:8787/chat -d '{"prompt":"hello"}' -H 'Authorization: Bearer a-long-random-string'
 curl http://127.0.0.1:8787/sessions -H 'Authorization: Bearer a-long-random-string'   # list saved sessions
+
+# stream responses as Server-Sent Events (for Tasker / web clients)
+curl -N -X POST http://127.0.0.1:8787/chat -d '{"prompt":"explain","stream":true}'
 
 # list sessions
 termux-agent --sessions

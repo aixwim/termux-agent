@@ -49,6 +49,16 @@ def _send_unauthorized(handler: BaseHTTPRequestHandler) -> None:
     handler.wfile.write(body)
 
 
+def _sse(handler: BaseHTTPRequestHandler, event: str, data: dict[str, Any]) -> None:
+    handler.send_header("Content-Type", "text/event-stream")
+    handler.send_header("Cache-Control", "no-cache")
+    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.end_headers()
+    payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    handler.wfile.write(b"event: " + event.encode() + b"\ndata: " + payload + b"\n\n")
+    handler.wfile.flush()
+
+
 def build_server(
     build_agent,
     cfg: dict,
@@ -95,6 +105,33 @@ class _AgentHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def _stream_chat(self, agent, prompt: str, session_ref) -> None:
+        """Stream POST /chat responses as Server-Sent Events."""
+        self.send_response(200)
+        _sse(self, "start", {"provider": agent.provider.name, "model": agent.provider.model})
+        try:
+            answer = agent.run(
+                prompt,
+                on_text_delta=lambda d: _sse(self, "delta", {"text": d}),
+                on_tool_use=lambda n, a: _sse(self, "tool", {"name": n, "arguments": a}),
+            )
+        except Exception as e:  # noqa: BLE001
+            _sse(self, "error", {"error": str(e)})
+            return
+        try:
+            from termux_agent.session import record_messages
+
+            session_id = record_messages(
+                agent.messages,
+                agent.provider.name,
+                agent.provider.model,
+                session_id=session_ref if (isinstance(session_ref, str) and session_ref) else None,
+            )
+        except Exception:  # noqa: BLE001
+            session_id = ""
+        usage = getattr(agent, "usage", {}) or {}
+        _sse(self, "done", {"answer": answer, "session": session_id, "usage": usage})
 
     def do_GET(self) -> None:
         if self.path == "/health":
@@ -171,6 +208,9 @@ class _AgentHandler(BaseHTTPRequestHandler):
             matches = [s for s in list_sessions() if s.stem.startswith(session_ref)]
             if matches:
                 agent.messages = [agent.messages[0]] + session_messages(matches[-1])
+        if data.get("stream"):
+            self._stream_chat(agent, prompt, session_ref)
+            return
         answer = agent.run(prompt)
         from termux_agent.session import record_messages
 

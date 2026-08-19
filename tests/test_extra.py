@@ -1824,6 +1824,69 @@ def test_doctor_json(tmp_path: Path, monkeypatch):
     assert code in (0, 1)
 
 
+# --- server SSE streaming ---
+def test_server_stream_sse(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+    from termux_agent import session
+    from termux_agent.server import _AgentHandler
+
+    sdir = tmp_path / "sessions"
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={"total_tokens": 5},
+            messages=[{"role": "system", "content": "s"}],
+        )
+
+        def _run(prompt, on_text_delta=None, on_tool_use=None):
+            on_text_delta("hel")
+            on_text_delta("lo")
+            return "hello"
+
+        agent.run = _run
+        return agent
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/chat",
+            data=_json.dumps({"prompt": "x", "stream": True}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            body = r.read().decode()
+        assert "event: start" in body
+        assert 'event: delta' in body
+        assert '"text": "hel"' in body
+        assert 'event: done' in body
+        assert '"answer": "hello"' in body
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+# --- retries / no-fallback ---
+def test_build_agent_retries_and_no_fallback(tmp_path: Path, monkeypatch):
+    from termux_agent.cli import build_agent
+
+    monkeypatch.chdir(tmp_path)
+    agent = build_agent(_min_cfg(), "zen", None, retries=3)
+    assert agent.retries == 3
+    agent2 = build_agent(_min_cfg(), "zen", None, no_fallback=True)
+    assert agent2.provider.fallback_models == []
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
