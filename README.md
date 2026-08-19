@@ -21,8 +21,8 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Watch mode**: `--watch SECONDS` re-runs a one-shot prompt on an interval until Ctrl+C (combine with `--screenshot` to monitor the screen). In the REPL, `/system` shows the effective system prompt.
 - **Device awareness & introspection**: `--context` injects battery/wifi/time into the system prompt (needs termux-api); `--list-tools` lists registered tools; `--config-show` prints the effective merged config; `--prune --json` reports what was deleted.
 - **Batch & housekeeping**: `--batch FILE` runs one one-shot per line (results to `--output` as JSON); `--sessions --search` now matches across all messages; `--prune-days N` deletes sessions older than N days.
-- **Safety & resource limits**: `--no-shell`, `--no-web`, `--no-git` disable whole tool groups (useful for untrusted/unattended use); `--max-output-chars N` and `--command-timeout SECONDS` override config limits. In the REPL, `/context` attaches or refreshes device context.
-- **Review & scripting**: `--show [SESSION]` prints a full transcript (`--json` for raw); `--export --markdown` writes a readable transcript; `--tokens FILE` estimates token usage; `--no-save` keeps one-shot runs out of the session store.
+- **Safety & resource limits**: `--no-shell`, `--no-web`, `--no-git` disable whole tool groups (useful for untrusted/unattended use); `--only-tools LIST` restricts to exact tool names; `--max-output-chars N` and `--command-timeout SECONDS` override config limits. In the REPL, `/context` attaches or refreshes device context and `/image PATH` attaches an image.
+- **Review & scripting**: `--show [SESSION]` prints a full transcript (`--json` for raw); `--export --markdown` writes a readable transcript; `--tokens FILE` estimates token usage; `--no-save` keeps one-shot runs out of the session store; `--git` injects repo state into the system prompt.
 - **Chat mode**: `--chat` disables all tools for a plain conversation (no file/command access).
 - **Timeouts & saving**: `--timeout SECONDS` aborts a slow one-shot task (exit 124); one-shot tasks are now saved as sessions too, so you can `--resume` them.
 - **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--export-all DIR` backs up every session, `--import FILE` restores one, `--prune N` / `--forget [ID]` delete sessions. `--bench [PROVIDER]` times one tiny request per model to help you pick a fast default.
@@ -163,6 +163,10 @@ termux-agent --context "if battery is low, keep the answer very short"
 # restrict what the agent may touch (great for unattended scripts)
 termux-agent --no-shell --no-git "summarize the changes in this repo"
 termux-agent --no-web --command-timeout 5 --max-output-chars 10000 "explain main.py"
+termux-agent --only-tools read_file,grep,glob "where is the login handler?"
+
+# give the agent the repo state as context (status/diff/log)
+termux-agent --git "suggest the next commit for this repo"
 
 # inspect what the agent can do and what config it will use
 termux-agent --list-tools

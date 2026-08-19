@@ -2299,6 +2299,72 @@ def test_one_shot_no_save(tmp_path: Path, monkeypatch):
     assert not list(session.list_sessions())
 
 
+# --- git context / only-tools / server config ---
+def test_git_context_non_repo(tmp_path: Path):
+    from termux_agent import cli
+
+    assert cli._git_context(tmp_path) == ""
+
+
+def test_git_context_repo(tmp_path: Path, monkeypatch):
+    import subprocess
+
+    from termux_agent import cli
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path)
+    (tmp_path / "a.txt").write_text("x")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "first"], cwd=tmp_path)
+    out = cli._git_context(tmp_path)
+    assert "git log" in out
+    assert "first" in out
+
+
+def test_only_tools(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    cfg = _min_cfg()
+    cfg["agents"]["root"] = {"prompt": "Be helpful."}
+    monkeypatch.setattr(cli, "create_provider", lambda *a, **k: SimpleNamespace(fallback_models=[], chat=None))
+    monkeypatch.setattr(cli, "resolve_working_dir", lambda cfg: tmp_path)
+    a = cli.build_agent(cfg, "zen", "m", auto_accept=True, only_tools=["read_file", "web_search"])
+    names = {s.name for s in a.tools}
+    assert names == {"read_file", "web_search"}
+
+
+def test_split_tools():
+    from termux_agent import cli
+
+    assert cli._split_tools(" read_file , grep,glob ") == ["read_file", "grep", "glob"]
+    assert cli._split_tools(None) is None
+    assert cli._split_tools("") is None
+
+
+def test_repl_image_command(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.ui import repl as replmod
+    from termux_agent.ui.repl import Repl
+
+    img = tmp_path / "pic.png"
+    img.write_bytes(b"\x89PNG")
+    agent = SimpleNamespace(
+        system_prompt="S",
+        ctx=SimpleNamespace(working_dir=tmp_path, confirm_commands=True),
+        messages=[],
+        usage={},
+    )
+    monkeypatch.setattr(replmod, "render_info", lambda *a, **k: None)
+    monkeypatch.setattr(replmod, "render_error", lambda *a, **k: None)
+    r = Repl(agent, "zen", "m")
+    calls = []
+    r._run_turn = lambda p: calls.append(p)
+    assert r._handle_command(f"/image {img}", None) is False
+    assert calls and "[image:" in calls[0]
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

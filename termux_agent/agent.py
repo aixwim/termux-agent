@@ -155,6 +155,15 @@ class Agent:
             self.allowed_tools -= blocked
         return self
 
+    def _only_tools(self, names: list[str]) -> "Agent":
+        """Restrict the agent to exactly these tool names (kept tool names only)."""
+        kept = set(names)
+        if self.allowed_tools is None:
+            self.allowed_tools = {s.name for s in tool_specs()} & kept
+        else:
+            self.allowed_tools &= kept
+        return self
+
     def _with_extra_rules(self, rules: str | None) -> "Agent":
         """Append per-invocation instructions (--rules) to the system prompt."""
         if rules and rules.strip():

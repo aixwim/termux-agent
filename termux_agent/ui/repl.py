@@ -58,6 +58,7 @@ Special commands (start with /):
   /plan           toggle plan-first mode (propose, approve, then execute)
   /system         show the effective system prompt
   /context        attach/refresh device context (battery/wifi/time) in the system prompt
+  /image PATH     attach an image to the next turn
 Type a normal message to ask; Ctrl+C to cancel."""
 
 
@@ -246,6 +247,15 @@ class Repl:
             self._remember(rest)
         elif c == "/cd":
             self._cd(rest)
+        elif c == "/image":
+            if not rest:
+                render_error("Usage: /image PATH")
+                return False
+            img = Path(rest.strip()).expanduser()
+            if not img.is_file():
+                render_error(f"Image not found: {img}")
+                return False
+            self._run_turn(f"Describe or analyze this image:\n\n[image: {img}]")
         elif c == "/plan":
             self.plan_mode = not self.plan_mode
             render_info(f"Plan-first mode {'ON' if self.plan_mode else 'OFF'}.")

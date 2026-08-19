@@ -57,6 +57,7 @@ def build_agent(
     disabled_groups: list[str] | None = None,
     max_output_chars: int | None = None,
     command_timeout: int | None = None,
+    only_tools: list[str] | None = None,
 ) -> Agent:
     name = provider_name or cfg.get("provider", "zen")
     provider = create_provider(name, cfg, model)
@@ -90,7 +91,7 @@ def build_agent(
             "prompt": f"{agent_spec.get('prompt', '')}\nRead-only mode is active: DO NOT write or edit files, and DO NOT run any commands. Only read, search, and browse the web.",
             "tools": [t for t in base if t in READONLY_TOOLS],
         }
-    return (
+    agent = (
         Agent(
             provider,
             ctx,
@@ -103,7 +104,12 @@ def build_agent(
             retry_backoff=float(cfg.get("retry_backoff", 1.0)),
         )
         ._with_tools(not no_tools)
-    )._with_extra_rules(extra_rules)._without_groups(disabled_groups or [])
+        ._with_extra_rules(extra_rules)
+        ._without_groups(disabled_groups or [])
+    )
+    if only_tools:
+        agent._only_tools(only_tools)
+    return agent
 
 
 def cmd_init(provider: str | None = None, model: str | None = None) -> int:
@@ -205,6 +211,8 @@ def cmd_one_shot(
     max_output_chars: int | None = None,
     command_timeout: int | None = None,
     no_save: bool = False,
+    git_context: bool = False,
+    only_tools: list[str] | None = None,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -236,6 +244,11 @@ def cmd_one_shot(
         if not extra_rules:
             render_error(f"--rules file is empty: {rules_file}")
             return 1
+    if git_context:
+        cwd = Path(working_dir).expanduser().resolve() if working_dir else resolve_working_dir(cfg)
+        git_text = _git_context(cwd)
+        if git_text:
+            extra_rules = (extra_rules + "\n\n" + git_text) if extra_rules else git_text
 
     sys_prompt = None
     if system_prompt_file:
@@ -248,7 +261,7 @@ def cmd_one_shot(
             render_error(f"--system-prompt file is empty: {system_prompt_file}")
             return 1
 
-    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools, retries, no_fallback, extra_rules, sys_prompt, disabled_groups, max_output_chars, command_timeout)
+    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools, retries, no_fallback, extra_rules, sys_prompt, disabled_groups, max_output_chars, command_timeout, only_tools=only_tools)
     if context:
         from termux_agent.notify import device_context
 
@@ -450,6 +463,39 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
         table.add_row(m, f"{dt:.1f}", str(chars), "ok" if ok else "FAILED")
     console.print(table)
     return 0
+
+
+def _git_context(cwd: Path) -> str:
+    """Best-effort summary of repo state for the agent (empty if not a git repo)."""
+    import subprocess
+
+    if not (cwd / ".git").exists():
+        return ""
+
+    def run(*args: str) -> str:
+        try:
+            p = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=10)
+            return p.stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+
+    parts = []
+    st = run("status", "--short")
+    if st:
+        parts.append(f"git status:\n{st}")
+    stat = run("diff", "--stat")
+    if stat:
+        parts.append(f"git diff --stat:\n{stat}")
+    log = run("log", "--oneline", "-5")
+    if log:
+        parts.append(f"git log (last 5):\n{log}")
+    return "\n\n".join(parts)
+
+
+def _split_tools(value: str | None) -> list[str] | None:
+    if not value:
+        return None
+    return [t.strip() for t in value.split(",") if t.strip()]
 
 
 def _disabled_groups_from(args) -> list[str]:
@@ -885,6 +931,7 @@ def cmd_resume(
     disabled_groups: list[str] | None = None,
     max_output_chars: int | None = None,
     command_timeout: int | None = None,
+    git_context: bool = False,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -899,7 +946,11 @@ def cmd_resume(
     if provider_name not in cfg.get("providers", {}):
         provider_name = cfg.get("provider", "zen")
     model = info.get("model") or None
-    agent = build_agent(cfg, provider_name, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools=False, retries=None, no_fallback=False, extra_rules=None, system_prompt=None, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout)
+    extra_rules = ""
+    if git_context:
+        cwd = Path(working_dir).expanduser().resolve() if working_dir else resolve_working_dir(cfg)
+        extra_rules = _git_context(cwd)
+    agent = build_agent(cfg, provider_name, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools=False, retries=None, no_fallback=False, extra_rules=extra_rules or None, system_prompt=None, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout)
     agent.messages = [{"role": "system", "content": agent.system_prompt}] + history
     if prompt:
         streamed = stream and not as_json and not quiet
@@ -1131,8 +1182,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-web", action="store_true", help="Disable web_fetch and web_search tools")
     parser.add_argument("--no-git", action="store_true", help="Disable all git tools")
     parser.add_argument("--no-save", action="store_true", help="Do not persist this one-shot run as a session")
+    parser.add_argument("--git", action="store_true", dest="git_context", help="Inject the repo state (status/diff/log) into the system prompt")
     parser.add_argument("--show", metavar="SESSION", help="Show a full session transcript (default: latest); use --json for raw output")
     parser.add_argument("--tokens", metavar="FILE", help="Estimate the token count of a file (omit to read stdin)")
+    parser.add_argument("--only-tools", metavar="LIST", help="Restrict the agent to exactly these comma-separated tool names, e.g. read_file,grep,glob")
     parser.add_argument("--max-output-chars", type=int, metavar="N", help="Cap tool output size (default from config, e.g. 60000)")
     parser.add_argument("--command-timeout", type=int, metavar="SECONDS", help="Per-command timeout for run_command (default from config)")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
@@ -1400,6 +1453,8 @@ def main(argv: list[str] | None = None) -> int:
             max_output_chars=args.max_output_chars,
             command_timeout=args.command_timeout,
             no_save=args.no_save,
+            git_context=args.git_context,
+            only_tools=_split_tools(args.only_tools),
         )
 
     if args.json:

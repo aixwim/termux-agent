@@ -3,6 +3,8 @@
 Endpoints:
   GET  /health   -> {"ok": true, "version": ...}
   GET  /models   -> list of model ids for the provider
+  GET  /config   -> effective config summary
+  GET  /sessions -> list saved sessions (first 50)
   POST /chat     -> {"prompt": ..., "history": [...], "agent": ..., "auto_accept": ...}
 """
 from __future__ import annotations
@@ -136,7 +138,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/health":
             self._send(200, {"ok": True, "version": __version__})
-        elif self.path in ("/models", "/sessions"):
+        elif self.path in ("/models", "/sessions", "/config"):
             if not _authorized(self):
                 _send_unauthorized(self)
                 return
@@ -148,6 +150,22 @@ class _AgentHandler(BaseHTTPRequestHandler):
                     self._send(200, {"models": models})
                 except Exception as e:  # noqa: BLE001
                     self._send(500, {"ok": False, "error": str(e)})
+            elif self.path == "/config":
+                self._send(
+                    200,
+                    {
+                        "provider": self.provider or self.cfg.get("provider", "zen"),
+                        "model": self.model or "",
+                        "agent": self.cfg.get("agent", "root"),
+                        "temperature": self.cfg.get("temperature", 0.7),
+                        "max_tool_rounds": self.cfg.get("max_tool_rounds", 20),
+                        "max_context_tokens": self.cfg.get("max_context_tokens", 0),
+                        "max_output_chars": self.cfg.get("max_output_chars", 60000),
+                        "command_timeout": self.cfg.get("command_timeout", 60),
+                        "confirm_commands": self.cfg.get("confirm_commands", True),
+                        "allow_storage": self.cfg.get("allow_storage", False),
+                    },
+                )
             else:
                 from termux_agent.session import list_sessions, read_session
 
