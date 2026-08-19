@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import os
 import sys
 from pathlib import Path
 
@@ -62,6 +63,7 @@ def build_agent(
         max_output_chars=int(cfg.get("max_output_chars", 60000)),
         command_timeout=int(cfg.get("command_timeout", 60)),
         confirm_commands=not auto_accept and bool(cfg.get("confirm_commands", True)),
+        whitelisted_commands=[str(c) for c in (cfg.get("whitelisted_commands") or [])],
     )
     if cfg.get("allow_storage"):
         from termux_agent.config import detect_storage_roots
@@ -122,6 +124,12 @@ def _init_wizard() -> int:
             f"API key: set the env var {key_env} (e.g. export {key_env}=...). "
             "Keys are never stored in the config file."
         )
+    try:
+        run_smoke = input("\nRun a quick smoke test now? [y/N] > ").strip().lower() in ("y", "yes")
+    except (KeyboardInterrupt, EOFError):
+        run_smoke = False
+    if run_smoke:
+        return cmd_smoke(cfg, p, m or None)
     return 0
 
 
@@ -170,6 +178,7 @@ def cmd_one_shot(
         else:
             render_error("\nCancelled.")
         return 130
+    _maybe_notify(cfg, "Done", answer, as_json)
     if copy:
         from termux_agent.ui.repl import copy_to_clipboard
 
@@ -202,6 +211,15 @@ def _emit_json(payload: dict, agent: "Agent") -> None:
     if usage:
         payload["usage"] = usage
     print(json.dumps(payload, ensure_ascii=False))
+
+
+def _maybe_notify(cfg: dict, title: str, answer: str, as_json: bool = False) -> None:
+    if not (cfg.get("notify_on_done") or os.environ.get("TERMUX_AGENT_NOTIFY") == "1"):
+        return
+    from termux_agent.notify import notify
+
+    preview = " ".join(answer.split())[:120] or "(empty answer)"
+    notify(f"{title}: {preview}")
 
 
 def cmd_plan(
@@ -490,11 +508,13 @@ def cmd_smoke(cfg: dict, provider: str | None, model: str | None) -> int:
         return 1
     elapsed = time.monotonic() - start
     usage = agent.usage
+    ok = bool(answer.strip())
+    _maybe_notify(cfg, "Smoke test " + ("OK" if ok else "FAILED"), answer)
     render_info(
         f"Done in {elapsed:.1f}s | tokens: prompt {usage.get('prompt_tokens', 0)} / "
         f"completion {usage.get('completion_tokens', 0)} | answer: {answer!r}"
     )
-    return 0 if answer.strip() else 1
+    return 0 if ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -520,6 +540,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prompt-file", help="Read the prompt from a file (UTF-8)")
     parser.add_argument("--api-key", help="Set the provider API key for this run (env var override, not saved)")
     parser.add_argument("--stats", action="store_true", help="One-shot mode: print token usage after the answer")
+    parser.add_argument("--notify", action="store_true", help="Send a Termux notification when a one-shot task finishes (needs termux-api)")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP server bind host (with --serve)")
     parser.add_argument("--port", type=int, default=8787, help="HTTP server port (with --serve)")
@@ -599,6 +620,10 @@ def main(argv: list[str] | None = None) -> int:
         os.environ[env_name] = args.api_key
         if pname != "zen":
             render_info(f"API key set for {pname} via --api-key (not saved).")
+    if args.notify:
+        from termux_agent.notify import notify_on_done
+
+        notify_on_done(True)
 
     if args.list_providers:
         return cmd_list_providers(cfg)

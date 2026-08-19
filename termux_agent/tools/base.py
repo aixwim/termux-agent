@@ -19,6 +19,7 @@ class ToolContext:
     confirm: ConfirmFn | None = None
     _allowed_dirs: list[Path] = field(default_factory=list)
     undo_stack: list[dict] = field(default_factory=list)
+    whitelisted_commands: list[str] = field(default_factory=list)
 
     def resolve(self, path: str) -> Path:
         p = Path(path).expanduser()

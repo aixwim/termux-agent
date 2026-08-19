@@ -22,6 +22,8 @@ DEFAULTS: dict[str, Any] = {
     "max_context_tokens": 0,
     "retries": 1,
     "retry_backoff": 1.0,
+    "whitelisted_commands": [],
+    "notify_on_done": False,
     "working_dir": "~",
     "confirm_commands": True,
     "command_timeout": 60,

@@ -34,12 +34,15 @@ def run_command(args: dict, ctx: ToolContext) -> str:
     if not command:
         return "Error: empty command"
     base_cmd = shlex.split(command)[0]
-    needs_confirm = base_cmd not in SAFE_COMMANDS
+    whitelisted = base_cmd in SAFE_COMMANDS or any(
+        command.startswith(p) for p in ctx.whitelisted_commands if p
+    )
+    needs_confirm = not whitelisted
     if needs_confirm and ctx.confirm_commands:
         if ctx.confirm is None:
             return (
                 f"Error: command '{base_cmd}' is not in the whitelist and confirmation is disabled. "
-                "Run again in interactive mode or add it to SAFE_COMMANDS."
+                "Run again in interactive mode or add it to whitelisted_commands."
             )
         ok = ctx.confirm(command)
         if not ok:

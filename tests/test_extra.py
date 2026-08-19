@@ -1159,6 +1159,41 @@ def test_cmd_one_shot_stats(tmp_path: Path, monkeypatch):
     assert "total 5" in out.getvalue()
 
 
+# --- whitelisted_commands ---
+def test_whitelisted_command_no_confirm(tmp_path: Path):
+    from termux_agent.tools.base import run_tool
+
+    ctx = ToolContext(working_dir=tmp_path, confirm_commands=True, confirm=None)
+    ctx.whitelisted_commands = ["python dummy.py"]
+    out = run_tool("run_command", {"command": "echo hi"}, ctx)  # echo is safe anyway
+    assert "exit 0" in out
+    # a non-safe command that matches a whitelist prefix must NOT ask for confirmation
+    script = tmp_path / "dummy.py"
+    script.write_text("print('ran')")
+    out2 = run_tool("run_command", {"command": "python dummy.py"}, ctx)
+    assert "ran" in out2 and "confirmation" not in out2
+
+
+def test_non_whitelisted_needs_confirm(tmp_path: Path):
+    from termux_agent.tools.base import run_tool
+
+    ctx = ToolContext(working_dir=tmp_path, confirm_commands=True, confirm=None)
+    out = run_tool("run_command", {"command": "rm -rf something"}, ctx)
+    assert "not in the whitelist" in out
+
+
+# --- notify helper ---
+def test_notify_respects_env(monkeypatch):
+    import os
+
+    from termux_agent import notify as nmod
+
+    monkeypatch.delenv("TERMUX_AGENT_NOTIFY", raising=False)
+    assert nmod.notify("hi") is False
+    nmod.notify_on_done(True)
+    assert os.environ.get("TERMUX_AGENT_NOTIFY") == "1"
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
@@ -1170,7 +1205,7 @@ def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(cli, "CONFIG_FILE", tmp_path / "ta" / "config.yaml")
     monkeypatch.setattr(cli.sys, "stdin", io.StringIO())
     monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
-    it = iter(["zen", "m-model"])
+    it = iter(["zen", "m-model", "n"])
     monkeypatch.setattr("builtins.input", lambda *a, **k: next(it))
     code = cli.cmd_init()
     assert code == 0

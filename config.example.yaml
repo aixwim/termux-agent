@@ -27,6 +27,13 @@ max_context_tokens: 0
 retries: 1
 retry_backoff: 1.0
 
+# Extra command prefixes that never need confirmation (in addition to the built-in
+# safe list). e.g. whitelisted_commands: ["pip install", "python app.py"]
+whitelisted_commands: []
+
+# Send a Termux notification when a one-shot task finishes (needs termux-api).
+notify_on_done: false
+
 # Working directory: default boundary for read/write/command tools
 working_dir: "~"
 
