@@ -273,6 +273,56 @@ def test_doctor_runs(tmp_path: Path, monkeypatch):
     assert code in (0, 1)
 
 
+def test_build_agent_readonly(tmp_path: Path, monkeypatch):
+    from termux_agent.cli import READONLY_TOOLS, build_agent
+
+    monkeypatch.chdir(tmp_path)
+    agent = build_agent(_min_cfg(), "zen", None, readonly=True)
+    names = {t.name for t in agent.tools}
+    assert names == READONLY_TOOLS
+    assert "write_file" not in names
+    assert "run_command" not in names
+    assert "read-only" in agent.system_prompt.lower()
+
+
+def test_build_agent_readonly_keeps_agent_limit(tmp_path: Path, monkeypatch):
+    from termux_agent.cli import build_agent
+
+    monkeypatch.chdir(tmp_path)
+    agent = build_agent(_min_cfg(), "zen", None, agent_name="explore", readonly=True)
+    assert {t.name for t in agent.tools} == {"read_file"}
+
+
+def test_repl_export(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import Repl
+
+    fake = SimpleNamespace(
+        messages=[
+            {"role": "system", "content": "prompt"},
+            {"role": "user", "content": "tolong baca file"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"name": "read_file", "arguments": '{"path": "a.txt"}'}],
+            },
+            {"role": "tool", "content": "isi file"},
+            {"role": "assistant", "content": "Selesai."},
+        ]
+    )
+    repl = Repl(fake, provider_name="zen", model="m", agent_name="root")
+    out = tmp_path / "out.md"
+    repl._export(str(out))
+    text = out.read_text()
+    assert "## user" in text
+    assert "## tool" in text
+    assert "Selesai." in text
+    assert "read_file" in text
+    assert "provider: zen" in text
+    assert "tolong baca file" in text
+
+
 # --- web_search ---
 def test_web_search_ddg(monkeypatch):
     from termux_agent.tools import web as webmod

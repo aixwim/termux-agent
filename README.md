@@ -7,6 +7,7 @@ CLI coding agent untuk **Termux (Android)**, mirip [opencode](https://opencode.a
 - **Langsung jalan**: setelah install cukup ketik `termux-agent` — default memakai OpenCode Zen model free (tanpa API key), seperti opencode yang langsung bisa dipakai.
 - **Agent loop lengkap**: model bebas memilih jawab atau memanggil tool (`read_file`, `write_file`, `edit_file`, `list_dir`, `grep_file`, `glob_find`, `run_command`, `web_fetch`, `web_search`, `git_status`, `git_diff`, `git_commit`) sampai tugas selesai.
 - **Multi-agent / sub-agent**: agent khusus dengan peran & batasan tool berbeda — `root` (semua tool), `explore` (hanya baca/cari), `coder` (tulis/edit tanpa commit), `shell` (jalankan perintah). Pilih lewat `--agent` atau `/agent`.
+- **Mode read-only (`--readonly`)**: agent hanya bisa baca, cari, dan akses web — tidak bisa menulis/mengedit/menjalankan perintah. Cocok untuk meninjau kode tanpa risiko.
 - **Web search tanpa API key**: `web_search` memakai DuckDuckGo, dengan fallback Wikipedia bila jaringan memblokir/menolak sertifikat.
 - **Auto-completion**: `--install-completion bash|zsh` menambah Tab-completion ke shell (provider, agent, dan opsi CLI).
 - **Diagnostik**: `--doctor` memeriksa lingkungan Termux, config, PATH, dan API key; `--doctor-network` ikut mengetes koneksi provider.
@@ -86,6 +87,9 @@ termux-agent --doctor-network      # tambah cek koneksi provider
 # override cepat tanpa ubah config
 termux-agent --cwd /sdcard/Documents --temperature 0.2 --max-tool-rounds 30 "rapikan proyek ini"
 
+# mode read-only: tinjau kode tanpa bisa mengubah apa pun
+termux-agent --readonly "periksa keamanan kode ini dan sarankan perbaikan"
+
 # daftar sesi
 termux-agent --sessions
 ```
@@ -112,6 +116,8 @@ termux-agent "tambah docstring ke app.py"   # mengikuti aturan itu
 /resume [ID]   lanjutkan sesi (ID opsional, default terbaru)
   /compact       ringkas riwayat sesi agar hemat konteks
   /agent [NAME]  lihat/ganti sub-agent (explore, coder, shell, ...)
+  /export [PATH] ekspor percakapan ke Markdown (default: ~/.termux-agent/exports/)
+  /copy          salin jawaban terakhir ke clipboard (butuh termux-api)
 Ketikan pesan biasa untuk bertanya; Ctrl+C untuk membatalkan.
 ```
 
@@ -163,7 +169,7 @@ Model free yang tersedia saat ini: `nemotron-3-ultra-free`, `deepseek-v4-flash-f
 
 ```bash
 pip install -e ".[dev]"          # dependency dev (pytest)
-python -m pytest tests/ -q        # 49 test: tool, provider, agent, git, rules, resume
+python -m pytest tests/ -q        # 52 test: tool, provider, agent, git, rules, resume
 python tests/mock_server.py &     # mock OpenAI/Anthropic server (port 8765)
 termux-agent --model mock-model "..."   # tes tanpa API key
 ```

@@ -18,6 +18,17 @@ from termux_agent.tools.base import ToolContext
 from termux_agent.ui.renderer import render_error, render_info
 from termux_agent.ui.repl import Repl
 
+READONLY_TOOLS = {
+    "read_file",
+    "list_dir",
+    "grep_file",
+    "glob_find",
+    "web_fetch",
+    "web_search",
+    "git_status",
+    "git_diff",
+}
+
 
 def build_agent(
     cfg: dict,
@@ -28,6 +39,7 @@ def build_agent(
     working_dir: str | None = None,
     temperature: float | None = None,
     max_tool_rounds: int | None = None,
+    readonly: bool = False,
 ) -> Agent:
     name = provider_name or cfg.get("provider", "zen")
     provider = create_provider(name, cfg, model)
@@ -52,6 +64,12 @@ def build_agent(
     agent_spec = cfg.get("agents", {}).get(agent_key)
     if agent_spec is None:
         raise ConfigError(f"Agent '{agent_key}' tidak dikenal. Tersedia: {', '.join(cfg.get('agents', {}))}")
+    if readonly:
+        base = agent_spec.get("tools") or READONLY_TOOLS
+        agent_spec = {
+            "prompt": f"{agent_spec.get('prompt', '')}\nMode read-only aktif: JANGAN menulis/mengedit file, dan JANGAN menjalankan perintah apa pun. Hanya baca, cari, dan web.",
+            "tools": [t for t in base if t in READONLY_TOOLS],
+        }
     return Agent(
         provider,
         ctx,
@@ -78,8 +96,9 @@ def cmd_one_shot(
     working_dir: str | None = None,
     temperature: float | None = None,
     max_tool_rounds: int | None = None,
+    readonly: bool = False,
 ) -> int:
-    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds)
+    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly)
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
     render_info(
@@ -137,6 +156,7 @@ def cmd_resume(
     working_dir: str | None = None,
     temperature: float | None = None,
     max_tool_rounds: int | None = None,
+    readonly: bool = False,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -150,7 +170,7 @@ def cmd_resume(
     if provider_name not in cfg.get("providers", {}):
         provider_name = cfg.get("provider", "zen")
     model = info.get("model") or None
-    agent = build_agent(cfg, provider_name, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds)
+    agent = build_agent(cfg, provider_name, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly)
     agent.messages = [{"role": "system", "content": agent.system_prompt}] + history
     if prompt:
         answer = agent.run(prompt, on_tool_use=render_tool_use)
@@ -277,6 +297,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--temperature", type=float, help="Suhu sampling (0.0-2.0)")
     parser.add_argument("--max-tool-rounds", type=int, help="Batas iterasi tool per pesan")
     parser.add_argument("--verbose", action="store_true", help="Log request/response provider (setara TERMUX_AGENT_DEBUG=1)")
+    parser.add_argument("--readonly", action="store_true", help="Mode baca-saja: tidak bisa menulis/mengedit/menjalankan perintah")
     parser.add_argument("prompt", nargs="*", help="Prompt one-shot (tanpa argumen = mode interaktif)")
     parser.add_argument("--init", action="store_true", help="Buat config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="Daftar sesi tersimpan")
@@ -360,6 +381,7 @@ def main(argv: list[str] | None = None) -> int:
             working_dir=args.cwd,
             temperature=args.temperature,
             max_tool_rounds=args.max_tool_rounds,
+            readonly=args.readonly,
         )
 
     if prompt:
@@ -373,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
             working_dir=args.cwd,
             temperature=args.temperature,
             max_tool_rounds=args.max_tool_rounds,
+            readonly=args.readonly,
         )
 
     provider_key = args.provider or cfg.get("provider", "zen")
@@ -386,6 +409,7 @@ def main(argv: list[str] | None = None) -> int:
             working_dir=args.cwd,
             temperature=args.temperature,
             max_tool_rounds=args.max_tool_rounds,
+            readonly=args.readonly,
         )
     except (ConfigError, KeyError) as e:
         render_error(f"Error: {e}\nJalankan 'termux-agent --init' dulu, lalu isi API key.")

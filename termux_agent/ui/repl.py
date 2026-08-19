@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
@@ -32,6 +33,8 @@ Perintah khusus (diawali /):
   /resume [ID]    lanjutkan sesi (ID opsional, default terbaru)
   /compact        ringkas riwayat sesi agar hemat konteks
   /agent [NAME]   lihat/ganti sub-agent (explore, coder, shell, ...)
+  /export [PATH]  ekspor percakapan ke Markdown
+  /copy           salin jawaban terakhir ke clipboard
 Ketikan pesan biasa untuk bertanya; Ctrl+C untuk membatalkan."""
 
 
@@ -56,6 +59,7 @@ class Repl:
         self.model = model
         self.agent_name = agent_name
         self.session = Session(provider_name=provider_name, model=model)
+        self._last_answer = ""
 
     def _confirm(self, command: str) -> bool:
         try:
@@ -158,6 +162,10 @@ class Repl:
             self._compact()
         elif c == "/agent":
             self._switch_agent(rest)
+        elif c == "/export":
+            self._export(rest)
+        elif c == "/copy":
+            self._copy_last()
         else:
             render_error(f"Perintah tidak dikenal: {c}")
         return False
@@ -191,6 +199,61 @@ class Repl:
             tools = spec.get("tools") or []
             label = "semua tool" if not tools else ", ".join(tools)
             render_info(f"  {name:8} {spec.get('description', '')}  [{label}]")
+
+    def _export(self, dest: str) -> None:
+        import json
+
+        from termux_agent.config import CONFIG_DIR
+
+        lines = [
+            "# termux-agent — ekspor percakapan",
+            "",
+            f"- provider: {self.provider_name}",
+            f"- model: {self.model}",
+            f"- agent: {self.agent_name}",
+            f"- jumlah pesan: {len([m for m in self.agent.messages if m.get('role') != 'system'])}",
+            "",
+        ]
+        for m in self.agent.messages:
+            role = m.get("role")
+            if role == "system":
+                continue
+            content = m.get("content", "")
+            lines += [f"## {role}", ""]
+            if m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    lines += [f"```json\n{json.dumps(tc, indent=2, ensure_ascii=False)}\n```", ""]
+            elif role == "tool":
+                lines += [f"```\n{content}\n```", ""]
+            else:
+                lines += [str(content), ""]
+        if dest:
+            out = Path(dest).expanduser()
+        else:
+            from datetime import datetime
+
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            out = CONFIG_DIR / "exports" / f"session-{stamp}.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("\n".join(lines), encoding="utf-8")
+        render_info(f"Ekspor selesai: {out}")
+
+    def _copy_last(self) -> None:
+        import shutil
+        import subprocess
+
+        if not self._last_answer:
+            render_error("Belum ada jawaban untuk disalin.")
+            return
+        clip = shutil.which("termux-clipboard-set") or shutil.which("xclip") or shutil.which("pbcopy")
+        if clip:
+            proc = subprocess.run([clip], input=self._last_answer.encode(), capture_output=True)
+            if proc.returncode == 0:
+                render_info("Jawaban terakhir disalin ke clipboard.")
+            else:
+                render_error("Gagal menyalin ke clipboard.")
+        else:
+            render_error("Clipboard tidak tersedia. Install termux-api (pkg install termux-api) atau jalankan /export.")
 
     def _compact(self) -> None:
         render_info("Merangkum riwayat sesi...")
@@ -260,4 +323,5 @@ class Repl:
             render_error(f"Error: {e}")
             return
         printer.flush()
+        self._last_answer = answer
         self.session.append({"role": "assistant", "content": answer})
