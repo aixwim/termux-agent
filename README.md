@@ -20,6 +20,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Scriptable & extensible**: `--sessions --json`, `--bench --json`, and `--version --json` emit machine-readable output; `--rules FILE` injects extra instructions for one run; `--system-prompt FILE` replaces the whole prompt for a custom persona; `--resume` now supports `--stream`.
 - **Watch mode**: `--watch SECONDS` re-runs a one-shot prompt on an interval until Ctrl+C (combine with `--screenshot` to monitor the screen). In the REPL, `/system` shows the effective system prompt.
 - **Device awareness & introspection**: `--context` injects battery/wifi/time into the system prompt (needs termux-api); `--list-tools` lists registered tools; `--config-show` prints the effective merged config; `--prune --json` reports what was deleted.
+- **Batch & housekeeping**: `--batch FILE` runs one one-shot per line (results to `--output` as JSON); `--sessions --search` now matches across all messages; `--prune-days N` deletes sessions older than N days.
 - **Chat mode**: `--chat` disables all tools for a plain conversation (no file/command access).
 - **Timeouts & saving**: `--timeout SECONDS` aborts a slow one-shot task (exit 124); one-shot tasks are now saved as sessions too, so you can `--resume` them.
 - **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--export-all DIR` backs up every session, `--import FILE` restores one, `--prune N` / `--forget [ID]` delete sessions. `--bench [PROVIDER]` times one tiny request per model to help you pick a fast default.
@@ -160,6 +161,14 @@ termux-agent --context "if battery is low, keep the answer very short"
 # inspect what the agent can do and what config it will use
 termux-agent --list-tools
 termux-agent --config-show
+termux-agent --config-show --json > effective-config.json
+
+# bulk: run one one-shot per line of a file, save results as JSON
+printf "summarize main.py\ncheck for bugs in utils.py\n" > tasks.txt
+termux-agent --batch tasks.txt --output results.json
+
+# housekeeping by age instead of count
+termux-agent --prune-days 30
 
 # quick overrides without editing config
 termux-agent --cwd /sdcard/Documents --temperature 0.2 --max-tool-rounds 30 "tidy up this project"

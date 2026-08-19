@@ -445,6 +445,50 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
     return 0
 
 
+def cmd_batch(
+    cfg: dict,
+    prompts_file: str,
+    provider: str | None,
+    model: str | None,
+    output: str | None = None,
+    auto_accept: bool = False,
+    timeout: int | None = None,
+    as_json: bool = False,
+) -> int:
+    """Run one one-shot per line of a prompts file (blank lines skipped)."""
+    import json as _json
+
+    from termux_agent.ui.renderer import render_error, render_info
+
+    try:
+        text = Path(prompts_file).expanduser().read_text(encoding="utf-8")
+    except OSError as e:
+        render_error(f"Cannot read --batch file: {e}")
+        return 1
+    prompts = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not prompts:
+        render_error(f"--batch file is empty: {prompts_file}")
+        return 1
+    results: list[dict] = []
+    for i, p in enumerate(prompts, start=1):
+        render_info(f"[{i}/{len(prompts)}] {p[:60]}")
+        try:
+            agent = build_agent(cfg, provider, model, auto_accept=auto_accept)
+            answer = _run_guarded(agent, p, lambda *a, **k: None, timeout)
+        except Exception as e:  # noqa: BLE001
+            results.append({"prompt": p, "answer": None, "error": str(e)})
+            render_error(f"  -> failed: {e}")
+        else:
+            results.append({"prompt": p, "answer": answer})
+            render_info(f"  -> {answer[:80]}")
+    if output:
+        Path(output).write_text(_json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+        render_info(f"Results written to {output}")
+    elif as_json:
+        print(_json.dumps({"results": results}, ensure_ascii=False))
+    return 0
+
+
 def cmd_watch(
     cfg: dict,
     prompt: str,
@@ -618,10 +662,27 @@ def cmd_prune(keep: int, as_json: bool = False) -> int:
     return 0
 
 
-def cmd_config_show(cfg: dict) -> int:
+def cmd_config_show(cfg: dict, as_json: bool = False) -> int:
+    import json as _json
     import yaml as _yaml
 
+    if as_json:
+        print(_json.dumps(cfg, ensure_ascii=False, default=str))
+        return 0
     print(_yaml.safe_dump(cfg, sort_keys=False))
+    return 0
+
+
+def cmd_prune_days(days: int, as_json: bool = False) -> int:
+    import json as _json
+
+    from termux_agent.session import prune_days
+
+    removed = prune_days(max(1, days))
+    if as_json:
+        print(_json.dumps({"removed": removed, "days": days}, ensure_ascii=False))
+        return 0
+    render_info(f"Removed {removed} session(s) older than {days} day(s).")
     return 0
 
 
@@ -668,42 +729,41 @@ def cmd_sessions(search: str | None = None, as_json: bool = False) -> int:
     from termux_agent.session import list_sessions, read_session
 
     sessions = list_sessions()
-    if as_json:
-        items = []
-        needle = search.lower() if search else ""
-        for s in sessions[:200]:
-            recs = read_session(s)
-            first_user = next((r["content"] for r in recs if r.get("role") == "user"), "")
-            if needle and needle not in first_user.lower():
-                continue
-            info = next((r for r in recs if r.get("provider")), {})
-            items.append(
-                {
-                    "id": s.stem,
-                    "provider": info.get("provider") or "",
-                    "model": info.get("model") or "",
-                    "messages": len(recs),
-                    "first": first_user[:100],
-                }
-            )
-        print(_json.dumps({"sessions": items}, ensure_ascii=False))
-        return 0
-    if not sessions:
-        render_info("No sessions saved yet in ~/.termux-agent/sessions/.")
-        return 0
-    shown = 0
     needle = search.lower() if search else ""
+    items = []
     for s in sessions[:200]:
         recs = read_session(s)
         first_user = next((r["content"] for r in recs if r.get("role") == "user"), "")
-        if needle and needle not in first_user.lower():
-            continue
-        render_info(f"{s.stem}  [{len(recs)} messages]  {first_user[:60]}")
-        shown += 1
-        if shown >= 20:
+        if needle:
+            haystack = " ".join(
+                str(r.get("content", ""))
+                for r in recs
+                if r.get("role") in ("user", "assistant")
+            ).lower()
+            if needle not in haystack:
+                continue
+        info = next((r for r in recs if r.get("provider")), {})
+        items.append(
+            {
+                "id": s.stem,
+                "provider": info.get("provider") or "",
+                "model": info.get("model") or "",
+                "messages": len(recs),
+                "first": first_user[:100],
+            }
+        )
+        if len(items) >= 20:
             break
+    if as_json:
+        print(_json.dumps({"sessions": items}, ensure_ascii=False))
+        return 0
+    if not items:
+        render_info("No sessions found." if needle else "No sessions saved yet in ~/.termux-agent/sessions/.")
+        return 0
+    for it in items:
+        render_info(f"{it['id']}  [{it['messages']} messages]  {it['first'][:60]}")
     if needle:
-        render_info(f"\n{shown} matching session(s).")
+        render_info(f"\n{len(items)} matching session(s).")
     return 0
 
 
@@ -974,6 +1034,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--screenshot", action="store_true", help="Attach a screenshot of the screen to the prompt (needs termux-api + screen share)")
     parser.add_argument("--stream", action="store_true", help="Stream the answer to the terminal as it is generated (typewriter mode)")
     parser.add_argument("--watch", type=int, metavar="SECONDS", help="Re-run the one-shot prompt every N seconds until Ctrl+C (combine with --screenshot)")
+    parser.add_argument("--batch", metavar="FILE", help="Run one one-shot per line of the file (blank lines skipped); --output writes results as JSON")
     parser.add_argument("--retries", type=int, metavar="N", help="Override transient retry count for network hiccups")
     parser.add_argument("--no-fallback", action="store_true", help="Disable fallback models on 429/errors (use only the selected model)")
     parser.add_argument("--rules", metavar="FILE", help="Add extra instructions to the system prompt (like AGENTS.md but per-invocation)")
@@ -990,6 +1051,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest)")
     parser.add_argument("--import", dest="import_path", metavar="FILE", help="Import a portable session JSON file")
     parser.add_argument("--prune", type=int, metavar="N", help="Delete all sessions except the newest N")
+    parser.add_argument("--prune-days", type=int, metavar="DAYS", help="Delete sessions older than this many days")
     parser.add_argument("--config-show", action="store_true", help="Print the effective merged configuration as YAML")
     parser.add_argument("--list-tools", action="store_true", help="List all registered tools")
     parser.add_argument("--forget", nargs="?", const="latest", metavar="SESSION", help="Delete one session (default: latest)")
@@ -1052,8 +1114,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_import(args.import_path)
     if args.prune is not None:
         return cmd_prune(args.prune, as_json=args.json)
+    if args.prune_days is not None:
+        return cmd_prune_days(args.prune_days, as_json=args.json)
     if args.config_show:
-        return cmd_config_show(cfg)
+        return cmd_config_show(cfg, as_json=args.json)
     if args.list_tools:
         return cmd_list_tools()
     if args.sessions:
@@ -1178,6 +1242,18 @@ def main(argv: list[str] | None = None) -> int:
             with_screenshot=args.screenshot,
             auto_accept=args.yes,
             timeout=args.timeout,
+        )
+
+    if args.batch:
+        return cmd_batch(
+            cfg,
+            args.batch,
+            args.provider,
+            args.model,
+            output=args.output,
+            auto_accept=args.yes,
+            timeout=args.timeout,
+            as_json=args.json,
         )
 
     if prompt:

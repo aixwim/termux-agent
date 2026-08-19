@@ -2087,6 +2087,88 @@ def test_cmd_prune_json(tmp_path: Path, monkeypatch):
     assert data["kept"] == 1
 
 
+# --- batch / search-all / prune-days / config-show json ---
+def test_cmd_batch(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    f = tmp_path / "prompts.txt"
+    f.write_text("fix calc\n\ncheck tests\n")
+    out = tmp_path / "results.json"
+    seen = []
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+        )
+        agent.run = lambda p, on_tool_use=None, on_text_delta=None: seen.append(p) or "ANSWER:" + p
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to: agent.run(p))
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_batch(_min_cfg(), str(f), "zen", None, output=str(out)) == 0
+    assert len(seen) == 2
+    data = _json.loads(out.read_text())
+    assert [r["prompt"] for r in data] == ["fix calc", "check tests"]
+    assert data[0]["answer"] == "ANSWER:fix calc"
+
+
+def test_cmd_sessions_search_any_message(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text(
+        '{"role":"user","content":"hello"}\n{"role":"assistant","content":"the calculator bug is fixed"}\n'
+    )
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_sessions("calculator") == 0
+    assert "20260820-000001" in out.getvalue()
+
+
+def test_cmd_prune_days(tmp_path: Path, monkeypatch):
+    import io
+    import os
+    import time
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    old = sdir / "20260701-000001.jsonl"
+    new = sdir / "20260820-000002.jsonl"
+    old.write_text('{"role":"user","content":"old"}\n')
+    new.write_text('{"role":"user","content":"new"}\n')
+    old_time = time.time() - 10 * 86400
+    os.utime(old, (old_time, old_time))
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_prune_days(7) == 0
+    assert [p.stem for p in session.list_sessions()] == ["20260820-000002"]
+
+
+def test_config_show_json(monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_config_show(_min_cfg(), as_json=True) == 0
+    assert _json.loads(out.getvalue())["provider"] == "zen"
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

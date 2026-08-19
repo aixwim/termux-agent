@@ -152,3 +152,19 @@ def prune_sessions(keep: int) -> int:
         except OSError:
             pass
     return removed
+
+
+def prune_days(days: int) -> int:
+    """Delete sessions older than `days` days. Returns number deleted."""
+    import time
+
+    cutoff = time.time() - days * 86400
+    removed = 0
+    for path in list_sessions():
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:
+            pass
+    return removed
