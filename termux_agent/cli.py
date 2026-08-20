@@ -596,6 +596,7 @@ def cmd_batch(
     workers: int = 1,
     allow_dirs: list[str] | None = None,
     fail_fast: bool = False,
+    notify: bool = False,
 ) -> int:
     """Run one one-shot per line of a prompts file (blank lines skipped)."""
     import json as _json
@@ -650,6 +651,10 @@ def cmd_batch(
                         render_info(f"Partial results written to {output}")
                     elif as_json:
                         print(_json.dumps({"results": results, "fail_fast": True}, ensure_ascii=False))
+                    if notify:
+                        from termux_agent.notify import notify as _notify
+
+                        _notify(f"Batch failed at prompt {i}/{len(prompts)}: {r['error'][:120]}")
                     return 1
             else:
                 if not as_json:
@@ -659,6 +664,11 @@ def cmd_batch(
         render_info(f"Results written to {output}")
     elif as_json:
         print(_json.dumps({"results": results}, ensure_ascii=False))
+    if notify:
+        from termux_agent.notify import notify as _notify
+
+        failed = sum(1 for r in results if r.get("error"))
+        _notify(f"Batch done: {len(results) - failed}/{len(results)} succeeded" + (f", {failed} failed" if failed else ""))
     return 0
 
 
@@ -1647,7 +1657,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-key", help="Set the provider API key for this run (env var override, not saved)")
     parser.add_argument("--stats", action="store_true", help="One-shot mode: print token usage after the answer")
     parser.add_argument("--chat", action="store_true", help="Chat mode: disable all tools (plain conversation, no file/command access)")
-    parser.add_argument("--notify", action="store_true", help="Send a Termux notification when a one-shot task finishes or after each --watch round (needs termux-api)")
+    parser.add_argument("--notify", action="store_true", help="Send a Termux notification when a one-shot task or --batch finishes, or after each --watch round (needs termux-api)")
     parser.add_argument("--wakelock", action="store_true", help="Hold a Termux wake lock while a one-shot task runs (needs termux-api)")
     parser.add_argument("--speak", action="store_true", help="Read the answer aloud with termux-tts-speak (needs termux-api)")
     parser.add_argument("--timeout", type=int, metavar="SECONDS", help="Abort a one-shot task if it takes longer than this")
@@ -2027,6 +2037,7 @@ def main(argv: list[str] | None = None) -> int:
             workers=args.workers,
             allow_dirs=_allow_dirs_from(args),
             fail_fast=args.fail_fast,
+            notify=args.notify,
         )
 
     if prompt:

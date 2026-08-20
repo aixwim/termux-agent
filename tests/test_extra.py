@@ -3200,6 +3200,107 @@ def test_watch_diff_skips_unchanged(monkeypatch):
     assert "unchanged" in rendered
 
 
+# --- server memory/batch endpoints / batch notify ---
+def test_server_memory_endpoint(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import agent as agentmod
+    from termux_agent import server as srv
+
+    monkeypatch.setattr(agentmod, "MEMORY_FILE", tmp_path / "memory.md")
+    monkeypatch.setattr(agentmod, "CONFIG_DIR", tmp_path)
+    from termux_agent.cli import build_agent
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/memory", timeout=10) as r:
+            assert _json.loads(r.read())["memory"] == ""
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/memory",
+            data=_json.dumps({"content": "remember x"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["memory"] == "remember x"
+        assert (tmp_path / "memory.md").read_text() == "remember x"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_server_batch_endpoint(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "A:" + p,
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/batch",
+            data=_json.dumps({"prompts": ["one", "two"]}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            results = _json.loads(r.read())["results"]
+        assert [x["answer"] for x in results] == ["A:one", "A:two"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_batch_notify_on_done(tmp_path: Path, monkeypatch):
+    import os
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    os.environ["TERMUX_AGENT_NOTIFY"] = "1"
+    seen = {}
+
+    def fake_notify(msg):
+        seen["msg"] = msg
+
+    monkeypatch.setattr("termux_agent.notify.notify", fake_notify)
+    monkeypatch.setattr(cli, "_batch_run_one", lambda *a, **k: {"prompt": "x", "answer": "ok"})
+    in_path = tmp_path / "in.txt"
+    in_path.write_text("x\n")
+    code = cli.cmd_batch(_min_cfg(), str(in_path), "zen", None, notify=True)
+    assert code == 0
+    assert "1/1 succeeded" in seen["msg"]
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

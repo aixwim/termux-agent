@@ -7,6 +7,8 @@ Endpoints:
   GET  /tools    -> registered tool specs
   GET  /agents   -> configured agent roles
   GET  /stats    -> session count + storage usage
+  GET  /memory   -> persistent notes; POST /memory {content} updates them
+  POST /batch    -> {prompts: [...]} runs each prompt (optional provider/model)
   GET  /sessions -> list saved sessions (first 50)
   GET  /sessions/<id> -> full session transcript
   POST /chat     -> {"prompt": ..., "history": [...], "agent": ..., "auto_accept": ...}
@@ -142,11 +144,15 @@ class _AgentHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/health":
             self._send(200, {"ok": True, "version": __version__})
-        elif self.path in ("/models", "/sessions", "/config", "/tools", "/agents", "/stats"):
+        elif self.path in ("/models", "/sessions", "/config", "/tools", "/agents", "/stats", "/memory"):
             if not _authorized(self):
                 _send_unauthorized(self)
                 return
-            if self.path == "/stats":
+            if self.path == "/memory":
+                from termux_agent.agent import load_memory
+
+                self._send(200, {"memory": load_memory()})
+            elif self.path == "/stats":
                 from termux_agent.session import SESSIONS_DIR, list_sessions
 
                 sess = list_sessions()
@@ -232,12 +238,43 @@ class _AgentHandler(BaseHTTPRequestHandler):
             self._send(404, {"ok": False, "error": "not found"})
 
     def do_POST(self) -> None:
-        if self.path != "/chat":
-            self._send(404, {"ok": False, "error": "not found"})
-            return
         data = _read_body(self)
         if not _authorized(self, data):
             _send_unauthorized(self)
+            return
+        if self.path == "/memory":
+            content = data.get("content")
+            if not isinstance(content, str):
+                self._send(400, {"ok": False, "error": "missing 'content'"})
+                return
+            from termux_agent.agent import MEMORY_FILE
+
+            MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+            MEMORY_FILE.write_text(content.strip(), encoding="utf-8")
+            self._send(200, {"ok": True, "memory": content.strip()})
+            return
+        if self.path == "/batch":
+            prompts = data.get("prompts")
+            if not isinstance(prompts, list) or not all(isinstance(p, str) and p.strip() for p in prompts):
+                self._send(400, {"ok": False, "error": "missing non-empty 'prompts' list"})
+                return
+            provider = str(data.get("provider") or self.provider or self.cfg.get("provider", "zen"))
+            model = str(data.get("model") or self.model or "")
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _one(p: str) -> dict:
+                try:
+                    agent = self.build_agent(self.cfg, provider, model, auto_accept=True)
+                    answer = agent.run(p)
+                    return {"prompt": p, "answer": answer}
+                except Exception as e:  # noqa: BLE001
+                    return {"prompt": p, "answer": None, "error": str(e)}
+
+            results = list(ThreadPoolExecutor(max_workers=4).map(_one, [p.strip() for p in prompts]))
+            self._send(200, {"results": results})
+            return
+        if self.path != "/chat":
+            self._send(404, {"ok": False, "error": "not found"})
             return
         prompt = str(data.get("prompt", "")).strip()
         if not prompt:
