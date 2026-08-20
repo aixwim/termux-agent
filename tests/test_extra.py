@@ -1516,7 +1516,7 @@ def test_parser_all_flags_present():
         "--clip --screenshot --export --import --prune --output --timeout --speak --wakelock --notify "
         "--chat --json --quiet --resume --serve --models --smoke --plan --copy --stats --doctor "
         "--install-completion --list-providers --list-agents --image --prompt-file --api-key --search "
-        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains --stats-all --config-unset --bench-prompt"
+        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains --stats-all --config-unset --bench-prompt --tokens-exclude --since-days --merge"
     ).split():
         assert flag in help_txt, f"missing {flag}"
 
@@ -6652,6 +6652,90 @@ def test_cmd_summarize_append(tmp_path: Path, monkeypatch):
     out = tmp_path / "sum.txt"
     assert cli.cmd_summarize(_min_cfg(), "20260820-000001", "zen", "m", output=str(out), append=True) == 0
     assert out.read_text().strip() == "SUMMARY"
+
+
+# --- sessions since-days / restore merge / tokens exclude ---
+def test_cmd_sessions_since_days(tmp_path: Path, monkeypatch):
+    import io
+    import os
+    import time
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    old = sdir / "20260101-000000.jsonl"
+    new = sdir / "20260820-000000.jsonl"
+    old.write_text('{"role":"user","content":"old"}\n')
+    new.write_text('{"role":"user","content":"new"}\n')
+    past = time.time() - 10 * 86400
+    os.utime(old, (past, past))
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_sessions(since_days=7) == 0
+    txt = out.getvalue()
+    assert "20260820-000000" in txt
+    assert "20260101-000000" not in txt
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_sessions() == 0
+    assert "20260101-000000" in out.getvalue()
+
+
+def test_restore_merge(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "config.yaml").write_text("provider: zen\n", encoding="utf-8")
+    (bundle / "manifest.json").write_text('{"app": "termux-agent", "version": "1.0.0", "sessions": 1}\n', encoding="utf-8")
+    sdir = bundle / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text('{"role":"user","content":"bundle msg"}\n')
+
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "config.yaml").write_text("provider: custom\n", encoding="utf-8")
+    tdir = target / "sessions"
+    tdir.mkdir()
+    (tdir / "20260820-000001.jsonl").write_text('{"role":"user","content":"existing msg"}\n')
+
+    monkeypatch.setattr(cli, "CONFIG_DIR", target)
+    monkeypatch.setattr(cli, "CONFIG_FILE", target / "config.yaml")
+    monkeypatch.setattr(session, "SESSIONS_DIR", tdir)
+    monkeypatch.setattr(session, "NOTES_FILE", target / "notes.json")
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+
+    assert cli.cmd_restore(str(bundle), merge=True) == 0
+    assert (target / "config.yaml").read_text() == "provider: custom\n"
+    assert (tdir / "20260820-000001.jsonl").read_text().startswith('{"role":"user","content":"existing msg"}')
+
+
+def test_cmd_tokens_exclude(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    (tmp_path / "a.py").write_text("aaa\n")
+    (tmp_path / "b.log").write_text("bbb\n")
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_tokens(str(tmp_path), as_json=True) == 0
+    assert _json.loads(out.getvalue())["files"] == 2
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_tokens(str(tmp_path), as_json=True, exclude=["*.log"]) == 0
+    payload = _json.loads(out.getvalue())
+    assert payload["files"] == 1
+    assert payload["chars"] == len("aaa\n")
 
 
 # --- init wizard ---

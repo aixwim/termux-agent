@@ -1150,11 +1150,12 @@ def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None, 
     return 0
 
 
-def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False, session_ref: str | None = None, output: str | None = None) -> int:
+def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False, session_ref: str | None = None, output: str | None = None, exclude: list[str] | None = None) -> int:
     """Estimate token usage of a file, directory, inline text, session transcript, or git diff (--tokens HEAD)."""
     import sys as _sys
 
     extra: dict = {}
+    exclude = exclude or []
 
     if path and (path == "HEAD" or path.startswith("HEAD~") or ".." in path or "..." in path):
         import os as _os
@@ -1208,6 +1209,12 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
             if p.is_file():
                 if any(part in skip for part in p.relative_to(root).parts):
                     continue
+                if exclude:
+                    import fnmatch as _fnmatch
+
+                    rel = p.relative_to(root).as_posix()
+                    if any(_fnmatch.fnmatch(rel, pat) or _fnmatch.fnmatch(p.name, pat) for pat in exclude):
+                        continue
                 try:
                     raw = p.read_bytes()
                 except OSError:
@@ -1753,7 +1760,7 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
     return 0
 
 
-def cmd_restore(bundle_dir: str, dry_run: bool = False, as_json: bool = False) -> int:
+def cmd_restore(bundle_dir: str, dry_run: bool = False, as_json: bool = False, merge: bool = False) -> int:
     """Restore config, memory, and sessions from a bundle directory (or a gzipped tar on stdin with '-')."""
     import json as _json
     import shutil
@@ -1772,12 +1779,12 @@ def cmd_restore(bundle_dir: str, dry_run: bool = False, as_json: bool = False) -
             with tarfile.open(fileobj=buf, mode="r:gz") as tf:
                 tf.extractall(tmp, filter="data")
             src = Path(tmp)
-            return _restore_from_dir(src, dry_run=dry_run, as_json=as_json)
+            return _restore_from_dir(src, dry_run=dry_run, as_json=as_json, merge=merge)
 
-    return _restore_from_dir(Path(bundle_dir), dry_run=dry_run, as_json=as_json)
+    return _restore_from_dir(Path(bundle_dir), dry_run=dry_run, as_json=as_json, merge=merge)
 
 
-def _restore_from_dir(src: Path, dry_run: bool = False, as_json: bool = False) -> int:
+def _restore_from_dir(src: Path, dry_run: bool = False, as_json: bool = False, merge: bool = False) -> int:
     """Restore config, memory, and sessions from an extracted bundle directory."""
     import json as _json
     import shutil
@@ -1796,11 +1803,11 @@ def _restore_from_dir(src: Path, dry_run: bool = False, as_json: bool = False) -
     for name in ("config.yaml", "memory.md", "notes.json"):
         f = src / name
         if f.is_file():
-            if not dry_run:
+            if not dry_run and not (merge and (CONFIG_DIR / name).exists()):
                 shutil.copy2(f, CONFIG_DIR / name)
             restored.append(name)
     for f in sorted((src / "sessions").glob("*.jsonl")) if (src / "sessions").is_dir() else []:
-        if not dry_run:
+        if not dry_run and not (merge and (SESSIONS_DIR / f.name).exists()):
             shutil.copy2(f, SESSIONS_DIR / f.name)
         restored.append(f"session/{f.name}")
     if as_json:
@@ -2130,16 +2137,20 @@ def cmd_cron(schedule: str, prompt: str, command: str | None = None, as_json: bo
     return 0
 
 
-def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 20, output: str | None = None) -> int:
+def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 20, output: str | None = None, since_days: int | None = None) -> int:
     import json as _json
+    import time
 
     from termux_agent.session import list_sessions, read_session, all_notes
 
     sessions = list_sessions()
     notes = all_notes()
+    cutoff = None if since_days is None else time.time() - max(1, since_days) * 86400
     needle = search.lower() if search else ""
     items = []
     for s in sessions[:200]:
+        if cutoff is not None and s.stat().st_mtime < cutoff:
+            continue
         recs = read_session(s)
         first_user = next((r["content"] for r in recs if r.get("role") == "user"), "")
         if needle:
@@ -2676,10 +2687,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--git", action="store_true", dest="git_context", help="Inject the repo state (status/diff/log) into the system prompt")
     parser.add_argument("--show", metavar="SESSION", help="Show a full session transcript (default: latest); use --json for raw output")
     parser.add_argument("--tokens", metavar="FILE", help="Estimate the token count of a file or directory (omit to read stdin; --session for a session transcript; HEAD/HEAD~N estimates the git diff)")
+    parser.add_argument("--tokens-exclude", action="append", default=[], metavar="PATTERN", help="With --tokens DIR: skip files whose relative path matches this fnmatch pattern (repeatable)")
     parser.add_argument("--summarize", nargs="?", const="latest", metavar="SESSION", help="Have the agent summarize a session transcript (default: latest); --output saves it")
     parser.add_argument("--rerun", nargs="?", const="latest", metavar="SESSION", help="Re-run the last user prompt of a session as a fresh one-shot (default: latest); --output saves it")
     parser.add_argument("--bundle", metavar="DIR", help="Back up config, memory, and all sessions into a portable directory ('-' streams a gzipped tar to stdout; --no-sessions excludes sessions)")
-    parser.add_argument("--restore", metavar="DIR", help="Restore config, memory, and sessions from a bundle directory ('-' reads a gzipped tar from stdin; --dry-run previews)")
+    parser.add_argument("--restore", metavar="DIR", help="Restore config, memory, and sessions from a bundle directory ('-' reads a gzipped tar from stdin; --dry-run previews, --merge keeps existing files)")
+    parser.add_argument("--merge", action="store_true", help="With --restore: never overwrite existing files")
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors (same as NO_COLOR=1)")
     parser.add_argument("--allow-dir", action="append", metavar="DIR", help="Grant the agent file access to an extra directory (repeatable)")
     parser.add_argument("--cron", metavar="SCHEDULE", help="Print a ready-to-add cron line, e.g. '*/10 * * * *' (--notify sends a notification)")
@@ -2705,6 +2718,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml (--force to overwrite)")
     parser.add_argument("--force", action="store_true", help="Overwrite existing files (with --init)")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
+    parser.add_argument("--since-days", type=int, metavar="N", help="With --sessions: only list sessions from the last N days")
     parser.add_argument("--session", metavar="SESSION", help="With --tokens: estimate a session transcript instead of a file")
     parser.add_argument("--limit", type=int, default=20, metavar="N", help="Max sessions to list (with --sessions/--export-all; --all lists every session)")
     parser.add_argument("--all", action="store_true", help="With --sessions: list every session (ignore --limit)")
@@ -2885,11 +2899,11 @@ def main(argv: list[str] | None = None) -> int:
             temperature=args.temperature,
         )
     if args.tokens is not None or args.session is not None:
-        return cmd_tokens(args.tokens, as_json=args.json, session_ref=args.session, output=args.output)
+        return cmd_tokens(args.tokens, as_json=args.json, session_ref=args.session, output=args.output, exclude=args.tokens_exclude)
     if args.bundle:
         return cmd_bundle(args.bundle, as_json=args.json, include_sessions=not args.no_sessions)
     if args.restore:
-        return cmd_restore(args.restore, dry_run=args.dry_run, as_json=args.json)
+        return cmd_restore(args.restore, dry_run=args.dry_run, as_json=args.json, merge=args.merge)
     if args.cron:
         if not prompt:
             render_error("--cron requires a one-shot prompt.")
@@ -2915,7 +2929,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_tools:
         return cmd_list_tools(as_json=args.json, output=args.output)
     if args.sessions:
-        return cmd_sessions(args.search, as_json=args.json, limit=0 if args.all else args.limit, output=args.output)
+        return cmd_sessions(args.search, as_json=args.json, limit=0 if args.all else args.limit, output=args.output, since_days=args.since_days)
     if args.show_system_prompt:
         return cmd_show_system_prompt(
             cfg,
