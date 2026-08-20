@@ -609,10 +609,12 @@ def _allow_dirs_from(args) -> list[str] | None:
     return list(getattr(args, "allow_dir", None) or []) or None
 
 
-def _batch_run_one(cfg, provider, model, auto_accept, timeout, disabled_groups, max_output_chars, command_timeout, agent_name, working_dir, only_tools, allow_dirs, p):
+def _batch_run_one(cfg, provider, model, auto_accept, timeout, disabled_groups, max_output_chars, command_timeout, agent_name, working_dir, only_tools, allow_dirs, p, attach=None):
     """Run a single --batch prompt (module-level so tests can replace it)."""
     try:
         agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools, allow_dirs=allow_dirs)
+        if attach:
+            p = f"{p}\n\n" + "\n\n".join(f"[file: {f}]\n{Path(f).expanduser().read_text(encoding='utf-8')}" for f in attach)
         answer = _run_guarded(agent, p, lambda *a, **k: None, timeout)
     except Exception as e:  # noqa: BLE001
         return {"prompt": p, "answer": None, "error": str(e)}
@@ -638,6 +640,7 @@ def cmd_batch(
     allow_dirs: list[str] | None = None,
     fail_fast: bool = False,
     notify: bool = False,
+    attach: list[str] | None = None,
 ) -> int:
     """Run one one-shot per line of a prompts file (blank lines skipped; '-' reads stdin)."""
     import json as _json
@@ -674,6 +677,7 @@ def cmd_batch(
             only_tools,
             allow_dirs,
             p,
+            attach=attach,
         )
 
     results: list[dict] = []
@@ -1707,7 +1711,7 @@ def cmd_cron(schedule: str, prompt: str, command: str | None = None, as_json: bo
     return 0
 
 
-def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 20) -> int:
+def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 20, output: str | None = None) -> int:
     import json as _json
 
     from termux_agent.session import list_sessions, read_session
@@ -1738,9 +1742,20 @@ def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 
         )
         if len(items) >= max(1, limit):
             break
-    if as_json:
-        print(_json.dumps({"sessions": items}, ensure_ascii=False))
-        return 0
+    if as_json or output:
+        payload = {"sessions": items}
+        if output:
+            try:
+                Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                render_info(f"Session list written to {output}")
+            except OSError as e:
+                render_error(f"Cannot write output file {output}: {e}")
+                return 1
+        if as_json:
+            print(_json.dumps(payload, ensure_ascii=False))
+            return 0
+        if output:
+            return 0
     if not items:
         render_info("No sessions found." if needle else "No sessions saved yet in ~/.termux-agent/sessions/.")
         return 0
@@ -1870,7 +1885,7 @@ def cmd_list_agents(cfg: dict, as_json: bool = False) -> int:
     return 0
 
 
-def cmd_list_models(cfg: dict, provider_name: str | None = None, as_json: bool = False) -> int:
+def cmd_list_models(cfg: dict, provider_name: str | None = None, as_json: bool = False, output: str | None = None) -> int:
     import json as _json
 
     name = provider_name or cfg.get("provider", "zen")
@@ -1883,6 +1898,16 @@ def cmd_list_models(cfg: dict, provider_name: str | None = None, as_json: bool =
             render_error(str(e))
         return 1
     live = provider.list_models()
+    if output:
+        models = live or cfg.get("providers", {}).get(name, {}).get("models", [])
+        try:
+            Path(output).expanduser().write_text(
+                _json.dumps({"provider": name, "models": models}, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            render_info(f"Model list written to {output}")
+        except OSError as e:
+            render_error(f"Cannot write output file {output}: {e}")
+            return 1
     if live:
         if as_json:
             print(_json.dumps({"provider": name, "models": live}, ensure_ascii=False))
@@ -2230,6 +2255,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--doctor-termux", action="store_true", help="With --doctor, check termux-api availability for notifications/clipboard/screenshots etc.")
     parser.add_argument("--doctor-network", action="store_true", help="Also check provider connectivity (needs internet)")
     parser.add_argument("--doctor-update", action="store_true", help="With --doctor, check the latest published version on PyPI")
+    parser.add_argument("--quick", action="store_true", help="With --doctor, skip slow checks (network/update)")
     parser.add_argument("--config", metavar="FILE", help="Use this config file instead of ~/.termux-agent/config.yaml")
     parser.add_argument("--smoke", action="store_true", help="End-to-end smoke test with the real model (sends a tiny prompt)")
     parser.add_argument(
@@ -2392,7 +2418,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_tools:
         return cmd_list_tools()
     if args.sessions:
-        return cmd_sessions(args.search, as_json=args.json, limit=args.limit)
+        return cmd_sessions(args.search, as_json=args.json, limit=args.limit, output=args.output)
     if args.show_system_prompt:
         return cmd_show_system_prompt(
             cfg,
@@ -2416,7 +2442,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.doctor or args.doctor_network:
-        return cmd_doctor(cfg, network=args.doctor_network, as_json=args.json, termux=args.doctor_termux, update=args.doctor_update)
+        return cmd_doctor(cfg, network=args.doctor_network and not args.quick, as_json=args.json, termux=args.doctor_termux, update=args.doctor_update and not args.quick)
     if args.smoke:
         return cmd_smoke(cfg, args.provider, args.model, as_json=args.json, output=args.output)
     if args.serve_stop:
@@ -2473,7 +2499,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_list_agents(cfg, as_json=args.json)
     if args.models is not None:
         pname = None if args.models == "__default__" else args.models
-        return cmd_list_models(cfg, pname, as_json=args.json)
+        return cmd_list_models(cfg, pname, as_json=args.json, output=args.output)
     if args.install_completion:
         from termux_agent.completion import install
 
@@ -2612,6 +2638,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_dirs=_allow_dirs_from(args),
             fail_fast=args.fail_fast,
             notify=args.notify,
+            attach=args.attach,
         )
 
     if prompt:

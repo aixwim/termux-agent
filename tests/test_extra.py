@@ -5131,6 +5131,71 @@ def test_cron_notify(tmp_path: Path, monkeypatch):
     assert data["notify"] is True
 
 
+# --- batch attach / doctor quick / models+sessions output ---
+def test_batch_attach(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    data = tmp_path / "data.txt"
+    data.write_text("SECRET", encoding="utf-8")
+    seen = {}
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            run=lambda p, on_tool_use=None, on_text_delta=None: seen.__setitem__("p", p) or "ok",
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    in_path = tmp_path / "in.txt"
+    in_path.write_text("summarize\n", encoding="utf-8")
+    out = __import__("io").StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_batch(_min_cfg(), str(in_path), "zen", None, as_json=True, attach=[str(data)]) == 0
+    assert "SECRET" in seen["p"]
+    assert "[file:" in seen["p"]
+
+
+def test_doctor_quick(monkeypatch):
+    from termux_agent import cli
+
+    got = {}
+
+    def fake_doctor(cfg, network=False, as_json=False, termux=False, update=False):
+        got.update(network=network, update=update)
+        return 0
+
+    monkeypatch.setattr(cli, "cmd_doctor", fake_doctor)
+    argv = ["termux-agent", "--doctor", "--quick"]
+    monkeypatch.setattr("sys.argv", argv)
+    assert cli.main() == 0
+    assert got["network"] is False
+    assert got["update"] is False
+
+
+def test_sessions_output(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "hi"}], "zen", "m", session_id="ses-out")
+    out_file = tmp_path / "list.json"
+    out = __import__("io").StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_sessions(limit=20, output=str(out_file)) == 0
+    data = _json.loads(out_file.read_text(encoding="utf-8"))
+    assert data["sessions"][0]["id"] == "ses-out"
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
