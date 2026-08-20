@@ -323,6 +323,37 @@ def test_repl_export(tmp_path: Path):
     assert "tolong baca file" in text
 
 
+def test_repl_export_json(tmp_path: Path):
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+    from termux_agent.ui.repl import Repl
+
+    fake = SimpleNamespace(
+        messages=[
+            {"role": "system", "content": "prompt"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+        ],
+        ctx=SimpleNamespace(working_dir=tmp_path, undo=lambda: "ok", confirm_commands=False),
+        system_prompt="prompt",
+        provider=SimpleNamespace(name="zen", model="m"),
+        temperature=0.7,
+        max_tool_rounds=10,
+        max_context_tokens=0,
+    )
+    repl = Repl(fake, provider_name="zen", model="m")
+    out = tmp_path / "out.json"
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(cli.sys, "stdout", __import__("io").StringIO())
+    repl._export(str(out), fmt="json")
+    payload = _json.loads(out.read_text())
+    assert payload["id"] == repl.session.session_id
+    assert [m["role"] for m in payload["messages"]] == ["user", "assistant"]
+    assert payload["messages"][0]["content"] == "hello"
+
+
 # --- usage tracking ---
 def _usage_provider():
     from termux_agent.providers.base import Provider, StreamEvent
@@ -1516,7 +1547,7 @@ def test_parser_all_flags_present():
         "--clip --screenshot --export --import --prune --output --timeout --speak --wakelock --notify "
         "--chat --json --quiet --resume --serve --models --smoke --plan --copy --stats --doctor "
         "--install-completion --list-providers --list-agents --image --prompt-file --api-key --search "
-        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains --stats-all --config-unset --bench-prompt --tokens-exclude --since-days --merge --doctor-fix --health --search-sessions"
+        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains --stats-all --config-unset --bench-prompt --tokens-exclude --since-days --merge --doctor-fix --health --search-sessions --notes-only"
     ).split():
         assert flag in help_txt, f"missing {flag}"
 
@@ -7025,6 +7056,26 @@ def test_repl_session_and_last(tmp_path: Path):
     monkeypatch.setattr(cli.sys, "stdout", out)
     repl._handle_command("/last", None)
     assert "last answer text" in out.getvalue()
+
+
+# --- sessions --notes-only ---
+def test_cmd_sessions_notes_only(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    monkeypatch.setattr(session, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(session, "NOTES_FILE", tmp_path / "notes.json")
+    session.record_messages([{"role": "user", "content": "one"}], "zen", "m", session_id="no-a")
+    session.record_messages([{"role": "user", "content": "two"}], "zen", "m", session_id="no-b")
+    session.set_note("no-a", "has a note")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_sessions(limit=20, as_json=True, notes_only=True) == 0
+    payload = _json.loads(out.getvalue())
+    assert [s["id"] for s in payload["sessions"]] == ["no-a"]
+    assert payload["sessions"][0]["note"] == "has a note"
 
 
 # --- import dir / doctor fix ---

@@ -2404,7 +2404,7 @@ def cmd_cron(schedule: str, prompt: str, command: str | None = None, as_json: bo
     return 0
 
 
-def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 20, output: str | None = None, since_days: int | None = None) -> int:
+def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 20, output: str | None = None, since_days: int | None = None, notes_only: bool = False) -> int:
     import json as _json
     import time
 
@@ -2417,6 +2417,8 @@ def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 
     items = []
     for s in sessions[:200]:
         if cutoff is not None and s.stat().st_mtime < cutoff:
+            continue
+        if notes_only and not notes.get(s.stem):
             continue
         recs = read_session(s)
         first_user = next((r["content"] for r in recs if r.get("role") == "user"), "")
@@ -3096,6 +3098,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--session-dir", metavar="DIR", help="Use this directory for session files instead of ~/.termux-agent/sessions")
     parser.add_argument("--search", help="Filter --sessions by keyword in the first message")
     parser.add_argument("--search-sessions", metavar="TERM", help="Search every session transcript and note for a term and list matches")
+    parser.add_argument("--notes-only", action="store_true", help="With --sessions: list only sessions that have a note")
     parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest); --markdown for a readable transcript, --redact to mask secrets")
     parser.add_argument("--markdown", action="store_true", help="With --export/--show, print a readable Markdown transcript")
     parser.add_argument("--import", dest="import_path", metavar="FILE", help="Import a portable session JSON file ('-' reads stdin; --dry-run validates only, --markdown imports a Markdown transcript)")
@@ -3305,7 +3308,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_tools:
         return cmd_list_tools(as_json=args.json, output=args.output)
     if args.sessions:
-        return cmd_sessions(args.search, as_json=args.json, limit=0 if args.all else args.limit, output=args.output, since_days=args.since_days)
+        return cmd_sessions(args.search, as_json=args.json, limit=0 if args.all else args.limit, output=args.output, since_days=args.since_days, notes_only=args.notes_only)
     if args.search_sessions is not None:
         return cmd_search(args.search_sessions, as_json=args.json, limit=0 if args.all else args.limit, output=args.output)
     if args.show_system_prompt:

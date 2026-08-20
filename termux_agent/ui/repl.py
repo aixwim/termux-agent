@@ -45,7 +45,7 @@ Special commands (start with /):
   /resume [ID]    resume a session (ID optional, default: latest)
   /compact        summarize the session history to save context
   /agent [NAME]   view/switch sub-agent (explore, coder, shell, ...)
-  /export [PATH]  export the conversation to Markdown
+  /export [PATH]  export the conversation to Markdown (/export json writes a JSON file instead)
   /copy           copy the last answer to the clipboard
   /stats          show token usage of this session
   /undo           revert the most recent file write/edit
@@ -253,7 +253,10 @@ class Repl:
         elif c == "/agent":
             self._switch_agent(rest)
         elif c == "/export":
-            self._export(rest)
+            if rest.strip().lower() in ("json", "jsonl"):
+                self._export(rest.strip().lower(), fmt="json")
+            else:
+                self._export(rest)
         elif c == "/copy":
             self._copy_last()
         elif c == "/stats":
@@ -481,11 +484,29 @@ class Repl:
             label = "all tools" if not tools else ", ".join(tools)
             render_info(f"  {name:8} {spec.get('description', '')}  [{label}]")
 
-    def _export(self, dest: str) -> None:
+    def _export(self, dest: str, fmt: str = "markdown") -> None:
         import json
 
         from termux_agent.config import CONFIG_DIR
 
+        if fmt == "json":
+            payload = {
+                "id": self.session.session_id,
+                "provider": self.provider_name,
+                "model": self.model,
+                "messages": [m for m in self.agent.messages if m.get("role") != "system"],
+            }
+            if dest and dest != "json" and dest != "jsonl":
+                out = Path(dest).expanduser()
+            else:
+                from datetime import datetime
+
+                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                out = CONFIG_DIR / "exports" / f"session-{stamp}.json"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            render_info(f"Exported to: {out}")
+            return
         lines = [
             "# termux-agent - conversation export",
             "",
