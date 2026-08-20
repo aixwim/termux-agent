@@ -1516,7 +1516,7 @@ def test_parser_all_flags_present():
         "--clip --screenshot --export --import --prune --output --timeout --speak --wakelock --notify "
         "--chat --json --quiet --resume --serve --models --smoke --plan --copy --stats --doctor "
         "--install-completion --list-providers --list-agents --image --prompt-file --api-key --search "
-        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains --stats-all --config-unset --bench-prompt --tokens-exclude --since-days --merge"
+        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains --stats-all --config-unset --bench-prompt --tokens-exclude --since-days --merge --doctor-fix"
     ).split():
         assert flag in help_txt, f"missing {flag}"
 
@@ -5407,7 +5407,7 @@ def test_doctor_quick(monkeypatch):
 
     got = {}
 
-    def fake_doctor(cfg, network=False, as_json=False, termux=False, update=False, output=None):
+    def fake_doctor(cfg, network=False, as_json=False, termux=False, update=False, output=None, fix=False):
         got.update(network=network, update=update)
         return 0
 
@@ -6736,6 +6736,47 @@ def test_cmd_tokens_exclude(tmp_path: Path, monkeypatch):
     payload = _json.loads(out.getvalue())
     assert payload["files"] == 1
     assert payload["chars"] == len("aaa\n")
+
+
+# --- import dir / doctor fix ---
+def test_cmd_import_directory(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    src = tmp_path / "exported"
+    src.mkdir()
+    (src / "a.json").write_text(_json.dumps({"messages": [{"role": "user", "content": "a"}, {"role": "assistant", "content": "A"}]}))
+    (src / "b.json").write_text(_json.dumps({"messages": [{"role": "user", "content": "b"}]}))
+    (src / "bad.md").write_text("no session markers here\n")
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_import(str(src), as_json=True) == 0
+    payload = _json.loads(out.getvalue())
+    assert payload["imported"] == 2
+    assert payload["failed"] == ["bad.md"]
+    assert len(list(sdir.glob("*.jsonl"))) == 2
+
+
+def test_doctor_fix_creates_config(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    cfg_file = tmp_path / "config.yaml"
+    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cli, "CONFIG_FILE", cfg_file)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_doctor({}, as_json=True, fix=True) == 0
+    assert cfg_file.exists()
+    assert "zen" in cfg_file.read_text()
+    assert "auto-fix" in out.getvalue() or "created missing config" in out.getvalue()
 
 
 # --- init wizard ---

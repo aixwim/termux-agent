@@ -1309,10 +1309,49 @@ def _markdown_to_session(text: str) -> dict:
 
 
 def cmd_import(path: str, dry_run: bool = False, as_json: bool = False, markdown: bool = False) -> int:
-    """Import a portable session JSON file and save it as a session (--dry-run validates only)."""
+    """Import a portable session JSON file (or a directory of them) and save as sessions (--dry-run validates only)."""
     import json as _json
 
     from termux_agent.session import import_session
+
+    if Path(path).expanduser().is_dir():
+        root = Path(path).expanduser()
+        files = sorted(p for p in root.iterdir() if p.suffix.lower() in (".json", ".md", ".jsonl"))
+        if not files:
+            if as_json:
+                print(_json.dumps({"ok": False, "error": f"No .json/.md files found in {root}"}, ensure_ascii=False))
+            else:
+                render_error(f"No .json/.md files found in {root}")
+            return 1
+        imported = 0
+        failed = []
+        for f in files:
+            try:
+                text = f.read_text(encoding="utf-8")
+                if markdown:
+                    data = _markdown_to_session(text)
+                else:
+                    try:
+                        data = _json.loads(text)
+                    except _json.JSONDecodeError:
+                        data = _markdown_to_session(text)
+                if not isinstance(data, dict) or "messages" not in data or not data.get("messages"):
+                    raise ValueError("no user/assistant messages")
+                if not dry_run:
+                    import_session(data)
+                imported += 1
+            except Exception as e:  # noqa: BLE001
+                failed.append(f.name)
+        if as_json:
+            print(_json.dumps({"ok": True, "dry_run": dry_run, "imported": imported, "failed": failed, "total": len(files)}, ensure_ascii=False))
+        else:
+            if dry_run:
+                render_info(f"Valid: {imported}/{len(files)} session file(s) in {root}.")
+            else:
+                render_info(f"Imported {imported} session(s) from {root}.")
+            if failed:
+                render_error(f"Failed: {', '.join(failed)}")
+        return 0
 
     try:
         if path == "-":
@@ -2389,14 +2428,15 @@ def cmd_list_models(cfg: dict, provider_name: str | None = None, as_json: bool =
     return 0
 
 
-def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: bool = False, update: bool = False, output: str | None = None) -> int:
-    """Environment diagnostics: versions, Termux, config, PATH, provider connectivity."""
+def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: bool = False, update: bool = False, output: str | None = None, fix: bool = False) -> int:
+    """Environment diagnostics: versions, Termux, config, PATH, provider connectivity (--fix repairs common issues)."""
     import os
     import platform
     import shutil
     import sys as _sys
 
     checks: list[dict] = []
+    fixes: list[str] = []
 
     def add(label: str, ok_flag: bool, detail: str = "") -> None:
         checks.append({"label": label, "ok": ok_flag, "detail": detail})
@@ -2503,6 +2543,22 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
             add("update check", True, f"{__version__} is the latest")
         else:
             add("update check", False, f"{__version__} installed, {latest} available - pip install -U termux-agent")
+
+    if fix:
+        import yaml as _yaml
+
+        if not CONFIG_FILE.exists():
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            CONFIG_FILE.write_text(_yaml.safe_dump({"provider": "zen"}, sort_keys=False), encoding="utf-8")
+            fixes.append("created missing config file (~/.termux-agent/config.yaml) with provider: zen")
+        if not cfg.get("model") and not cfg.get("providers", {}).get(cfg.get("provider", "zen"), {}).get("models"):
+            loaded = _yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
+            if "model" not in loaded:
+                loaded.setdefault("providers", {}).setdefault("zen", {})["models"] = ["opencode-zen-v4-flash-free"]
+                CONFIG_FILE.write_text(_yaml.safe_dump(loaded, sort_keys=False, allow_unicode=True), encoding="utf-8")
+                fixes.append("added a default zen model list to the config")
+        if fixes:
+            add("auto-fix", True, "; ".join(fixes))
 
     if as_json or output:
         import json as _json
@@ -2748,6 +2804,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-agents", action="store_true", help="List available sub-agents")
     parser.add_argument("--models", nargs="?", const="__default__", metavar="PROVIDER", help="List models for a provider (live, or preset fallback)")
     parser.add_argument("--doctor", action="store_true", help="Diagnose environment & config; --doctor-termux also checks termux-api commands")
+    parser.add_argument("--doctor-fix", action="store_true", help="With --doctor, repair common issues (e.g. create a missing config file)")
     parser.add_argument("--doctor-termux", action="store_true", help="With --doctor, check termux-api availability for notifications/clipboard/screenshots etc.")
     parser.add_argument("--doctor-network", action="store_true", help="Also check provider connectivity (needs internet)")
     parser.add_argument("--doctor-update", action="store_true", help="With --doctor, check the latest published version on PyPI")
@@ -2953,7 +3010,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.doctor or args.doctor_network:
-        return cmd_doctor(cfg, network=args.doctor_network and not args.quick, as_json=args.json, termux=args.doctor_termux, update=args.doctor_update and not args.quick, output=args.output)
+        return cmd_doctor(cfg, network=args.doctor_network and not args.quick, as_json=args.json, termux=args.doctor_termux, update=args.doctor_update and not args.quick, output=args.output, fix=args.doctor_fix)
     if args.smoke:
         return cmd_smoke(cfg, args.provider, args.model, as_json=args.json, output=args.output, timeout=args.timeout)
     if args.serve_stop:

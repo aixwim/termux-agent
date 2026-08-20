@@ -60,7 +60,13 @@ def prune_notes(valid_ids: set[str]) -> int:
 class Session:
     def __init__(self, session_id: str | None = None, provider_name: str = "openai", model: str = "") -> None:
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        self.session_id = session_id or time.strftime("%Y%m%d-%H%M%S")
+        sid = session_id or time.strftime("%Y%m%d-%H%M%S")
+        if not session_id:
+            i = 1
+            while (SESSIONS_DIR / f"{sid}.jsonl").exists():
+                sid = f"{time.strftime('%Y%m%d-%H%M%S')}-{i}"
+                i += 1
+        self.session_id = sid
         self.provider_name = provider_name
         self.model = model
         self.path = SESSIONS_DIR / f"{self.session_id}.jsonl"
@@ -178,7 +184,7 @@ def import_session(data: dict, session_id: str | None = None) -> str:
     if not clean:
         raise ValueError("no user/assistant messages")
     s = Session(
-        session_id=session_id,
+        session_id=session_id or data.get("id"),
         provider_name=str(data.get("provider") or ""),
         model=str(data.get("model") or ""),
     )
