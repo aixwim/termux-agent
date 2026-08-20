@@ -4374,6 +4374,104 @@ def test_config_show_yaml(tmp_path: Path, monkeypatch):
     assert "provider: zen" in out.getvalue()
 
 
+# --- config redact / watch exit-on-change / server image url ---
+def test_config_show_redact(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    cfg = _min_cfg()
+    cfg["providers"]["zen"]["api_key"] = "super-secret"
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_config_show(cfg, redact=True) == 0
+    text = out.getvalue()
+    assert "super-secret" not in text
+    assert "***" in text
+
+
+def test_watch_exit_on_change(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    answers = iter(["A", "B"])
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda p, on_tool_use=None, on_text_delta=None: next(answers),
+    ))
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_watch(_min_cfg(), "hi", "zen", None, interval=1, exit_on_change=True, as_json=True) == 0
+    lines = [l for l in out.getvalue().strip().splitlines() if l]
+    assert _json.loads(lines[-1])["changed"] is True
+
+
+def test_server_chat_image_url(tmp_path: Path, monkeypatch):
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+
+    seen = {}
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"fakepng"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv_http = HTTPServer(("127.0.0.1", 0), H)
+    img_port = srv_http.server_address[1]
+    t = threading.Thread(target=srv_http.serve_forever, daemon=True)
+    t.start()
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[{"role": "system", "content": "BASE"}],
+            run=lambda p, on_tool_use=None, on_text_delta=None: (seen.setdefault("prompt", p) or "ok"),
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{img_port}/img.jpg"
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/chat",
+            data=_json.dumps({"prompt": "look", "image": url}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            assert _json.loads(r.read())["ok"] is True
+        assert "[image:" in seen["prompt"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        srv_http.shutdown()
+        srv_http.server_close()
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

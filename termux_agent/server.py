@@ -354,6 +354,23 @@ class _AgentHandler(BaseHTTPRequestHandler):
             return
         image = data.get("image")
         if isinstance(image, str) and image:
+            if image.startswith(("http://", "https://")):
+                import tempfile
+                import urllib.parse
+                import urllib.request
+                from pathlib import Path
+
+                try:
+                    with urllib.request.urlopen(image, timeout=30) as resp:
+                        raw = resp.read()
+                    ext = urllib.parse.urlparse(image).path
+                    ext = Path(ext).suffix or ".jpg"
+                    tmp_img = Path(tempfile.gettempdir()) / f"termux-agent-img{ext}"
+                    tmp_img.write_bytes(raw)
+                    image = str(tmp_img)
+                except Exception as e:  # noqa: BLE001
+                    self._send(400, {"ok": False, "error": f"failed to download image: {e}"})
+                    return
             from os.path import exists
 
             if exists(image):

@@ -727,6 +727,7 @@ def cmd_watch(
     diff: bool = False,
     as_json: bool = False,
     output: str | None = None,
+    exit_on_change: bool = False,
 ) -> int:
     """Re-run a one-shot task every N seconds until Ctrl+C. Optionally re-attach a screenshot."""
     import json as _json
@@ -801,6 +802,16 @@ def cmd_watch(
                     if max_rounds is None or round_no < max_rounds:
                         time.sleep(interval)
                     continue
+                if exit_on_change and last_answer is not None and answer != last_answer:
+                    if as_json:
+                        print(_json.dumps({"round": round_no, "answer": answer, "changed": True}, ensure_ascii=False))
+                    else:
+                        render_info(f"round {round_no}: answer changed — exiting.")
+                    if notify:
+                        from termux_agent.notify import notify as _notify
+
+                        _notify(f"Answer changed at round {round_no}: {answer[:120]}")
+                    return 0
                 if diff and not as_json:
                     render_info(f"\n--- round {round_no} (changed) ---")
                 last_answer = answer
@@ -1053,15 +1064,31 @@ def cmd_prune(keep: int, as_json: bool = False, dry_run: bool = False) -> int:
     return 0
 
 
-def cmd_config_show(cfg: dict, as_json: bool = False) -> int:
+def cmd_config_show(cfg: dict, as_json: bool = False, redact: bool = False) -> int:
     import json as _json
     import yaml as _yaml
 
+    if redact:
+        cfg = _redact_cfg(cfg)
     if as_json:
         print(_json.dumps(cfg, ensure_ascii=False, default=str))
         return 0
     print(_yaml.safe_dump(cfg, sort_keys=False))
     return 0
+
+
+def _redact_cfg(cfg: dict) -> dict:
+    """Return a copy of the config with secrets masked for safe display."""
+    import copy
+
+    out = copy.deepcopy(cfg)
+    providers = out.setdefault("providers", {})
+    for p, pc in providers.items():
+        if isinstance(pc, dict):
+            for key in ("api_key", "api_key_env", "key", "token"):
+                if key in pc and pc[key]:
+                    pc[key] = "***"
+    return out
 
 
 def cmd_prune_days(days: int, as_json: bool = False, dry_run: bool = False, keep: int = 0) -> int:
@@ -1955,6 +1982,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--watch", type=int, metavar="SECONDS", help="Re-run the one-shot prompt every N seconds until Ctrl+C (combine with --screenshot)")
     parser.add_argument("--max-rounds", type=int, default=None, metavar="N", help="With --watch: stop after this many rounds")
     parser.add_argument("--diff", action="store_true", help="With --watch: only print/notify when the answer changes; with --rerun: show the diff vs the previous answer")
+    parser.add_argument("--exit-on-change", action="store_true", help="With --watch: stop as soon as the answer differs from the previous round")
     parser.add_argument("--batch", metavar="FILE", help="Run one one-shot per line of the file (blank lines skipped; '-' reads stdin); --output writes results as JSON")
     parser.add_argument("--retries", type=int, metavar="N", help="Override transient retry count for network hiccups")
     parser.add_argument("--no-fallback", action="store_true", help="Disable fallback models on 429/errors (use only the selected model)")
@@ -2004,7 +2032,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prune-days", type=int, metavar="DAYS", help="Delete sessions older than this many days (--dry-run previews)")
     parser.add_argument("--keep", type=int, default=0, metavar="N", help="With --prune-days: keep the N newest sessions")
     parser.add_argument("--dry-run", action="store_true", help="With --prune/--prune-days: show what would be deleted without deleting")
-    parser.add_argument("--config-show", action="store_true", help="Print the effective merged configuration as YAML")
+    parser.add_argument("--redact", action="store_true", help="With --config-show: mask secrets in the output")
+    parser.add_argument("--config-show", action="store_true", help="Print the effective merged configuration as YAML (--redact masks secrets)")
     parser.add_argument("--list-tools", action="store_true", help="List all registered tools")
     parser.add_argument("--forget", nargs="?", const="latest", metavar="SESSION", help="Delete one session (default: latest)")
     parser.add_argument("--export-all", metavar="DIR", help="Export every session as a JSON file into DIR (--markdown: readable .md transcripts)")
@@ -2141,7 +2170,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.prune_days is not None:
         return cmd_prune_days(args.prune_days, as_json=args.json, dry_run=args.dry_run, keep=args.keep)
     if args.config_show:
-        return cmd_config_show(cfg, as_json=args.json)
+        return cmd_config_show(cfg, as_json=args.json, redact=args.redact)
     if args.list_tools:
         return cmd_list_tools()
     if args.sessions:
@@ -2338,6 +2367,7 @@ def main(argv: list[str] | None = None) -> int:
             diff=args.diff,
             as_json=args.json,
             output=args.output,
+            exit_on_change=args.exit_on_change,
         )
 
     if args.batch:
