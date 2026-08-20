@@ -1150,12 +1150,41 @@ def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None, 
     return 0
 
 
-def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False, session_ref: str | None = None, output: str | None = None, exclude: list[str] | None = None) -> int:
-    """Estimate token usage of a file, directory, inline text, session transcript, or git diff (--tokens HEAD)."""
+def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False, session_ref: str | None = None, output: str | None = None, exclude: list[str] | None = None, all_sessions: bool = False) -> int:
+    """Estimate token usage of a file, directory, inline text, session transcript, git diff (--tokens HEAD), or all sessions (--all)."""
     import sys as _sys
 
     extra: dict = {}
     exclude = exclude or []
+
+    if all_sessions:
+        from termux_agent.session import list_sessions, session_messages
+
+        total = 0
+        per = []
+        for p in list_sessions():
+            chars = sum(len(str(m.get("content", ""))) for m in session_messages(p))
+            total += chars
+            per.append({"session": p.stem, "chars": chars})
+        extra = {"sessions": len(per), "all": per}
+        chars = total
+        estimated = max(1, chars // 4)
+        if as_json or output:
+            import json as _json
+
+            payload = {"ok": True, "chars": chars, "tokens": estimated, **extra}
+            if output:
+                try:
+                    Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    render_info(f"Token estimate written to {output}")
+                except OSError as e:
+                    render_error(f"Cannot write output file {output}: {e}")
+                    return 1
+            if as_json:
+                print(_json.dumps(payload, ensure_ascii=False))
+            return 0
+        render_info(f"{chars} characters, ~{estimated} tokens across {len(per)} session(s) (rough heuristic: chars/4).")
+        return 0
 
     if path and (path == "HEAD" or path.startswith("HEAD~") or ".." in path or "..." in path):
         import os as _os
@@ -1873,12 +1902,77 @@ def cmd_rerun(
     redact: bool = False,
     temperature: float | None = None,
     append: bool = False,
+    all_sessions: bool = False,
 ) -> int:
-    """Re-run the last user prompt of a session with the current model (fresh run)."""
+    """Re-run the last user prompt of a session (or every session with --all) using the current model."""
     import json as _json
 
     from termux_agent.session import export_session
     from termux_agent.ui.renderer import render_answer, render_error
+
+    def _single_run(sid: str) -> dict:
+        try:
+            data = export_session(sid)
+        except FileNotFoundError:
+            return {"session": sid, "error": "not found"}
+        if redact:
+            data = _redact_cfg(data)
+        last_user = next(
+            (str(m.get("content", "")) for m in reversed(data.get("messages", [])) if m.get("role") == "user"),
+            "",
+        )
+        old_answer = next(
+            (str(m.get("content", "")) for m in reversed(data.get("messages", [])) if m.get("role") == "assistant"),
+            "",
+        )
+        if not last_user.strip():
+            return {"session": data.get("id", sid), "error": "no user prompt"}
+        try:
+            agent = build_agent(cfg, provider, model, auto_accept=True, temperature=temperature)
+            answer = _run_guarded(agent, last_user, lambda *a, **k: None, timeout)
+        except Exception as e:  # noqa: BLE001
+            return {"session": data.get("id", sid), "error": str(e)}
+        res = {"session": data.get("id", sid), "answer": answer, "old": old_answer}
+        if diff:
+            import difflib
+
+            res["changed"] = bool(
+                list(
+                    difflib.unified_diff(
+                        old_answer.splitlines(),
+                        answer.splitlines(),
+                        fromfile="previous",
+                        tofile="new",
+                        lineterm="",
+                    )
+                )
+            )
+        return res
+
+    if all_sessions:
+        from termux_agent.session import list_sessions
+
+        results = [_single_run(p.stem) for p in sorted(list_sessions(), key=lambda x: x.stem)]
+        failed = [r for r in results if r.get("error")]
+        if output:
+            with open(Path(output).expanduser(), "a" if append else "w", encoding="utf-8") as f:
+                for r in results:
+                    if "answer" in r:
+                        f.write(r["answer"] + "\n")
+            render_info(f"Answers written to {output}")
+        if as_json:
+            print(_json.dumps({"ok": True, "ran": len(results), "failed": len(failed), "results": results}, ensure_ascii=False))
+            return 0
+        for r in results:
+            if "error" in r:
+                render_error(f"{r['session']}: {r['error']}")
+            elif diff and not r.get("changed", True):
+                render_info(f"{r['session']}: unchanged")
+            else:
+                render_answer(f"{r['session']}:\n{r['answer']}")
+        if failed:
+            return 1
+        return 0
 
     try:
         data = export_session(ref)
@@ -2777,7 +2871,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--since-days", type=int, metavar="N", help="With --sessions: only list sessions from the last N days")
     parser.add_argument("--session", metavar="SESSION", help="With --tokens: estimate a session transcript instead of a file")
     parser.add_argument("--limit", type=int, default=20, metavar="N", help="Max sessions to list (with --sessions/--export-all; --all lists every session)")
-    parser.add_argument("--all", action="store_true", help="With --sessions: list every session (ignore --limit)")
+    parser.add_argument("--all", action="store_true", help="With --sessions: list every session (ignore --limit); with --rerun/--tokens: operate on every session")
     parser.add_argument("--session-dir", metavar="DIR", help="Use this directory for session files instead of ~/.termux-agent/sessions")
     parser.add_argument("--search", help="Filter --sessions by keyword in the first message")
     parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest); --markdown for a readable transcript, --redact to mask secrets")
@@ -2954,9 +3048,10 @@ def main(argv: list[str] | None = None) -> int:
             notify=args.notify,
             redact=args.redact,
             temperature=args.temperature,
+            all_sessions=args.all,
         )
     if args.tokens is not None or args.session is not None:
-        return cmd_tokens(args.tokens, as_json=args.json, session_ref=args.session, output=args.output, exclude=args.tokens_exclude)
+        return cmd_tokens(args.tokens, as_json=args.json, session_ref=args.session, output=args.output, exclude=args.tokens_exclude, all_sessions=args.all)
     if args.bundle:
         return cmd_bundle(args.bundle, as_json=args.json, include_sessions=not args.no_sessions)
     if args.restore:

@@ -6738,6 +6738,53 @@ def test_cmd_tokens_exclude(tmp_path: Path, monkeypatch):
     assert payload["chars"] == len("aaa\n")
 
 
+# --- tokens --all / rerun --all ---
+def test_cmd_tokens_all(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "aaaa"}, {"role": "assistant", "content": "bbbb"}], "zen", "m", session_id="all-a")
+    session.record_messages([{"role": "user", "content": "cc"}], "zen", "m", session_id="all-b")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_tokens(None, all_sessions=True, as_json=True) == 0
+    payload = _json.loads(out.getvalue())
+    assert payload["sessions"] == 2
+    assert payload["chars"] == 10
+    assert payload["tokens"] >= 1
+
+
+def test_cmd_rerun_all(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}], "zen", "m", session_id="rr-a")
+    session.record_messages([{"role": "user", "content": "q2"}, {"role": "assistant", "content": "a2"}], "zen", "m", session_id="rr-b")
+
+    def fake_agent(*a, **k):
+        return object()
+
+    monkeypatch.setattr(cli, "build_agent", fake_agent)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, prompt, cb, timeout: f"ANSWER:{prompt}")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_rerun({}, None, None, None, all_sessions=True, as_json=True) == 0
+    payload = _json.loads(out.getvalue())
+    assert payload["ran"] == 2
+    assert payload["failed"] == 0
+    assert payload["results"][0]["answer"] == "ANSWER:q1"
+
+
 # --- import dir / doctor fix ---
 def test_cmd_import_directory(tmp_path: Path, monkeypatch):
     import io
