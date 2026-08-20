@@ -1516,7 +1516,7 @@ def test_parser_all_flags_present():
         "--clip --screenshot --export --import --prune --output --timeout --speak --wakelock --notify "
         "--chat --json --quiet --resume --serve --models --smoke --plan --copy --stats --doctor "
         "--install-completion --list-providers --list-agents --image --prompt-file --api-key --search "
-        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains --stats-all --config-unset --bench-prompt --tokens-exclude --since-days --merge --doctor-fix"
+        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains --stats-all --config-unset --bench-prompt --tokens-exclude --since-days --merge --doctor-fix --health"
     ).split():
         assert flag in help_txt, f"missing {flag}"
 
@@ -6885,6 +6885,54 @@ def test_server_sessions_note_filter_and_post(tmp_path: Path, monkeypatch):
             assert e.code == 404
     finally:
         httpd.shutdown()
+
+
+# --- summarize --all / health ---
+def test_cmd_summarize_all(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}], "zen", "m", session_id="sum-a")
+    session.record_messages([{"role": "user", "content": "q2"}, {"role": "assistant", "content": "a2"}], "zen", "m", session_id="sum-b")
+
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: object())
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, prompt, cb, timeout: "SUMMARY:" + prompt.splitlines()[-1])
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_summarize({}, None, None, None, all_sessions=True, as_json=True) == 0
+    payload = _json.loads(out.getvalue())
+    assert payload["summarized"] == 2
+    assert payload["failed"] == 0
+    assert any(r["summary"].startswith("SUMMARY:") for r in payload["results"])
+
+
+def test_cmd_health(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("provider: zen\n")
+    monkeypatch.setattr(cli, "CONFIG_FILE", cfg_file)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_health({"provider": "zen", "model": "m"}, as_json=True) == 0
+    payload = _json.loads(out.getvalue())
+    assert payload["ok"] is True
+    assert payload["checks"][0]["label"] == "version"
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    monkeypatch.setattr(cli, "CONFIG_FILE", tmp_path / "missing.yaml")
+    assert cli.cmd_health({}, as_json=True) == 1
+    payload = _json.loads(out.getvalue())
+    assert payload["ok"] is False
 
 
 # --- import dir / doctor fix ---

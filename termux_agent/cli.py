@@ -1704,12 +1704,67 @@ def cmd_summarize(
     redact: bool = False,
     temperature: float | None = None,
     append: bool = False,
+    all_sessions: bool = False,
 ) -> int:
-    """Have the agent summarize a session transcript (default: latest)."""
+    """Have the agent summarize a session transcript (default: latest, or every session with --all)."""
     import json as _json
 
     from termux_agent.session import export_session
     from termux_agent.ui.renderer import render_answer, render_error
+
+    def _single_summary(sid: str) -> dict:
+        try:
+            data = export_session(sid)
+        except FileNotFoundError:
+            return {"session": sid, "error": "not found"}
+        if redact:
+            data = _redact_cfg(data)
+        transcript = []
+        for m in data.get("messages", []):
+            role = m.get("role", "?")
+            if role == "system":
+                continue
+            content = str(m.get("content", ""))[:2000]
+            if not content.strip():
+                continue
+            transcript.append(f"{role.upper()}: {content}")
+        if not transcript:
+            return {"session": data.get("id", sid), "error": "no usable messages"}
+        prompt = (
+            "Summarize the following conversation in a clear, structured way: "
+            "main topic, decisions, files/commands touched, and open questions. "
+            "Keep it under 200 words.\n\n"
+            + "\n\n".join(transcript)
+        )
+        try:
+            agent = build_agent(cfg, provider, model, auto_accept=True, temperature=temperature)
+            summary = _run_guarded(agent, prompt, lambda *a, **k: None, timeout)
+        except Exception as e:  # noqa: BLE001
+            return {"session": data.get("id", sid), "error": str(e)}
+        return {"session": data.get("id", sid), "summary": summary}
+
+    if all_sessions:
+        from termux_agent.session import list_sessions
+
+        results = [_single_summary(p.stem) for p in sorted(list_sessions(), key=lambda x: x.stem)]
+        failed = [r for r in results if r.get("error")]
+        if output:
+            with open(Path(output).expanduser(), "a" if append else "w", encoding="utf-8") as f:
+                for r in results:
+                    if "summary" in r:
+                        f.write(f"[{r['session']}]\n{r['summary']}\n\n")
+            render_info(f"Summaries written to {output}")
+        if as_json:
+            print(_json.dumps({"ok": True, "summarized": len(results), "failed": len(failed), "results": results}, ensure_ascii=False))
+            return 0
+        for r in results:
+            if "error" in r:
+                render_error(f"{r['session']}: {r['error']}")
+            else:
+                render_answer(f"[{r['session']}]\n{r['summary']}")
+        if failed:
+            return 1
+        return 0
 
     try:
         data = export_session(ref)
@@ -2699,6 +2754,46 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
     return 1 if issues else 0
 
 
+def cmd_health(cfg: dict, as_json: bool = False, output: str | None = None) -> int:
+    """Quick offline health check: version, config, working dir, provider, session storage."""
+    import json as _json
+    import os
+
+    checks: list[dict] = []
+
+    def add(label: str, ok_flag: bool, detail: str = "") -> None:
+        checks.append({"label": label, "ok": ok_flag, "detail": detail})
+
+    add("version", True, __version__)
+    add("config file", CONFIG_FILE.is_file(), str(CONFIG_FILE))
+    try:
+        cwd = resolve_working_dir(cfg)
+        add("working_dir writable", os.access(cwd, os.W_OK), str(cwd))
+    except Exception as e:  # noqa: BLE001
+        add("working_dir", False, str(e))
+    pname = cfg.get("provider", "zen")
+    add("provider configured", bool(cfg.get("provider")), f"{pname} / model: {cfg.get('model') or '(default)'}")
+    from termux_agent.session import SESSIONS_DIR
+
+    add("session storage", SESSIONS_DIR.exists() or SESSIONS_DIR.parent.exists(), str(SESSIONS_DIR))
+
+    ok = all(c["ok"] for c in checks)
+    payload = {"ok": ok, "version": __version__, "checks": checks}
+    if output:
+        try:
+            Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            render_info(f"Health report written to {output}")
+        except OSError as e:
+            render_error(f"Cannot write output file {output}: {e}")
+            return 1
+    if as_json:
+        print(_json.dumps(payload, ensure_ascii=False))
+        return 0 if ok else 1
+    for c in checks:
+        (render_info if c["ok"] else render_error)(f"  [{'OK' if c['ok'] else '!!'}]  {c['label']}" + (f": {c['detail']}" if c["detail"] else ""))
+    return 0 if ok else 1
+
+
 def _latest_pypi_version() -> str | None:
     """Return the latest published version on PyPI, or None if unreachable."""
     import json as _json
@@ -2898,6 +2993,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-agents", action="store_true", help="List available sub-agents")
     parser.add_argument("--models", nargs="?", const="__default__", metavar="PROVIDER", help="List models for a provider (live, or preset fallback)")
     parser.add_argument("--doctor", action="store_true", help="Diagnose environment & config; --doctor-termux also checks termux-api commands")
+    parser.add_argument("--health", action="store_true", help="Quick offline health check (version, config, working dir, provider, session storage)")
     parser.add_argument("--doctor-fix", action="store_true", help="With --doctor, repair common issues (e.g. create a missing config file)")
     parser.add_argument("--doctor-termux", action="store_true", help="With --doctor, check termux-api availability for notifications/clipboard/screenshots etc.")
     parser.add_argument("--doctor-network", action="store_true", help="Also check provider connectivity (needs internet)")
@@ -3033,6 +3129,7 @@ def main(argv: list[str] | None = None) -> int:
             redact=args.redact,
             temperature=args.temperature,
             append=args.append,
+            all_sessions=args.all,
         )
     if args.rerun:
         return cmd_rerun(
@@ -3106,6 +3203,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.doctor or args.doctor_network:
         return cmd_doctor(cfg, network=args.doctor_network and not args.quick, as_json=args.json, termux=args.doctor_termux, update=args.doctor_update and not args.quick, output=args.output, fix=args.doctor_fix)
+    if args.health:
+        return cmd_health(cfg, as_json=args.json, output=args.output)
     if args.smoke:
         return cmd_smoke(cfg, args.provider, args.model, as_json=args.json, output=args.output, timeout=args.timeout)
     if args.serve_stop:
