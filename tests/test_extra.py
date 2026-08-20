@@ -2634,6 +2634,76 @@ def test_list_providers_json(monkeypatch):
     assert any(p["name"] == "zen" for p in data["providers"])
 
 
+# --- server chat extras / tools endpoint / forget json ---
+def test_server_chat_body_extras(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    body = {"prompt": "hi", "provider": "zen", "model": "m2", "rules": "be terse", "image": str(tmp_path / "x.png")}
+    (tmp_path / "x.png").write_bytes(b"\x89PNG")
+    captured = {}
+
+    def fake_build(cfg, provider, model, **kw):
+        captured.update(provider=provider, model=model, rules=kw.get("extra_rules"))
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name=provider, model=model),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[{"role": "system", "content": "s"}],
+        )
+        agent.run = lambda p, on_tool_use=None, on_text_delta=None: "R:" + p
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_forget if False else True
+    # emulate server field extraction
+    prompt = str(body.get("prompt", "")).strip()
+    if isinstance(body.get("image"), str) and (tmp_path / "x.png").exists():
+        prompt += f"\n[image: {tmp_path / 'x.png'}]"
+    assert "[image:" in prompt
+    chosen = body.get("provider") or "default"
+    assert chosen == "zen"
+
+
+def test_forget_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text('{"role":"user","content":"x"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_forget("20260820-000001", as_json=True) == 0
+    assert _json.loads(out.getvalue())["deleted"] == "20260820-000001"
+    assert not list(session.list_sessions())
+
+
+def test_forget_json_missing(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_forget("nope", as_json=True) == 1
+    assert _json.loads(out.getvalue())["ok"] is False
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

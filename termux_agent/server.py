@@ -4,6 +4,7 @@ Endpoints:
   GET  /health   -> {"ok": true, "version": ...}
   GET  /models   -> list of model ids for the provider
   GET  /config   -> effective config summary
+  GET  /tools    -> registered tool specs
   GET  /sessions -> list saved sessions (first 50)
   POST /chat     -> {"prompt": ..., "history": [...], "agent": ..., "auto_accept": ...}
 """
@@ -138,11 +139,15 @@ class _AgentHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/health":
             self._send(200, {"ok": True, "version": __version__})
-        elif self.path in ("/models", "/sessions", "/config"):
+        elif self.path in ("/models", "/sessions", "/config", "/tools"):
             if not _authorized(self):
                 _send_unauthorized(self)
                 return
-            if self.path == "/models":
+            if self.path == "/tools":
+                from termux_agent.tools.base import tool_specs
+
+                self._send(200, {"tools": [{"name": s.name, "description": s.description} for s in tool_specs()]})
+            elif self.path == "/models":
                 try:
                     provider = self.build_agent(self.cfg, self.provider, self.model, auto_accept=True)
                     live = provider.provider.list_models()
@@ -199,14 +204,24 @@ class _AgentHandler(BaseHTTPRequestHandler):
         if not prompt:
             self._send(400, {"ok": False, "error": "missing 'prompt'"})
             return
+        image = data.get("image")
+        if isinstance(image, str) and image:
+            from os.path import exists
+
+            if exists(image):
+                prompt += f"\n[image: {image}]"
+            else:
+                self._send(400, {"ok": False, "error": f"image not found: {image}"})
+                return
         try:
             agent = self.build_agent(
                 self.cfg,
-                self.provider,
+                data.get("provider") or self.provider,
                 data.get("model") or self.model,
                 auto_accept=bool(data.get("auto_accept", self.auto_accept)),
                 agent_name=data.get("agent"),
                 working_dir=data.get("cwd"),
+                extra_rules=data.get("rules"),
             )
         except Exception as e:  # noqa: BLE001
             self._send(500, {"ok": False, "error": str(e)})

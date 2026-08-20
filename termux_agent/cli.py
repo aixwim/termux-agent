@@ -881,14 +881,22 @@ def cmd_list_tools() -> int:
     return 0
 
 
-def cmd_forget(ref: str | None = None) -> int:
+def cmd_forget(ref: str | None = None, as_json: bool = False) -> int:
+    import json as _json
+
     from termux_agent.session import delete_session
 
     removed = delete_session(ref)
     if not removed:
-        render_error("Session not found.")
+        if as_json:
+            print(_json.dumps({"ok": False, "error": "not found"}, ensure_ascii=False))
+        else:
+            render_error("Session not found.")
         return 1
-    render_info(f"Deleted session {removed.stem}.")
+    if as_json:
+        print(_json.dumps({"ok": True, "deleted": removed.stem}, ensure_ascii=False))
+    else:
+        render_info(f"Deleted session {removed.stem}.")
     return 0
 
 
@@ -1413,7 +1421,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.export_all:
         return cmd_export_all(args.export_all, as_markdown=args.markdown)
     if args.forget:
-        return cmd_forget(args.forget)
+        return cmd_forget(args.forget, as_json=args.json)
     if args.import_path:
         return cmd_import(args.import_path)
     if args.show:
