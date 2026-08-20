@@ -1878,6 +1878,102 @@ def test_server_stream_sse(tmp_path: Path, monkeypatch):
 
 
 # --- retries / no-fallback ---
+def test_server_stream_note_sets_note(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+    from termux_agent import session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(session, "NOTES_FILE", tmp_path / "notes.json")
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={"total_tokens": 5},
+            messages=[{"role": "user", "content": "x"}],
+        )
+        agent.run = lambda p, on_text_delta=None, on_tool_use=None: "hello"
+        return agent
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/chat",
+            data=_json.dumps({"prompt": "x", "stream": True, "note": "stream note"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            body = r.read().decode()
+        assert "event: done" in body
+        sids = [p.stem for p in list(sdir.glob("*.jsonl"))]
+        assert len(sids) == 1
+        assert session.get_note(sids[0]) == "stream note"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_server_v1_stream_records_session(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+    from termux_agent import session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(session, "NOTES_FILE", tmp_path / "notes.json")
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={"total_tokens": 5},
+            messages=[{"role": "user", "content": "x"}],
+        )
+        agent.run = lambda p, on_text_delta=None, on_tool_use=None: "hello"
+        return agent
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/chat/completions",
+            data=_json.dumps(
+                {"model": "m", "messages": [{"role": "user", "content": "x"}], "stream": True, "note": "v1 note"}
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            body = r.read().decode()
+        assert "data: [DONE]" in body
+        sids = [p.stem for p in list(sdir.glob("*.jsonl"))]
+        assert len(sids) == 1
+        assert session.get_note(sids[0]) == "v1 note"
+        assert '"session":' in body
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+# --- retries / no-fallback ---
 def test_build_agent_retries_and_no_fallback(tmp_path: Path, monkeypatch):
     from termux_agent.cli import build_agent
 

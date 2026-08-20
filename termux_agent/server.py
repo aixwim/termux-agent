@@ -184,7 +184,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def _stream_chat(self, agent, prompt: str, session_ref) -> None:
+    def _stream_chat(self, agent, prompt: str, session_ref, note: str | None = None) -> None:
         """Stream POST /chat responses as Server-Sent Events."""
         self.send_response(200)
         _sse(self, "start", {"provider": agent.provider.name, "model": agent.provider.model})
@@ -208,6 +208,13 @@ class _AgentHandler(BaseHTTPRequestHandler):
             )
         except Exception:  # noqa: BLE001
             session_id = ""
+        if session_id and note:
+            try:
+                from termux_agent.session import set_note
+
+                set_note(session_id, note)
+            except Exception:  # noqa: BLE001
+                pass
         usage = getattr(agent, "usage", {}) or {}
         _sse(self, "done", {"answer": answer, "session": session_id, "usage": usage})
 
@@ -348,7 +355,34 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
                 return
-            _chunk({}, finish="stop")
+            session_id = ""
+            try:
+                from termux_agent.session import record_messages
+
+                session_id = record_messages(
+                    agent.messages,
+                    agent.provider.name,
+                    agent.provider.model,
+                    session_id=None,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            note = data.get("note")
+            if session_id and isinstance(note, str) and note.strip():
+                try:
+                    from termux_agent.session import set_note
+
+                    set_note(session_id, note.strip())
+                except Exception:  # noqa: BLE001
+                    pass
+            self.wfile.write(
+                b"data: "
+                + json.dumps(
+                    {"id": cid, "object": "chat.completion.chunk", "created": int(_time.time()), "model": model or agent.provider.model, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "session": session_id},
+                    ensure_ascii=False,
+                ).encode("utf-8")
+                + b"\n\n"
+            )
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
             return
@@ -366,6 +400,14 @@ class _AgentHandler(BaseHTTPRequestHandler):
             )
         except Exception:  # noqa: BLE001
             pass
+        note = data.get("note")
+        if session_id and isinstance(note, str) and note.strip():
+            try:
+                from termux_agent.session import set_note
+
+                set_note(session_id, note.strip())
+            except Exception:  # noqa: BLE001
+                pass
         self._send(
             200,
             {
@@ -689,7 +731,8 @@ class _AgentHandler(BaseHTTPRequestHandler):
             if matches:
                 agent.messages = [agent.messages[0]] + session_messages(matches[-1])
         if data.get("stream"):
-            self._stream_chat(agent, prompt, session_ref)
+            note = data.get("note")
+            self._stream_chat(agent, prompt, session_ref, note=str(note).strip() if isinstance(note, str) else None)
             return
         answer = agent.run(prompt)
         if data.get("notify"):
