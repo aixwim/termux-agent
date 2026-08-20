@@ -4648,6 +4648,63 @@ def test_export_all_json(tmp_path: Path, monkeypatch):
     assert len(data["sessions"]) == 1
 
 
+# --- server index / doctor update / version 1.0 ---
+def test_server_index_page(tmp_path: Path, monkeypatch):
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as r:
+            body = r.read().decode()
+        assert "termux-agent server" in body
+        assert "/health" in body
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_doctor_update_check(monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "_latest_pypi_version", lambda: "9.9.9")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cli.sys, "stdout", out)
+        code = cli.cmd_doctor(_min_cfg(), as_json=True, update=True)
+    assert code == 1  # outdated -> issue
+    checks = _json.loads(out.getvalue())["checks"]
+    upd = next((c for c in checks if c["label"] == "update check"), None)
+    assert upd is not None
+    assert "9.9.9" in upd["detail"]
+
+
+def test_version_is_100():
+    import termux_agent
+
+    assert termux_agent.__version__ == "1.0.0"
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

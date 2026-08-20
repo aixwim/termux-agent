@@ -183,6 +183,32 @@ class _AgentHandler(BaseHTTPRequestHandler):
         _sse(self, "done", {"answer": answer, "session": session_id, "usage": usage})
 
     def do_GET(self) -> None:
+        if self.path in ("/", "/index.html"):
+            body = (
+                f"<!doctype html><html><head><meta charset=utf-8><title>termux-agent {__version__}</title></head>"
+                "<body><h1>termux-agent server</h1>"
+                f"<p>version <code>{__version__}</code> · pid <code>{__import__('os').getpid()}</code></p>"
+                "<ul>"
+                "<li><code>GET /health</code> – version, pid, uptime</li>"
+                "<li><code>GET /models?provider=X</code> – provider models</li>"
+                "<li><code>GET /config</code> – effective config</li>"
+                "<li><code>GET /tools</code> – registered tool specs</li>"
+                "<li><code>GET /agents</code> – agent roles</li>"
+                "<li><code>GET /stats</code> – session stats</li>"
+                "<li><code>GET /memory</code> / <code>POST /memory</code> – persistent notes</li>"
+                "<li><code>GET /sessions[?limit=N]</code> – saved sessions</li>"
+                "<li><code>GET /sessions/&lt;id&gt;[?markdown=1]</code> / <code>DELETE</code> – session access</li>"
+                "<li><code>POST /chat</code> – run a prompt (JSON body; <code>stream: true</code> for SSE)</li>"
+                "<li><code>POST /batch</code> – run a list of prompts in parallel</li>"
+                "</ul></body></html>"
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            self._log_request(200, 0)
+            return
         if self.path == "/health":
             import os
 

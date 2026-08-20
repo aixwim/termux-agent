@@ -1770,7 +1770,7 @@ def cmd_list_models(cfg: dict, provider_name: str | None = None, as_json: bool =
     return 0
 
 
-def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: bool = False) -> int:
+def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: bool = False, update: bool = False) -> int:
     """Environment diagnostics: versions, Termux, config, PATH, provider connectivity."""
     import os
     import platform
@@ -1876,6 +1876,15 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
             found = shutil.which(cmd)
             add(f"termux-api: {cmd}", bool(found), f"{purpose} - {found or 'not installed (pkg install termux-api)'}")
 
+    if update:
+        latest = _latest_pypi_version()
+        if latest is None:
+            add("update check", False, "could not reach PyPI (offline?) - try --doctor-network")
+        elif latest == __version__:
+            add("update check", True, f"{__version__} is the latest")
+        else:
+            add("update check", False, f"{__version__} installed, {latest} available - pip install -U termux-agent")
+
     if as_json:
         import json as _json
 
@@ -1900,10 +1909,27 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
         (render_info if c["ok"] else render_error)(f"  [{'OK' if c['ok'] else '!!'}]  {c['label']}" + (f": {c['detail']}" if c["detail"] else ""))
     if termux:
         render_info("== termux-api ==")
-        for c in checks[termux_start:]:
+        for c in checks[termux_start:termux_start + 6]:
+            (render_info if c["ok"] else render_error)(f"  [{'OK' if c['ok'] else '!!'}]  {c['label']}" + (f": {c['detail']}" if c["detail"] else ""))
+    if update:
+        render_info("== updates ==")
+        for c in checks[termux_start + (6 if termux else 0):]:
             (render_info if c["ok"] else render_error)(f"  [{'OK' if c['ok'] else '!!'}]  {c['label']}" + (f": {c['detail']}" if c["detail"] else ""))
     render_info("\nIf you see [!!] markers, rerun with TERMUX_AGENT_DEBUG=1 for detailed logs.")
     return 1 if issues else 0
+
+
+def _latest_pypi_version() -> str | None:
+    """Return the latest published version on PyPI, or None if unreachable."""
+    import json as _json
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen("https://pypi.org/pypi/termux-agent/json", timeout=10) as r:
+            data = _json.loads(r.read())
+        return str(data.get("info", {}).get("version"))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def cmd_smoke(cfg: dict, provider: str | None, model: str | None, as_json: bool = False) -> int:
@@ -2063,6 +2089,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--doctor", action="store_true", help="Diagnose environment & config; --doctor-termux also checks termux-api commands")
     parser.add_argument("--doctor-termux", action="store_true", help="With --doctor, check termux-api availability for notifications/clipboard/screenshots etc.")
     parser.add_argument("--doctor-network", action="store_true", help="Also check provider connectivity (needs internet)")
+    parser.add_argument("--doctor-update", action="store_true", help="With --doctor, check the latest published version on PyPI")
     parser.add_argument("--config", metavar="FILE", help="Use this config file instead of ~/.termux-agent/config.yaml")
     parser.add_argument("--smoke", action="store_true", help="End-to-end smoke test with the real model (sends a tiny prompt)")
     parser.add_argument(
@@ -2244,7 +2271,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.doctor or args.doctor_network:
-        return cmd_doctor(cfg, network=args.doctor_network, as_json=args.json, termux=args.doctor_termux)
+        return cmd_doctor(cfg, network=args.doctor_network, as_json=args.json, termux=args.doctor_termux, update=args.doctor_update)
     if args.smoke:
         return cmd_smoke(cfg, args.provider, args.model, as_json=args.json)
     if args.serve_stop:
