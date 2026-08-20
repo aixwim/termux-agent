@@ -225,8 +225,19 @@ def cmd_one_shot(
     memory: bool = True,
     allow_dirs: list[str] | None = None,
     screenshot_dir: str | None = None,
+    attach: list[str] | None = None,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
+
+    if attach:
+        for f in attach:
+            try:
+                content = Path(f).expanduser().read_text(encoding="utf-8")
+            except OSError as e:
+                render_error(f"Cannot read --attach file: {e}")
+                return 1
+            prompt = f"{prompt}\n\n<file name={f}>\n{content}\n</file>".strip()
+        render_info(f"Attached {len(attach)} file(s) to the prompt.")
 
     if clip and not prompt:
         from termux_agent.notify import clipboard_get
@@ -671,6 +682,7 @@ def cmd_watch(
     screenshot_dir: str | None = None,
     max_rounds: int | None = None,
     notify: bool = False,
+    diff: bool = False,
 ) -> int:
     """Re-run a one-shot task every N seconds until Ctrl+C. Optionally re-attach a screenshot."""
     import time
@@ -687,10 +699,12 @@ def cmd_watch(
     else:
         render_info(f"Watching every {interval}s — press Ctrl+C to stop.")
     round_no = 0
+    last_answer: str | None = None
     try:
         while max_rounds is None or round_no < max_rounds:
             round_no += 1
-            render_info(f"\n--- round {round_no} ---")
+            if not diff:
+                render_info(f"\n--- round {round_no} ---")
             p = prompt
             if with_screenshot:
                 from termux_agent.notify import screenshot
@@ -709,6 +723,8 @@ def cmd_watch(
             try:
                 answer = _run_guarded(agent, p, render_tool_use, timeout)
             except TimeoutError:
+                if diff:
+                    render_info(f"\n--- round {round_no} (timed out) ---")
                 render_error(f"Round {round_no} timed out after {timeout}s.")
                 if notify:
                     from termux_agent.notify import notify as _notify
@@ -717,12 +733,22 @@ def cmd_watch(
             except KeyboardInterrupt:
                 raise
             except Exception as e:  # noqa: BLE001
+                if diff:
+                    render_info(f"\n--- round {round_no} (failed) ---")
                 render_error(f"Round {round_no} failed: {e}")
                 if notify:
                     from termux_agent.notify import notify as _notify
 
                     _notify(f"Round {round_no} failed: {e}")
             else:
+                if diff and last_answer is not None and answer == last_answer:
+                    render_info(f"round {round_no}: answer unchanged — skipping.")
+                    if max_rounds is None or round_no < max_rounds:
+                        time.sleep(interval)
+                    continue
+                if diff:
+                    render_info(f"\n--- round {round_no} (changed) ---")
+                last_answer = answer
                 render_answer(answer)
                 if notify:
                     from termux_agent.notify import notify as _notify
@@ -1627,6 +1653,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=int, metavar="SECONDS", help="Abort a one-shot task if it takes longer than this")
     parser.add_argument("--output", metavar="FILE", help="Also write the answer to this file (plain text)")
     parser.add_argument("--clip", action="store_true", help="Use the clipboard as the prompt (needs termux-api)")
+    parser.add_argument("--attach", metavar="FILE", action="append", help="Read a file's contents into the prompt (repeatable)")
     parser.add_argument("--screenshot", action="store_true", help="Attach a screenshot of the screen to the prompt (needs termux-api + screen share)")
     parser.add_argument("--screenshot-dir", metavar="DIR", help="Save screenshots into this directory instead of the current one")
     parser.add_argument("--cleanup", action="store_true", help="Delete leftover screenshot-*.png files in the current directory")
@@ -1634,6 +1661,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-stream", action="store_true", help="Force a non-streaming one-shot/resume even in a TTY")
     parser.add_argument("--watch", type=int, metavar="SECONDS", help="Re-run the one-shot prompt every N seconds until Ctrl+C (combine with --screenshot)")
     parser.add_argument("--max-rounds", type=int, default=None, metavar="N", help="With --watch: stop after this many rounds")
+    parser.add_argument("--diff", action="store_true", help="With --watch: only print/notify when the answer changes between rounds")
     parser.add_argument("--batch", metavar="FILE", help="Run one one-shot per line of the file (blank lines skipped); --output writes results as JSON")
     parser.add_argument("--retries", type=int, metavar="N", help="Override transient retry count for network hiccups")
     parser.add_argument("--no-fallback", action="store_true", help="Disable fallback models on 429/errors (use only the selected model)")
@@ -1699,6 +1727,13 @@ def build_parser() -> argparse.ArgumentParser:
         const="bash",
         metavar="SHELL",
         help="Install auto-completion into .bashrc/.zshrc (default bash)",
+    )
+    parser.add_argument(
+        "--completion",
+        nargs="?",
+        const="bash",
+        metavar="SHELL",
+        help="Print the auto-completion script for bash/zsh to stdout (no install)",
     )
     parser.add_argument(
         "--resume",
@@ -1887,6 +1922,19 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
 
+    if args.completion:
+        from termux_agent.completion import BASH_SCRIPT, ZSH_SCRIPT
+
+        shell = args.completion.lower()
+        if shell == "bash":
+            print(BASH_SCRIPT, end="")
+        elif shell == "zsh":
+            print(ZSH_SCRIPT, end="")
+        else:
+            render_error("Unsupported shell (use bash or zsh).")
+            return 1
+        return 0
+
     prompt = " ".join(args.prompt).strip()
     if args.prompt_file != "-" and not prompt and not sys.stdin.isatty():
         # Pipelines: read the whole stdin as a one-shot prompt.
@@ -1957,6 +2005,7 @@ def main(argv: list[str] | None = None) -> int:
             screenshot_dir=args.screenshot_dir,
             max_rounds=args.max_rounds,
             notify=args.notify,
+            diff=args.diff,
         )
 
     if args.batch:
@@ -2021,6 +2070,7 @@ def main(argv: list[str] | None = None) -> int:
             memory=not args.no_memory,
             allow_dirs=_allow_dirs_from(args),
             screenshot_dir=args.screenshot_dir,
+            attach=args.attach,
         )
 
     if args.json:

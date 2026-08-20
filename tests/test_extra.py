@@ -3133,6 +3133,73 @@ def test_stats_endpoint(tmp_path: Path, monkeypatch):
         httpd.server_close()
 
 
+# --- attach / watch diff / completion ---
+def test_one_shot_attach(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    note = tmp_path / "note.md"
+    note.write_text("THE FILE BODY")
+    seen = {}
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+        )
+        agent.run = lambda p, on_tool_use=None, on_text_delta=None: (seen.update(prompt=p) or "ok")
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr(cli, "resolve_working_dir", lambda cfg: tmp_path)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_one_shot(_min_cfg(), "read this", "zen", None, attach=[str(note)])
+    assert code == 0
+    assert "THE FILE BODY" in seen["prompt"]
+    assert str(note) in seen["prompt"]
+
+
+def test_cmd_completion(monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.main(["--completion", "bash"]) == 0
+    assert "_termux_agent" in out.getvalue()
+    assert cli.main(["--completion", "fish"]) == 1
+
+
+def test_watch_diff_skips_unchanged(monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=None),
+        usage={},
+        run=lambda p, on_tool_use=None, on_text_delta=None: "SAME",
+    ))
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_watch(_min_cfg(), "hi", "zen", None, interval=1, max_rounds=3, diff=True)
+    assert code == 0
+    rendered = out.getvalue()
+    assert rendered.count("--- round") == 1
+    assert "unchanged" in rendered
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
