@@ -3711,6 +3711,54 @@ def test_repl_quiet_toggle(tmp_path: Path, monkeypatch):
     assert kwargs_seen == [True, False]
 
 
+def test_watch_max_wait(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda p, on_tool_use=None, on_text_delta=None: "A",
+    ))
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    monotonic = iter([1.0, 99.0])
+    monkeypatch.setattr("time.monotonic", lambda: next(monotonic))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_watch(_min_cfg(), "hi", "zen", None, interval=1, max_wait=5, as_json=True)
+    assert code == 0
+    assert _json.loads(out.getvalue().strip())["finished"] is True
+
+
+def test_init_force(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    from termux_agent.config import CONFIG_FILE, CONFIG_DIR, DEFAULTS
+
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    cfg_file = cfg_dir / "config.yaml"
+    cfg_file.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(cli, "CONFIG_DIR", cfg_dir)
+    monkeypatch.setattr(cli, "CONFIG_FILE", cfg_file)
+    monkeypatch.setattr(cli, "DEFAULTS", DEFAULTS)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("zen\n\nn\n"))
+    assert cli.cmd_init() == 1
+    assert cfg_file.read_text(encoding="utf-8") == "old"
+    assert cli.cmd_init(provider="zen", model="m", force=True) == 0
+    assert "zen" in cfg_file.read_text(encoding="utf-8")
+
+
 def test_watch_json(tmp_path: Path, monkeypatch):
     import io
     import json as _json

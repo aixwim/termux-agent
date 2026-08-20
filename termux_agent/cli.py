@@ -120,7 +120,10 @@ def build_agent(
     return agent
 
 
-def cmd_init(provider: str | None = None, model: str | None = None) -> int:
+def cmd_init(provider: str | None = None, model: str | None = None, force: bool = False) -> int:
+    if CONFIG_FILE.exists() and not force:
+        render_error("Configuration already exists. Use --force to overwrite it.")
+        return 1
     if provider or model:
         return _init_noninteractive(provider, model)
     if sys.stdin.isatty():
@@ -728,6 +731,7 @@ def cmd_watch(
     as_json: bool = False,
     output: str | None = None,
     exit_on_change: bool = False,
+    max_wait: int | None = None,
 ) -> int:
     """Re-run a one-shot task every N seconds until Ctrl+C. Optionally re-attach a screenshot."""
     import json as _json
@@ -740,6 +744,11 @@ def cmd_watch(
         from termux_agent.notify import device_context
 
         _attach_agent_context(agent, device_context())
+    deadline = None
+    if max_wait:
+        deadline = time.monotonic() + max_wait
+        if not as_json:
+            render_info(f"Watching every {interval}s — stopping after {max_wait}s; press Ctrl+C to stop sooner.")
     if max_rounds:
         if not as_json:
             render_info(f"Watching every {interval}s — up to {max_rounds} round(s); press Ctrl+C to stop.")
@@ -750,6 +759,12 @@ def cmd_watch(
     last_answer: str | None = None
     try:
         while max_rounds is None or round_no < max_rounds:
+            if deadline is not None and time.monotonic() >= deadline:
+                if as_json:
+                    print(_json.dumps({"rounds": round_no, "finished": True}, ensure_ascii=False))
+                else:
+                    render_info(f"Reached {max_wait}s — stopping after {round_no} round(s).")
+                return 0
             round_no += 1
             if not diff and not as_json:
                 render_info(f"\n--- round {round_no} ---")
@@ -2045,6 +2060,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rotate", action="store_true", help="On failure, retry with the next model in the provider's list (handy for free-tier rate limits)")
     parser.add_argument("--watch", type=int, metavar="SECONDS", help="Re-run the one-shot prompt every N seconds until Ctrl+C (combine with --screenshot)")
     parser.add_argument("--max-rounds", type=int, default=None, metavar="N", help="With --watch: stop after this many rounds")
+    parser.add_argument("--max-wait", type=int, default=None, metavar="SECONDS", help="With --watch: stop after this many seconds")
     parser.add_argument("--diff", action="store_true", help="With --watch: only print/notify when the answer changes; with --rerun: show the diff vs the previous answer")
     parser.add_argument("--exit-on-change", action="store_true", help="With --watch: stop as soon as the answer differs from the previous round")
     parser.add_argument("--batch", metavar="FILE", help="Run one one-shot per line of the file (blank lines skipped; '-' reads stdin); --output writes results as JSON")
@@ -2087,7 +2103,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tls-key", metavar="FILE", help="Private key for --tls-cert")
     parser.add_argument("--serve-stop", action="store_true", help="Stop a background server started with --serve --serve-background")
     parser.add_argument("prompt", nargs="*", help="One-shot prompt (no arguments = interactive mode)")
-    parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
+    parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml (--force to overwrite)")
+    parser.add_argument("--force", action="store_true", help="Overwrite existing files (with --init)")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
     parser.add_argument("--limit", type=int, default=20, metavar="N", help="Max sessions to list (with --sessions/--export-all)")
     parser.add_argument("--session-dir", metavar="DIR", help="Use this directory for session files instead of ~/.termux-agent/sessions")
@@ -2210,7 +2227,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.init:
-        return cmd_init(args.provider, args.model)
+        return cmd_init(args.provider, args.model, force=args.force)
     if args.bench:
         return cmd_bench(cfg, args.bench, args.timeout or 60, as_json=args.json)
     if args.export:
@@ -2466,6 +2483,7 @@ def main(argv: list[str] | None = None) -> int:
             as_json=args.json,
             output=args.output,
             exit_on_change=args.exit_on_change,
+            max_wait=args.max_wait,
         )
 
     if args.batch:
