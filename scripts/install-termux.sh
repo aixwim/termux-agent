@@ -9,7 +9,7 @@ pkg install -y python git
 cd "$HOME"
 if [ ! -d termux-agent ]; then
   echo "==> Cloning repo..."
-  git clone https://github.com/ANDA/termux-agent.git
+  git clone https://github.com/aixwim/termux-agent.git
 fi
 cd termux-agent
 

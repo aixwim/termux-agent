@@ -9,9 +9,9 @@ description = "A CLI coding agent for Termux, like opencode - multi-provider LLM
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
-keywords = ["termux", "android", "ai", "agent", "cli", "coding", "llm"]
+keywords = ["termux", "android", "ai", "agent", "cli", "coding", "llm", "assistant", "automation"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
@@ -30,6 +30,12 @@ dependencies = [
     "prompt_toolkit>=3.0",
     "pyyaml>=6.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/aixwim/termux-agent"
+Repository = "https://github.com/aixwim/termux-agent"
+"Bug Tracker" = "https://github.com/aixwim/termux-agent/issues"
+Documentation = "https://github.com/aixwim/termux-agent/blob/main/README.md"
 
 [project.scripts]
 termux-agent = "termux_agent.cli:main"
