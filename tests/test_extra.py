@@ -3627,6 +3627,147 @@ def test_server_chat_only_tools(tmp_path: Path, monkeypatch):
         httpd.server_close()
 
 
+def test_server_chat_extra_overrides(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+
+    seen = {}
+
+    def fake_build(*a, **k):
+        seen.update(k)
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    payload = {
+        "prompt": "hi",
+        "max_output_chars": 1000,
+        "command_timeout": 30,
+        "disabled_groups": ["fs", "net"],
+        "retries": 2,
+        "no_fallback": True,
+        "allow_dirs": [str(tmp_path)],
+        "readonly": True,
+        "memory": False,
+    }
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/chat",
+            data=_json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["ok"] is True
+        assert seen["max_output_chars"] == 1000
+        assert seen["command_timeout"] == 30
+        assert seen["disabled_groups"] == ["fs", "net"]
+        assert seen["retries"] == 2
+        assert seen["no_fallback"] is True
+        assert seen["allow_dirs"] == [str(tmp_path)]
+        assert seen["readonly"] is True
+        assert seen["memory"] is False
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_server_batch_overrides(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+
+    seen = {}
+
+    def fake_build(*a, **k):
+        seen.update(k)
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/batch",
+            data=_json.dumps({"prompts": ["a", "b"], "max_output_chars": 500, "readonly": True}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            body = _json.loads(r.read())
+            assert len(body["results"]) == 2
+            assert all(x["answer"] == "ok" for x in body["results"])
+        assert seen["max_output_chars"] == 500
+        assert seen["readonly"] is True
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_server_v1_max_tokens_alias(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+
+    seen = {}
+
+    def fake_build(*a, **k):
+        seen.update(k)
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "hi",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/chat/completions",
+            data=_json.dumps(
+                {"model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 800}
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            body = _json.loads(r.read())
+            assert body["choices"][0]["message"]["content"] == "hi"
+        assert seen["max_context_tokens"] == 800
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 def test_server_models_provider_query(tmp_path: Path, monkeypatch):
     import json as _json
     import threading

@@ -290,6 +290,8 @@ class _AgentHandler(BaseHTTPRequestHandler):
             return
         mct = data.get("max_context_tokens")
         if mct is None:
+            mct = data.get("max_tokens")
+        if mct is None:
             mct = self.max_context_tokens
         try:
             agent = self.build_agent(
@@ -301,6 +303,14 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 max_tool_rounds=int(data["max_tool_rounds"]) if isinstance(data.get("max_tool_rounds"), int) else None,
                 max_context_tokens=int(mct) if isinstance(mct, int) else None,
                 only_tools=[t for t in data.get("only_tools") if isinstance(t, str)] if isinstance(data.get("only_tools"), list) else None,
+                max_output_chars=int(data["max_output_chars"]) if isinstance(data.get("max_output_chars"), int) else None,
+                command_timeout=int(data["command_timeout"]) if isinstance(data.get("command_timeout"), int) else None,
+                disabled_groups=[g for g in data.get("disabled_groups") if isinstance(g, str)] if isinstance(data.get("disabled_groups"), list) else None,
+                retries=int(data["retries"]) if isinstance(data.get("retries"), int) else None,
+                no_fallback=bool(data.get("no_fallback")),
+                allow_dirs=[d for d in data.get("allow_dirs") if isinstance(d, str)] if isinstance(data.get("allow_dirs"), list) else None,
+                readonly=bool(data.get("readonly")),
+                memory=bool(data.get("memory", True)),
             )
         except Exception as e:  # noqa: BLE001
             self._send(500, {"error": {"message": str(e), "type": "server_error"}})
@@ -557,6 +567,8 @@ class _AgentHandler(BaseHTTPRequestHandler):
             provider = str(data.get("provider") or self.provider or self.cfg.get("provider", "zen"))
             model = str(data.get("model") or self.model or "")
             only_tools = [t for t in data.get("only_tools") if isinstance(t, str)] if isinstance(data.get("only_tools"), list) else None
+            disabled_groups = [g for g in data.get("disabled_groups") if isinstance(g, str)] if isinstance(data.get("disabled_groups"), list) else None
+            allow_dirs = [d for d in data.get("allow_dirs") if isinstance(d, str)] if isinstance(data.get("allow_dirs"), list) else None
             temp = data.get("temperature")
             mtr = data.get("max_tool_rounds")
             mct = data.get("max_context_tokens")
@@ -575,6 +587,14 @@ class _AgentHandler(BaseHTTPRequestHandler):
                         max_tool_rounds=int(mtr) if isinstance(mtr, int) else None,
                         max_context_tokens=int(mct) if isinstance(mct, int) else None,
                         only_tools=only_tools,
+                        max_output_chars=int(data["max_output_chars"]) if isinstance(data.get("max_output_chars"), int) else None,
+                        command_timeout=int(data["command_timeout"]) if isinstance(data.get("command_timeout"), int) else None,
+                        disabled_groups=disabled_groups,
+                        retries=int(data["retries"]) if isinstance(data.get("retries"), int) else None,
+                        no_fallback=bool(data.get("no_fallback")),
+                        allow_dirs=allow_dirs,
+                        readonly=bool(data.get("readonly")),
+                        memory=bool(data.get("memory", True)),
                     )
                     answer = agent.run(p)
                     return {"prompt": p, "answer": answer}
@@ -639,6 +659,14 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 max_tool_rounds=int(mtr) if isinstance(mtr, int) else None,
                 max_context_tokens=int(mct) if isinstance(mct, int) else None,
                 only_tools=[t for t in data.get("only_tools") if isinstance(t, str)] if isinstance(data.get("only_tools"), list) else None,
+                max_output_chars=int(data["max_output_chars"]) if isinstance(data.get("max_output_chars"), int) else None,
+                command_timeout=int(data["command_timeout"]) if isinstance(data.get("command_timeout"), int) else None,
+                disabled_groups=[g for g in data.get("disabled_groups") if isinstance(g, str)] if isinstance(data.get("disabled_groups"), list) else None,
+                retries=int(data["retries"]) if isinstance(data.get("retries"), int) else None,
+                no_fallback=bool(data.get("no_fallback")),
+                allow_dirs=[d for d in data.get("allow_dirs") if isinstance(d, str)] if isinstance(data.get("allow_dirs"), list) else None,
+                readonly=bool(data.get("readonly")),
+                memory=bool(data.get("memory", True)),
             )
         except Exception as e:  # noqa: BLE001
             self._send(500, {"ok": False, "error": str(e)})
