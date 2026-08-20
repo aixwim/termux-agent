@@ -5089,6 +5089,62 @@ def test_latest_pypi_version_maps_404_to_unpublished(monkeypatch):
     assert cli._latest_pypi_version() == ""
 
 
+def test_plain_stream_preserves_line_breaks(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        width = 80
+
+        def print(self, value="", **kwargs):
+            calls.append((str(value), kwargs))
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    printer = renderer.PlainStreamPrinter()
+    printer.feed("first\nsecond\nthird")
+    printer.flush()
+
+    assert [text for text, _ in calls] == ["first", "second", "third"]
+    assert all(call.get("end") is None for _, call in calls)
+
+
+def test_tool_use_is_compact_and_truncated(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        width = 40
+
+        def print(self, value="", **kwargs):
+            calls.append(str(value))
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: False)
+    renderer.render_tool_use("read_file", "{\"path\": \"a-very-long-file-name-that-must-be-truncated.txt\"}")
+
+    assert len(calls) == 1
+    assert "read_file" in calls[0]
+    assert calls[0].endswith("…")
+
+
+def test_plain_banner_is_two_compact_lines(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append(str(value))
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: True)
+    renderer.render_banner("zen", "model", "root", "/work")
+
+    assert calls == ["termux-agent  zen / model  [root]", "cwd: /work  ·  /help for commands"]
+
+
 def test_version_is_100():
     import termux_agent
 

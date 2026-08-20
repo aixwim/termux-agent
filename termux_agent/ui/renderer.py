@@ -37,7 +37,7 @@ def _console() -> Any:
     if _console_instance is None:
         from rich.console import Console
 
-        _console_instance = Console(highlight=False, soft_wrap=True)
+        _console_instance = Console(highlight=False, soft_wrap=False)
     return _console_instance
 
 
@@ -88,17 +88,26 @@ def render_answer(text: str) -> None:
 
 def render_tool_use(name: str, args_preview: str) -> None:
     console = _console()
+    preview = " ".join(args_preview.split())
+    width = max(24, getattr(console, "width", 80))
+    try:
+        configured_width = int(os.environ.get("COLUMNS", "0") or 0)
+    except ValueError:
+        configured_width = 0
+    if configured_width:
+        width = min(width, configured_width)
+    limit = max(12, width - len(name) - 10)
+    if len(preview) > limit:
+        preview = preview[: limit - 1] + "…"
     if prefer_plain():
-        console.print(f"tool: {name}  {args_preview}")
+        console.print(_text(f"[tool] {name}" + (f"  {preview}" if preview else "")))
         return
-    console.print(
-        _panel(
-            _text(f"{name}  {args_preview}", style="cyan"),
-            title="tool",
-            border_style="blue",
-            expand=False,
-        )
-    )
+    line = _text()
+    line.append("  ◆ ", style="bold cyan")
+    line.append(name, style="bold bright_cyan")
+    if preview:
+        line.append(f"  {preview}", style="dim")
+    console.print(line)
 
 
 def render_code(code: str, language: str = "text") -> None:
@@ -113,11 +122,43 @@ def render_code(code: str, language: str = "text") -> None:
 
 
 def render_info(msg: str) -> None:
-    _console().print(_text(msg, style="dim"))
+    console = _console()
+    stripped = msg.strip()
+    if stripped.startswith("== ") and stripped.endswith(" ==") and not prefer_plain():
+        console.rule(stripped[3:-3], style="dim cyan")
+    elif stripped.startswith("[OK]"):
+        console.print(_text(msg, style="green"))
+    else:
+        console.print(_text(msg, style="dim"))
 
 
 def render_error(msg: str) -> None:
-    _console().print(_text(msg, style="bold red"))
+    console = _console()
+    stripped = msg.strip()
+    if stripped.startswith("[!!]") or stripped.lower().startswith("error:"):
+        console.print(_text(msg, style="bold red"))
+        return
+    line = _text()
+    line.append("error  ", style="bold white on red")
+    line.append(f" {msg}", style="red")
+    console.print(line)
+
+
+def render_banner(provider: str, model: str, agent: str, cwd: object) -> None:
+    """Render a compact, phone-friendly REPL banner."""
+    console = _console()
+    if prefer_plain():
+        console.print(_text(f"termux-agent  {provider} / {model}  [{agent}]"))
+        console.print(_text(f"cwd: {cwd}  ·  /help for commands"))
+        return
+    body = _text()
+    body.append(provider, style="bold cyan")
+    body.append(" / ", style="dim")
+    body.append(model, style="bright_white")
+    body.append(f"  [{agent}]\n", style="magenta")
+    body.append(str(cwd), style="dim")
+    body.append("  ·  /help", style="dim cyan")
+    console.print(_panel(body, title=_text("termux-agent", style="bold cyan"), border_style="cyan", padding=(0, 1), expand=False))
 
 
 class StreamPrinter:
@@ -153,7 +194,7 @@ class PlainStreamPrinter:
         console = _console()
         while "\n" in self._buf:
             line, self._buf = self._buf.split("\n", 1)
-            console.print(line, end="", style="bright_white")
+            console.print(line, style="bright_white")
 
     def flush(self) -> None:
         if self._buf:

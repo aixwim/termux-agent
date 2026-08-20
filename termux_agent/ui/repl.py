@@ -11,6 +11,7 @@ from termux_agent.ui.renderer import (
     PlainStreamPrinter,
     console,
     render_answer,
+    render_banner,
     render_error,
     render_info,
     render_tool_use,
@@ -21,6 +22,7 @@ def _prompt_style() -> object:
     from prompt_toolkit.styles import Style
 
     return Style.from_dict({"prompt": "bold cyan"})
+
 
 def copy_to_clipboard(text: str) -> bool:
     """Copy text using termux-clipboard-set / xclip / pbcopy. Returns True on success."""
@@ -74,7 +76,6 @@ Special commands (start with /):
   /redo           re-run the last turn with the current provider/model (rolls back the last answer)
   /quiet          toggle streaming (print the answer only when done)
   /temp [N]       show or set sampling temperature (0.0-2.0)
-  /maxrounds [N] show or set max tool rounds (1-200)
   /maxrounds [N]  show or set max tool rounds (1-200)
 Type a normal message to ask; Ctrl+C to cancel."""
 
@@ -143,9 +144,11 @@ class Repl:
         self.agent.ctx.confirm = self._confirm
 
     def _banner(self) -> None:
-        render_info(
-            f"termux-agent | provider: {self.provider_name} | model: {self.model} | "
-            f"agent: {self.agent_name} | cwd: {self.agent.ctx.working_dir}\nType /help for help."
+        render_banner(
+            self.provider_name,
+            self.model,
+            self.agent_name,
+            self.agent.ctx.working_dir,
         )
 
     def run(self) -> None:
@@ -163,7 +166,7 @@ class Repl:
         ps = make_prompt_session(self.provider_name)
         while True:
             try:
-                user = ps.prompt("you> ")
+                user = ps.prompt("❯ ")
             except (KeyboardInterrupt, EOFError):
                 console.print()
                 break
