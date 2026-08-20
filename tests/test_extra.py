@@ -7078,6 +7078,37 @@ def test_cmd_sessions_notes_only(tmp_path: Path, monkeypatch):
     assert payload["sessions"][0]["note"] == "has a note"
 
 
+# --- forget --all / --dry-run ---
+def test_cmd_forget_all_dryrun(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    monkeypatch.setattr(session, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(session, "NOTES_FILE", tmp_path / "notes.json")
+    session.record_messages([{"role": "user", "content": "one"}], "zen", "m", session_id="fg-a")
+    session.record_messages([{"role": "user", "content": "two"}], "zen", "m", session_id="fg-b")
+    session.set_note("fg-a", "keep me")
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_forget(None, as_json=True, all_sessions=True, dry_run=True) == 0
+    payload = _json.loads(out.getvalue())
+    assert payload["dry_run"] is True
+    assert set(payload["deleted"]) == {"fg-a", "fg-b"}
+    assert len(list(session.list_sessions())) == 2
+    assert session.get_note("fg-a") == "keep me"
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_forget(None, as_json=True, all_sessions=True) == 0
+    payload = _json.loads(out.getvalue())
+    assert payload["count"] == 2
+    assert list(session.list_sessions()) == []
+    assert session.get_note("fg-a") is None
+
+
 # --- import dir / doctor fix ---
 def test_cmd_import_directory(tmp_path: Path, monkeypatch):
     import io

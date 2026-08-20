@@ -1706,10 +1706,42 @@ def cmd_list_tools(as_json: bool = False, output: str | None = None) -> int:
     return 0
 
 
-def cmd_forget(ref: str | None = None, as_json: bool = False, output: str | None = None) -> int:
+def cmd_forget(ref: str | None = None, as_json: bool = False, output: str | None = None, all_sessions: bool = False, dry_run: bool = False) -> int:
     import json as _json
 
-    from termux_agent.session import delete_session, clear_note
+    from termux_agent.session import clear_note, delete_session, list_sessions
+
+    if all_sessions:
+        targets = list_sessions()
+        if dry_run:
+            if as_json or output:
+                payload = {"ok": True, "dry_run": True, "deleted": [s.stem for s in targets], "count": len(targets)}
+                if output:
+                    Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    render_info(f"Dry-run report written to {output}")
+                    return 0
+                print(_json.dumps(payload, ensure_ascii=False))
+                return 0
+            for s in targets:
+                render_info(f"would delete {s.stem}")
+            render_info(f"\n{len(targets)} session(s) would be deleted (rerun without --dry-run to confirm).")
+            return 0
+        for s in targets:
+            try:
+                s.unlink()
+            except OSError:
+                continue
+            clear_note(s.stem)
+        if as_json or output:
+            payload = {"ok": True, "deleted": [s.stem for s in targets], "count": len(targets)}
+            if output:
+                Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                render_info(f"Deletion report written to {output}")
+                return 0
+            print(_json.dumps(payload, ensure_ascii=False))
+            return 0
+        render_info(f"Deleted {len(targets)} session(s).")
+        return 0
 
     removed = delete_session(ref)
     if not removed:
@@ -3235,7 +3267,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.export_all:
         return cmd_export_all(args.export_all, as_markdown=args.markdown, as_json=args.json, redact=args.redact)
     if args.forget:
-        return cmd_forget(args.forget, as_json=args.json, output=args.output)
+        return cmd_forget(args.forget, as_json=args.json, output=args.output, all_sessions=args.all, dry_run=args.dry_run)
     if args.note is not None:
         if args.note == "__list__":
             return cmd_note(list_all=True, as_json=args.json, output=args.output)
