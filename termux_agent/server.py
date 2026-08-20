@@ -277,11 +277,21 @@ class _AgentHandler(BaseHTTPRequestHandler):
             provider = str(data.get("provider") or self.provider or self.cfg.get("provider", "zen"))
             model = str(data.get("model") or self.model or "")
             only_tools = [t for t in data.get("only_tools") if isinstance(t, str)] if isinstance(data.get("only_tools"), list) else None
+            temp = data.get("temperature")
+            mtr = data.get("max_tool_rounds")
             from concurrent.futures import ThreadPoolExecutor
 
             def _one(p: str) -> dict:
                 try:
-                    agent = self.build_agent(self.cfg, provider, model, auto_accept=True, only_tools=only_tools)
+                    agent = self.build_agent(
+                        self.cfg,
+                        provider,
+                        model,
+                        auto_accept=True,
+                        temperature=float(temp) if isinstance(temp, (int, float)) else None,
+                        max_tool_rounds=int(mtr) if isinstance(mtr, int) else None,
+                        only_tools=only_tools,
+                    )
                     answer = agent.run(p)
                     return {"prompt": p, "answer": answer}
                 except Exception as e:  # noqa: BLE001
@@ -307,6 +317,8 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 self._send(400, {"ok": False, "error": f"image not found: {image}"})
                 return
         try:
+            temp = data.get("temperature")
+            mtr = data.get("max_tool_rounds")
             agent = self.build_agent(
                 self.cfg,
                 data.get("provider") or self.provider,
@@ -315,6 +327,9 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 agent_name=data.get("agent"),
                 working_dir=data.get("cwd"),
                 extra_rules=data.get("rules"),
+                system_prompt=data.get("system_prompt") or None,
+                temperature=float(temp) if isinstance(temp, (int, float)) else None,
+                max_tool_rounds=int(mtr) if isinstance(mtr, int) else None,
                 only_tools=[t for t in data.get("only_tools") if isinstance(t, str)] if isinstance(data.get("only_tools"), list) else None,
             )
         except Exception as e:  # noqa: BLE001

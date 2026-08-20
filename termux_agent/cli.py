@@ -2319,6 +2319,7 @@ def main(argv: list[str] | None = None) -> int:
             provider_name=provider_key,
             model=agent.provider.model,
             agent_name=args.agent or cfg.get("agent", "root"),
+            log_file=args.log,
         ).run()
     except KeyboardInterrupt:
         pass

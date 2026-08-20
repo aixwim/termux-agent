@@ -83,11 +83,13 @@ class Repl:
         provider_name: str,
         model: str,
         agent_name: str = "root",
+        log_file: str | None = None,
     ) -> None:
         self.agent = agent
         self.provider_name = provider_name
         self.model = model
         self.agent_name = agent_name
+        self.log_file = log_file
         self.session = Session(provider_name=provider_name, model=model)
         self._last_answer = ""
         self._last_user_input = ""
@@ -95,6 +97,24 @@ class Repl:
         self._instructions: list[str] = []
         self.plan_mode = False
         self.quiet = False
+
+    def _log_turn(self, kind: str, data: dict) -> None:
+        if not self.log_file:
+            return
+        import datetime
+        import json as _json
+
+        from pathlib import Path
+
+        line = _json.dumps(
+            {"ts": datetime.datetime.now().isoformat(timespec="seconds"), "kind": kind, **data},
+            ensure_ascii=False,
+        )
+        try:
+            with open(Path(self.log_file).expanduser(), "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
 
     def _confirm(self, command: str) -> bool:
         try:
@@ -613,6 +633,7 @@ class Repl:
             printer.flush()
         self._last_answer = answer
         self.session.append({"role": "assistant", "content": answer})
+        self._log_turn("turn", {"user": user_input, "assistant": answer})
 
     def _run_plan_turn(self, user_input: str, printer: PlainStreamPrinter) -> None:
         """Plan-first mode: read-only plan, ask approval, then execute."""

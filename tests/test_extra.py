@@ -3908,6 +3908,77 @@ def test_prune_days_keep(tmp_path: Path, monkeypatch):
     assert (sdir / f"{new}.jsonl").exists()
 
 
+# --- server chat overrides / repl log ---
+def test_server_chat_overrides(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+
+    seen = {}
+
+    def fake_build(*a, **k):
+        seen.update(k)
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[{"role": "system", "content": "BASE"}],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/chat",
+            data=_json.dumps({"prompt": "hi", "temperature": 0.3, "max_tool_rounds": 5, "system_prompt": "CUSTOM"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["ok"] is True
+        assert seen["temperature"] == 0.3
+        assert seen["max_tool_rounds"] == 5
+        assert seen["system_prompt"] == "CUSTOM"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_repl_log(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from types import SimpleNamespace
+
+    from termux_agent.session import Session
+    from termux_agent.ui.repl import Repl
+
+    agent = SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        system_prompt="BASE",
+        messages=[{"role": "system", "content": "BASE"}],
+        allowed_tools=set(),
+        usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        run=lambda p, on_tool_use=None, on_text_delta=None: "answer",
+    )
+    monkeypatch.setattr("termux_agent.ui.repl.Session", lambda **k: Session())
+    log_path = tmp_path / "repl.log"
+    repl = Repl(agent, provider_name="zen", model="m", log_file=str(log_path))
+    repl._run_turn("hello")
+    lines = log_path.read_text().strip().splitlines()
+    assert len(lines) == 1
+    rec = _json.loads(lines[0])
+    assert rec["kind"] == "turn"
+    assert rec["user"] == "hello"
+    assert rec["assistant"] == "answer"
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
