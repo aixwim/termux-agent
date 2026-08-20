@@ -203,7 +203,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
             agent = self.build_agent(
                 self.cfg,
                 self.provider,
-                self.model,
+                data.get("model") or self.model,
                 auto_accept=bool(data.get("auto_accept", self.auto_accept)),
                 agent_name=data.get("agent"),
                 working_dir=data.get("cwd"),

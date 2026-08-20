@@ -2426,6 +2426,70 @@ def test_one_shot_writes_log(tmp_path: Path, monkeypatch):
     assert "done" in kinds
 
 
+# --- workers / memory / server model override ---
+def test_cmd_batch_workers(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    f = tmp_path / "p.txt"
+    f.write_text("a\nb\nc\n")
+    calls = []
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+        )
+        agent.run = lambda p, on_tool_use=None, on_text_delta=None: calls.append(p) or "R:" + p
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    out = tmp_path / "r.json"
+    assert cli.cmd_batch(_min_cfg(), str(f), "zen", None, output=str(out), workers=3) == 0
+    data = _json.loads(out.read_text())
+    assert [r["prompt"] for r in data] == ["a", "b", "c"]
+    assert len(calls) == 3
+
+
+def test_agent_no_memory(tmp_path: Path, monkeypatch):
+    from termux_agent.agent import Agent, load_memory
+    from termux_agent.providers.base import Provider
+    from termux_agent.tools.base import ToolContext
+
+    mem = tmp_path / "memory.md"
+    mem.write_text("remember pineapple")
+    monkeypatch.setattr("termux_agent.agent.MEMORY_FILE", mem)
+    assert "pineapple" in load_memory()
+
+    class P(Provider):
+        name = "p"
+        model = "m"
+
+        def stream(self, messages, tools=None, temperature=0.7, max_tokens=8192):
+            yield from ()
+
+    a = Agent(P(), ToolContext(working_dir=tmp_path))
+    assert "pineapple" in a.system_prompt
+    b = Agent(P(), ToolContext(working_dir=tmp_path), memory=False)
+    assert "pineapple" not in b.system_prompt
+
+
+def test_server_chat_model_override():
+    from termux_agent import server as servermod
+
+    body = {"prompt": "hi", "model": "other-model"}
+    assert body.get("model") == "other-model"
+    # build_agent call in do_POST uses data.get("model") or self.model
+    chosen = body.get("model") or "default"
+    assert chosen == "other-model"
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

@@ -86,6 +86,7 @@ class Agent:
         max_context_tokens: int = 0,
         retries: int = 1,
         retry_backoff: float = 1.0,
+        memory: bool = True,
     ) -> None:
         self.provider = provider
         self.ctx = ctx
@@ -103,9 +104,10 @@ class Agent:
         rules = load_rules(ctx.working_dir)
         agent_prompt = str(self.agent_spec.get("prompt", ""))
         self.system_prompt = system_prompt or build_system_prompt(rules, agent_prompt)
-        mem = load_memory()
-        if mem:
-            self.system_prompt += f"\n\n[Memory]\n{mem}"
+        if memory:
+            mem = load_memory()
+            if mem:
+                self.system_prompt += f"\n\n[Memory]\n{mem}"
         self.messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
         self.usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 

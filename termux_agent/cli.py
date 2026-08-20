@@ -58,6 +58,7 @@ def build_agent(
     max_output_chars: int | None = None,
     command_timeout: int | None = None,
     only_tools: list[str] | None = None,
+    memory: bool = True,
 ) -> Agent:
     name = provider_name or cfg.get("provider", "zen")
     provider = create_provider(name, cfg, model)
@@ -102,6 +103,7 @@ def build_agent(
             max_context_tokens=int(max_context_tokens if max_context_tokens is not None else cfg.get("max_context_tokens", 0)),
             retries=int(retries if retries is not None else cfg.get("retries", 1)),
             retry_backoff=float(cfg.get("retry_backoff", 1.0)),
+            memory=memory,
         )
         ._with_tools(not no_tools)
         ._with_extra_rules(extra_rules)
@@ -214,6 +216,7 @@ def cmd_one_shot(
     git_context: bool = False,
     only_tools: list[str] | None = None,
     log_file: str | None = None,
+    memory: bool = True,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -262,7 +265,7 @@ def cmd_one_shot(
             render_error(f"--system-prompt file is empty: {system_prompt_file}")
             return 1
 
-    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools, retries, no_fallback, extra_rules, sys_prompt, disabled_groups, max_output_chars, command_timeout, only_tools=only_tools)
+    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools, retries, no_fallback, extra_rules, sys_prompt, disabled_groups, max_output_chars, command_timeout, only_tools=only_tools, memory=memory)
     if context:
         from termux_agent.notify import device_context
 
@@ -552,6 +555,7 @@ def cmd_batch(
     agent_name: str | None = None,
     working_dir: str | None = None,
     only_tools: list[str] | None = None,
+    workers: int = 1,
 ) -> int:
     """Run one one-shot per line of a prompts file (blank lines skipped)."""
     import json as _json
@@ -567,18 +571,30 @@ def cmd_batch(
     if not prompts:
         render_error(f"--batch file is empty: {prompts_file}")
         return 1
-    results: list[dict] = []
-    for i, p in enumerate(prompts, start=1):
-        render_info(f"[{i}/{len(prompts)}] {p[:60]}")
+
+    def _run_one(p: str) -> dict:
         try:
             agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools)
             answer = _run_guarded(agent, p, lambda *a, **k: None, timeout)
         except Exception as e:  # noqa: BLE001
-            results.append({"prompt": p, "answer": None, "error": str(e)})
-            render_error(f"  -> failed: {e}")
-        else:
-            results.append({"prompt": p, "answer": answer})
-            render_info(f"  -> {answer[:80]}")
+            return {"prompt": p, "answer": None, "error": str(e)}
+        return {"prompt": p, "answer": answer}
+
+    results: list[dict] = []
+    if workers > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+            results = list(ex.map(_run_one, prompts))
+    else:
+        for i, p in enumerate(prompts, start=1):
+            render_info(f"[{i}/{len(prompts)}] {p[:60]}")
+            r = _run_one(p)
+            results.append(r)
+            if r.get("error"):
+                render_error(f"  -> failed: {r['error']}")
+            else:
+                render_info(f"  -> {r['answer'][:80]}")
     if output:
         Path(output).write_text(_json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
         render_info(f"Results written to {output}")
@@ -1222,11 +1238,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-web", action="store_true", help="Disable web_fetch and web_search tools")
     parser.add_argument("--no-git", action="store_true", help="Disable all git tools")
     parser.add_argument("--no-save", action="store_true", help="Do not persist this one-shot run as a session")
+    parser.add_argument("--no-memory", action="store_true", help="Run without the persistent memory file (~/.termux-agent/memory.md)")
     parser.add_argument("--git", action="store_true", dest="git_context", help="Inject the repo state (status/diff/log) into the system prompt")
     parser.add_argument("--show", metavar="SESSION", help="Show a full session transcript (default: latest); use --json for raw output")
     parser.add_argument("--tokens", metavar="FILE", help="Estimate the token count of a file (omit to read stdin)")
     parser.add_argument("--only-tools", metavar="LIST", help="Restrict the agent to exactly these comma-separated tool names, e.g. read_file,grep,glob")
     parser.add_argument("--log", metavar="FILE", help="Append a timestamped JSONL run log (tool calls, errors, result) for one-shot runs")
+    parser.add_argument("--workers", type=int, default=1, metavar="N", help="Run --batch prompts in parallel with N workers")
     parser.add_argument("--max-output-chars", type=int, metavar="N", help="Cap tool output size (default from config, e.g. 60000)")
     parser.add_argument("--command-timeout", type=int, metavar="SECONDS", help="Per-command timeout for run_command (default from config)")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
@@ -1463,6 +1481,7 @@ def main(argv: list[str] | None = None) -> int:
             agent_name=args.agent,
             working_dir=args.cwd,
             only_tools=_split_tools(args.only_tools),
+            workers=args.workers,
         )
 
     if prompt:
@@ -1503,6 +1522,7 @@ def main(argv: list[str] | None = None) -> int:
             git_context=args.git_context,
             only_tools=_split_tools(args.only_tools),
             log_file=args.log,
+            memory=not args.no_memory,
         )
 
     if args.json:
