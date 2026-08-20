@@ -214,6 +214,11 @@ class Agent:
                 except ProviderError as e:
                     last = e
                     msg = str(e)
+                    if "empty response" in msg:
+                        if attempt < self.retries:
+                            time.sleep(self.retry_backoff * (attempt + 1))
+                            continue
+                        break  # exhausted retries -> try next fallback model
                     if "429" in msg:
                         break  # rate limited -> try next fallback model
                     if self._is_transient(msg) and attempt < self.retries:
@@ -250,9 +255,11 @@ class Agent:
             text = "".join(text_parts)
 
             if not tool_calls:
-                self.messages.append({"role": "assistant", "content": text})
                 if not text.strip():
-                    return "(model returned an empty response - try rephrasing with a more specific prompt)"
+                    raise ProviderError(
+                        f"{self.provider.name}: empty response from model {self.provider.model}"
+                    )
+                self.messages.append({"role": "assistant", "content": text})
                 return text
 
             self.messages.append(

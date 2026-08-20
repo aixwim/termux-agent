@@ -32,6 +32,7 @@ READONLY_TOOLS = {
     "web_search",
     "git_status",
     "git_diff",
+    "git_log",
 }
 
 

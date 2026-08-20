@@ -60,9 +60,37 @@ def test_agent_handles_bad_tool_arguments(tmp_path: Path):
 
 def test_agent_empty_answer_guard(tmp_path: Path):
     provider = FakeProvider([[StreamEvent(kind="done")]])
-    agent = Agent(provider, ToolContext(working_dir=tmp_path, confirm_commands=False))
+    agent = Agent(provider, ToolContext(working_dir=tmp_path, confirm_commands=False), retries=0)
     out = agent.run("x")
     assert "empty response" in out
+
+
+def test_agent_retries_empty_response_then_falls_back(tmp_path: Path):
+    attempts = []
+
+    class EmptyThenFallbackProvider(Provider):
+        name = "fake"
+        model = "empty-model"
+        fallback_models = ["working-model"]
+
+        def stream(self, messages, tools=None, temperature=0.7, max_tokens=8192):
+            attempts.append(self.model)
+            if self.model == "empty-model":
+                yield StreamEvent(kind="done")
+                return
+            yield StreamEvent(kind="text_delta", text="fallback worked")
+            yield StreamEvent(kind="done")
+
+    agent = Agent(
+        EmptyThenFallbackProvider(),
+        ToolContext(working_dir=tmp_path, confirm_commands=False),
+        retries=1,
+        retry_backoff=0,
+    )
+
+    assert agent.run("x") == "fallback worked"
+    assert attempts == ["empty-model", "empty-model", "working-model"]
+    assert agent.provider.model == "working-model"
 
 
 def test_agent_max_rounds(tmp_path: Path):

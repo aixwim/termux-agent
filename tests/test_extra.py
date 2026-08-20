@@ -280,6 +280,7 @@ def test_build_agent_readonly(tmp_path: Path, monkeypatch):
     agent = build_agent(_min_cfg(), "zen", None, readonly=True)
     names = {t.name for t in agent.tools}
     assert names == READONLY_TOOLS
+    assert "git_log" in names
     assert "write_file" not in names
     assert "run_command" not in names
     assert "read-only" in agent.system_prompt.lower()
