@@ -55,6 +55,7 @@ Special commands (start with /):
   /prompt [TXT]   add a session instruction; /prompt clear removes them; no arg = show
   /remember TXT   store a note in ~/.termux-agent/memory.md (loaded every session)
   /memory         show the persistent memory; /memory clear wipes it
+  /note [TXT]     attach/read a note to this session; /note clear removes it
   /cd DIR         change the working directory (and file-access boundary)
   /plan           toggle plan-first mode (propose, approve, then execute)
   /system         show the effective system prompt
@@ -305,6 +306,21 @@ class Repl:
             self._prompt(rest)
         elif c == "/remember":
             self._remember(rest)
+        elif c == "/note":
+            from termux_agent.session import clear_note, get_note, set_note
+
+            sid = self.session.session_id
+            if rest.strip() == "clear":
+                removed = clear_note(sid)
+                render_info(f"Note cleared for {sid}." if removed else f"No note to clear for {sid}.")
+                return False
+            if not rest.strip():
+                note = get_note(sid)
+                render_info(f"Note for {sid}: {note}" if note else f"No note for {sid}.")
+                return False
+            set_note(sid, rest.strip())
+            render_info(f"Note saved for {sid}.")
+            return False
         elif c == "/memory":
             from termux_agent.agent import MEMORY_FILE, load_memory
 

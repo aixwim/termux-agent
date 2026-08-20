@@ -1516,7 +1516,7 @@ def test_parser_all_flags_present():
         "--clip --screenshot --export --import --prune --output --timeout --speak --wakelock --notify "
         "--chat --json --quiet --resume --serve --models --smoke --plan --copy --stats --doctor "
         "--install-completion --list-providers --list-agents --image --prompt-file --api-key --search "
-        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list"
+        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains"
     ).split():
         assert flag in help_txt, f"missing {flag}"
 
@@ -6290,6 +6290,127 @@ def test_bundle_restore_notes(tmp_path: Path, monkeypatch):
     assert cli.cmd_restore(str(bundle)) == 0
     assert (dest / "notes.json").is_file()
     assert session.get_note("20260820-000001") == "bundled note"
+
+
+# --- watch exit-on-contains + server/repl notes ---
+def test_watch_exit_on_contains(monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=None),
+            usage={},
+            run=lambda p, on_tool_use=None, on_text_delta=None: "the build is done and green",
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_watch(_min_cfg(), "hi", "zen", None, interval=1, exit_on_contains="done", max_wait=60) == 0
+    assert "answer contains" in out.getvalue()
+    assert "exiting" in out.getvalue()
+
+
+def test_watch_exit_on_contains_json(monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=None),
+            usage={},
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ready to ship",
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_watch(_min_cfg(), "hi", "zen", None, interval=1, exit_on_contains="SHIP", as_json=True) == 0
+    payload = _json.loads(out.getvalue().strip().splitlines()[-1])
+    assert payload["matched"] == "SHIP"
+    assert payload["round"] == 1
+
+
+def test_repl_note_command(monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+    from termux_agent.ui import repl as repl_mod
+
+    sdir = "/tmp/x-sess-notes"
+    import os
+    os.makedirs(sdir, exist_ok=True)
+    monkeypatch.setattr(session, "SESSIONS_DIR", __import__("pathlib").Path(sdir))
+    notes_path = __import__("pathlib").Path("/tmp/x-notes.json")
+    monkeypatch.setattr(session, "NOTES_FILE", notes_path)
+    agent = SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=None),
+        usage={},
+        system_prompt="sys",
+        messages=[],
+        run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+    )
+    r = repl_mod.Repl(
+        agent=agent,
+        provider_name="zen",
+        model="m",
+    )
+    r.session = session.Session(provider_name="zen", model="m")
+    sid = r.session.session_id
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    monkeypatch.setattr(repl_mod, "render_info", lambda msg: out.write(str(msg) + "\n"))
+    assert r._handle_command("/note  fix the flaky test", None) is False
+    assert session.get_note(sid) == "fix the flaky test"
+    out = io.StringIO()
+    monkeypatch.setattr(repl_mod, "render_info", lambda msg: out.write(str(msg) + "\n"))
+    r._handle_command("/note", None)
+    assert "fix the flaky test" in out.getvalue()
+    out = io.StringIO()
+    monkeypatch.setattr(repl_mod, "render_info", lambda msg: out.write(str(msg) + "\n"))
+    r._handle_command("/note clear", None)
+    assert session.get_note(sid) is None
+
+
+def test_server_sessions_includes_note(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from termux_agent import server as srv
+
+    httpd = srv.build_server(
+        lambda *a, **k: None, _min_cfg(), "zen", None
+    )
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/sessions",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            body = _json.loads(r.read())
+            assert "sessions" in body
+            assert all("note" in s for s in body["sessions"])
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
 
 
 # --- init wizard ---

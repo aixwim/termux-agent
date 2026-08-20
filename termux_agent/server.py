@@ -494,7 +494,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                     },
                 )
             else:
-                from termux_agent.session import list_sessions, read_session
+                from termux_agent.session import all_notes, list_sessions, read_session
 
                 import urllib.parse
 
@@ -503,6 +503,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                     limit = max(1, min(int(q.get("limit", ["50"])[0]), 500))
                 except ValueError:
                     limit = 50
+                notes = all_notes()
                 sessions = []
                 for s in list_sessions()[:limit]:
                     recs = read_session(s)
@@ -515,6 +516,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                             "model": info.get("model") or "",
                             "messages": len(recs),
                             "first": str(first_user)[:100],
+                            "note": notes.get(s.stem, "")[:100],
                         }
                     )
                 self._send(200, {"sessions": sessions})
@@ -705,6 +707,11 @@ class _AgentHandler(BaseHTTPRequestHandler):
             agent.provider.model,
             session_id=session_ref if (isinstance(session_ref, str) and session_ref) else None,
         )
+        note = data.get("note")
+        if isinstance(note, str) and note.strip():
+            from termux_agent.session import set_note
+
+            set_note(session_id, note.strip())
         usage = getattr(agent, "usage", {}) or {}
         self._send(
             200,

@@ -752,6 +752,7 @@ def cmd_watch(
     append: bool = False,
     attach: list[str] | None = None,
     temperature: float | None = None,
+    exit_on_contains: str | None = None,
 ) -> int:
     """Re-run a one-shot task every N seconds until Ctrl+C. Optionally re-attach a screenshot."""
     import json as _json
@@ -856,6 +857,16 @@ def cmd_watch(
                         from termux_agent.notify import notify as _notify
 
                         _notify(f"Answer changed at round {round_no}: {answer[:120]}")
+                    return 0
+                if exit_on_contains and exit_on_contains.lower() in answer.lower():
+                    if as_json:
+                        print(_json.dumps({"round": round_no, "answer": answer, "matched": exit_on_contains}, ensure_ascii=False))
+                    else:
+                        render_info(f"round {round_no}: answer contains {exit_on_contains!r} — exiting.")
+                    if notify:
+                        from termux_agent.notify import notify as _notify
+
+                        _notify(f"Round {round_no} matched {exit_on_contains[:80]}")
                     return 0
                 if diff and not as_json:
                     render_info(f"\n--- round {round_no} (changed) ---")
@@ -2524,6 +2535,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-wait", type=int, default=None, metavar="SECONDS", help="With --watch: stop after this many seconds")
     parser.add_argument("--diff", action="store_true", help="With --watch: only print/notify when the answer changes; with --rerun: show the diff vs the previous answer")
     parser.add_argument("--exit-on-change", action="store_true", help="With --watch: stop as soon as the answer differs from the previous round")
+    parser.add_argument("--exit-on-contains", metavar="TEXT", help="With --watch: stop as soon as the answer contains TEXT (case-insensitive)")
     parser.add_argument("--append", action="store_true", help="With --watch --output: append each answer instead of overwriting")
     parser.add_argument("--batch", metavar="FILE", help="Run one one-shot per line of the file (blank lines skipped; '-' reads stdin); --output writes results as JSON")
     parser.add_argument("--retries", type=int, metavar="N", help="Override transient retry count for network hiccups")
@@ -2988,6 +3000,7 @@ def main(argv: list[str] | None = None) -> int:
             append=args.append,
             attach=args.attach,
             temperature=args.temperature,
+            exit_on_contains=args.exit_on_contains,
         )
 
     if args.batch:
