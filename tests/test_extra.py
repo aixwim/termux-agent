@@ -5362,6 +5362,195 @@ def test_rich_table_treats_markup_as_literal(monkeypatch):
     assert calls[0].row_count == 1
 
 
+def test_repl_confirmation_is_explicit_and_defaults_to_no(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    import prompt_toolkit
+
+    from termux_agent.ui.repl import Repl
+
+    captured = {}
+
+    def fake_prompt(message, **kwargs):
+        captured.update(message=message, kwargs=kwargs)
+        return "yes"
+
+    monkeypatch.setattr(prompt_toolkit, "prompt", fake_prompt)
+    agent = SimpleNamespace(system_prompt="BASE", ctx=SimpleNamespace(working_dir=tmp_path))
+    repl = Repl(agent, provider_name="zen", model="m")
+
+    assert repl._confirm("pkg update") is True
+    assert "confirm shell command" in "".join(text for _, text in captured["message"])
+    assert "pkg update" in "".join(text for _, text in captured["message"])
+    assert captured["kwargs"]["default"] == "n"
+
+
+def test_repl_confirmation_refuses_eof(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    import prompt_toolkit
+
+    from termux_agent.ui.repl import Repl
+
+    monkeypatch.setattr(prompt_toolkit, "prompt", lambda *a, **k: (_ for _ in ()).throw(EOFError))
+    agent = SimpleNamespace(system_prompt="BASE", ctx=SimpleNamespace(working_dir=tmp_path))
+    repl = Repl(agent, provider_name="zen", model="m")
+
+    assert repl._confirm("pkg update") is False
+
+
+def test_repl_status_dashboard_includes_runtime_metrics(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import Repl
+
+    captured = {}
+    monkeypatch.setattr(
+        "termux_agent.ui.repl.render_summary",
+        lambda title, items: captured.update(title=title, items=dict(items)),
+    )
+    agent = SimpleNamespace(
+        system_prompt="BASE",
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        messages=[
+            {"role": "system", "content": "BASE"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ],
+        usage={"total_tokens": 12},
+        elapsed_seconds=1.25,
+        first_token_seconds=0.4,
+        tool_call_count=2,
+        retry_count=1,
+        fallback_count=0,
+    )
+    repl = Repl(agent, provider_name="zen", model="fast", agent_name="coder")
+
+    assert repl._handle_command("/status", None) is False
+    assert captured["title"] == "agent status"
+    assert captured["items"]["provider / model"] == "zen / fast"
+    assert captured["items"]["messages"] == 2
+    assert captured["items"]["tokens"] == "12"
+    assert captured["items"]["last run"] == "1.25s · first token 0.40s"
+    assert captured["items"]["tool calls"] == 2
+    assert captured["items"]["retries / fallbacks"] == "1 / 0"
+
+
+def test_slash_command_completion_stays_in_sync_with_help():
+    from termux_agent.ui.repl import HELP, _slash_commands
+
+    commands = _slash_commands()
+
+    assert len(commands) == len(set(commands))
+    assert {"/help", "/status", "/provider", "/exit", "/quit"} <= set(commands)
+    assert all(command in HELP for command in commands)
+
+
+def test_prompt_session_has_history_suggestions_and_completion(tmp_path: Path, monkeypatch):
+    from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    from termux_agent.ui import repl
+
+    monkeypatch.setattr(repl, "CONFIG_DIR", tmp_path)
+    session = repl.make_prompt_session("zen")
+    completions = list(
+        session.completer.get_completions(Document("/sta", cursor_position=4), CompleteEvent())
+    )
+
+    assert isinstance(session.auto_suggest, AutoSuggestFromHistory)
+    assert {item.text for item in completions} >= {"/stats", "/status"}
+
+
+def test_command_completion_suggests_live_sessions(tmp_path: Path, monkeypatch):
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    from termux_agent import session
+    from termux_agent.ui.repl import _command_completer
+
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sessions)
+    (sessions / "session-one.jsonl").write_text("{}\n")
+    completer = _command_completer()
+
+    found = completer.get_completions(Document("/resume ses", cursor_position=11), CompleteEvent())
+
+    assert {item.text for item in found} == {"session-one"}
+
+
+def test_command_completion_suggests_paths(tmp_path: Path, monkeypatch):
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    from termux_agent.ui.repl import _command_completer
+
+    (tmp_path / "notes.txt").write_text("hello")
+    monkeypatch.chdir(tmp_path)
+    completer = _command_completer()
+
+    found = completer.get_completions(Document("/attach not", cursor_position=11), CompleteEvent())
+
+    assert {item.display_text for item in found} == {"notes.txt"}
+
+
+def test_command_completion_reads_provider_model_and_agent_config(monkeypatch):
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    from termux_agent import config
+    from termux_agent.ui.repl import _command_completer
+
+    monkeypatch.setattr(
+        config,
+        "load_config",
+        lambda: {
+            "providers": {
+                "local": {"models": ["tiny-model"], "fallback_models": ["backup-model"]}
+            },
+            "agents": {"coder": {}},
+        },
+    )
+    completer = _command_completer()
+
+    def choices(text):
+        return {
+            item.text
+            for item in completer.get_completions(
+                Document(text, cursor_position=len(text)), CompleteEvent()
+            )
+        }
+
+    assert choices("/provider loc") == {"local"}
+    assert choices("/model tiny") == {"tiny-model"}
+    assert choices("/model back") == {"backup-model"}
+    assert choices("/agent cod") == {"coder"}
+
+
+def test_repl_bottom_toolbar_tracks_live_state(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import Repl
+
+    agent = SimpleNamespace(
+        system_prompt="BASE",
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        messages=[{"role": "system", "content": "BASE"}, {"role": "user", "content": "hi"}],
+    )
+    repl = Repl(agent, provider_name="zen", model="fast", agent_name="coder")
+
+    toolbar = "".join(text for _, text in repl._bottom_toolbar())
+    assert toolbar == " zen/fast  ·  STREAM  ·  coder  ·  1 msgs  ·  /help "
+
+    repl.plan_mode = True
+    repl.provider_name = "local"
+    toolbar = "".join(text for _, text in repl._bottom_toolbar())
+    assert "local/fast" in toolbar
+    assert "PLAN" in toolbar
+
+
 def test_plain_banner_is_two_compact_lines(monkeypatch):
     from termux_agent.ui import renderer
 

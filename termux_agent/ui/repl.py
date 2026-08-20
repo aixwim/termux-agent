@@ -33,6 +33,22 @@ def _prompt_style() -> object:
             "prompt.label": "bold ansicyan",
             "prompt.arrow": "bold ansibrightcyan",
             "prompt.continuation": "ansibrightblack",
+            "toolbar": "bg:#20252b #9aa4ad",
+            "toolbar.active": "bg:#20252b bold #67e8f9",
+            "toolbar.mode": "bg:#20252b #d8b4fe",
+        }
+    )
+
+
+def _confirm_style() -> object:
+    from prompt_toolkit.styles import Style
+
+    return Style.from_dict(
+        {
+            "confirm.icon": "bold ansiyellow",
+            "confirm.label": "bold ansiyellow",
+            "confirm.command": "ansiwhite",
+            "confirm.hint": "ansibrightblack",
         }
     )
 
@@ -63,6 +79,7 @@ Special commands (start with /):
   /export [PATH]  export the conversation to Markdown (/export json writes a JSON file instead)
   /copy           copy the last answer to the clipboard
   /stats          show token usage of this session
+  /status         show the active session and last-run dashboard
   /undo           revert the most recent file write/edit
   /config         show the active configuration
   /forget [ID]    delete a session (default: this session)
@@ -93,14 +110,92 @@ Special commands (start with /):
 Type a normal message to ask; Ctrl+C to cancel."""
 
 
-def make_prompt_session(history_file: str) -> PromptSession:
+def _slash_commands() -> list[str]:
+    """Extract slash commands from HELP so completion and documentation stay in sync."""
+    commands: list[str] = []
+    for line in HELP.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("/"):
+            continue
+        usage = stripped.split("  ", 1)[0]
+        for command in usage.split(","):
+            name = command.strip().split(" ", 1)[0]
+            if name.startswith("/") and name not in commands:
+                commands.append(name)
+    return commands
+
+
+def _command_completer() -> object:
+    """Build contextual completion for commands, paths, and live session IDs."""
+    from prompt_toolkit.completion import (
+        DynamicCompleter,
+        NestedCompleter,
+        PathCompleter,
+        WordCompleter,
+        merge_completers,
+    )
+
+    def session_completer() -> object:
+        from termux_agent.session import list_sessions
+
+        try:
+            session_ids = [path.stem for path in list_sessions()]
+        except OSError:
+            session_ids = []
+        return WordCompleter(session_ids, sentence=True)
+
+    def config_completer(kind: str) -> object:
+        from termux_agent.config import ConfigError, load_config
+
+        try:
+            cfg = load_config()
+        except (ConfigError, OSError):
+            values: list[str] = []
+        else:
+            if kind == "provider":
+                values = list(cfg.get("providers", {}))
+            elif kind == "agent":
+                values = list(cfg.get("agents", {}))
+            else:
+                values = []
+                for spec in cfg.get("providers", {}).values():
+                    values.extend(str(model) for model in spec.get("models", []))
+                    values.extend(str(model) for model in spec.get("fallback_models", []))
+        return WordCompleter(sorted(set(values)), sentence=True, ignore_case=True)
+
+    choices: dict[str, object | None] = {command: None for command in _slash_commands()}
+    choices.update(
+        {
+            "/attach": PathCompleter(expanduser=True),
+            "/image": PathCompleter(expanduser=True),
+            "/cd": PathCompleter(only_directories=True, expanduser=True),
+            "/resume": DynamicCompleter(session_completer),
+            "/forget": DynamicCompleter(session_completer),
+            "/provider": DynamicCompleter(lambda: config_completer("provider")),
+            "/model": DynamicCompleter(lambda: config_completer("model")),
+            "/agent": DynamicCompleter(lambda: config_completer("agent")),
+            "/temp": WordCompleter(["0", "0.2", "0.5", "0.7", "1.0"], sentence=True),
+            "/maxrounds": WordCompleter(["10", "20", "40", "80"], sentence=True),
+        }
+    )
+    root = WordCompleter(_slash_commands(), sentence=True, ignore_case=True)
+    contextual = NestedCompleter.from_nested_dict(choices)
+    return merge_completers([root, contextual], deduplicate=True)
+
+
+def make_prompt_session(history_file: str, bottom_toolbar: object | None = None) -> PromptSession:
     from prompt_toolkit import PromptSession as _PromptSession
+    from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
     from prompt_toolkit.history import FileHistory
 
     (CONFIG_DIR / "history").mkdir(parents=True, exist_ok=True)
     return _PromptSession(
         history=FileHistory(str(CONFIG_DIR / "history" / history_file)),
         style=_prompt_style(),
+        completer=_command_completer(),
+        auto_suggest=AutoSuggestFromHistory(),
+        complete_while_typing=True,
+        bottom_toolbar=bottom_toolbar,
     )
 
 
@@ -148,9 +243,15 @@ class Repl:
         try:
             from prompt_toolkit import prompt
 
-            ans = prompt(f"  Run this command? [y/N]  {command}\n> ", default="n")
+            message = [
+                ("class:confirm.icon", "  ⚠ "),
+                ("class:confirm.label", "confirm shell command\n"),
+                ("class:confirm.command", f"  {command}\n"),
+                ("class:confirm.hint", "  Run? [y/N] "),
+            ]
+            ans = prompt(message, default="n", style=_confirm_style())
             return ans.strip().lower() in ("y", "yes")
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             return False
 
     def _attach_confirm(self) -> None:
@@ -164,6 +265,17 @@ class Repl:
             self.agent.ctx.working_dir,
         )
 
+    def _bottom_toolbar(self) -> list[tuple[str, str]]:
+        messages = max(0, len(getattr(self.agent, "messages", [])) - 1)
+        mode = "PLAN" if self.plan_mode else ("QUIET" if self.quiet else "STREAM")
+        return [
+            ("class:toolbar", " "),
+            ("class:toolbar.active", f"{self.provider_name}/{self.model}"),
+            ("class:toolbar", "  ·  "),
+            ("class:toolbar.mode", mode),
+            ("class:toolbar", f"  ·  {self.agent_name}  ·  {messages} msgs  ·  /help "),
+        ]
+
     def run(self) -> None:
         if sys.stdin.isatty():
             self._attach_confirm()
@@ -176,7 +288,7 @@ class Repl:
             self._run_piped()
 
     def _run_tty(self) -> None:
-        ps = make_prompt_session(self.provider_name)
+        ps = make_prompt_session(self.provider_name, bottom_toolbar=self._bottom_toolbar)
         while True:
             try:
                 user = ps.prompt(
@@ -287,6 +399,8 @@ class Repl:
             self._copy_last()
         elif c == "/stats":
             self._show_stats()
+        elif c == "/status":
+            self._show_status()
         elif c == "/undo":
             render_info(self.agent.ctx.undo())
         elif c == "/config":
@@ -612,6 +726,38 @@ class Repl:
                 ("completion tokens", u.get("completion_tokens", 0)),
                 ("total tokens", u.get("total_tokens", 0)),
                 ("messages", max(0, len(self.agent.messages) - 1)),
+            ],
+        )
+
+    def _show_status(self) -> None:
+        """Show active runtime and session details in one compact dashboard."""
+        usage = getattr(self.agent, "usage", {}) or {}
+        messages = max(0, len(getattr(self.agent, "messages", [])) - 1)
+        reported_tokens = int(usage.get("total_tokens", 0) or 0)
+        estimated_tokens = sum(
+            len(str(message.get("content", ""))) // 4
+            for message in getattr(self.agent, "messages", [])
+            if message.get("content")
+        )
+        elapsed = float(getattr(self.agent, "elapsed_seconds", 0.0) or 0.0)
+        first_token = getattr(self.agent, "first_token_seconds", None)
+        token_value = str(reported_tokens) if reported_tokens else f"~{estimated_tokens} estimated"
+        last_run = f"{elapsed:.2f}s"
+        if first_token is not None:
+            last_run += f" · first token {float(first_token):.2f}s"
+        render_summary(
+            "agent status",
+            [
+                ("provider / model", f"{self.provider_name} / {self.model}"),
+                ("agent", self.agent_name),
+                ("working directory", self.agent.ctx.working_dir),
+                ("session", self.session.session_id),
+                ("mode", "plan" if self.plan_mode else ("quiet" if self.quiet else "streaming")),
+                ("messages", messages),
+                ("tokens", token_value),
+                ("last run", last_run if elapsed or first_token is not None else "not available"),
+                ("tool calls", getattr(self.agent, "tool_call_count", 0)),
+                ("retries / fallbacks", f"{getattr(self.agent, 'retry_count', 0)} / {getattr(self.agent, 'fallback_count', 0)}"),
             ],
         )
 

@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Add a live REPL status bar for provider/model, agent, mode, message count, and help discovery.
+- Add slash-command completion, history-based inline suggestions, and dynamic completion for paths, sessions, providers, models, agents, and common tuning values.
+- Add a `/status` REPL dashboard for active configuration, session state, token counts, and last-run diagnostics.
+- Make shell-command confirmation visually distinct, default-safe, and EOF-safe in the interactive REPL.
 - Present interactive configuration, session usage, recent sessions, and search results as aligned, phone-friendly summaries and safe tables.
 - Refresh the interactive terminal theme with clearer answer panels, user/assistant identity, semantic status icons, compact tool activity, a scannable `/help` table, a TTY-only thinking indicator, and a more informative mobile-friendly banner.
 - Add a Termux-compatible Flake8 gate for critical Python errors to local development and CI.
