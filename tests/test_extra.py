@@ -621,6 +621,41 @@ def test_cmd_one_shot_json(tmp_path: Path, monkeypatch):
     assert data["usage"]["total_tokens"] == 8
 
 
+def test_emit_json_includes_agent_diagnostics(monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    agent = SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="fallback-model"),
+        usage={},
+        elapsed_seconds=1.23456,
+        model_attempts=["primary-model", "fallback-model"],
+        retry_count=1,
+        fallback_count=1,
+        first_token_seconds=0.4567,
+        round_count=2,
+        tool_call_count=1,
+    )
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+
+    cli._emit_json({"ok": True}, agent)
+
+    diagnostics = _json.loads(out.getvalue())["diagnostics"]
+    assert diagnostics == {
+        "elapsed_seconds": 1.235,
+        "first_token_seconds": 0.457,
+        "model_attempts": ["primary-model", "fallback-model"],
+        "retry_count": 1,
+        "fallback_count": 1,
+        "round_count": 2,
+        "tool_call_count": 1,
+    }
+
+
 # --- auto-compact on token budget ---
 def test_auto_compact_on_budget(tmp_path: Path):
     from termux_agent.agent import Agent
@@ -2927,6 +2962,22 @@ def test_cmd_cron(tmp_path: Path, monkeypatch):
     assert line.startswith("*/10 * * * * cd")
     assert "termux-agent --no-save --quiet" in line
     assert "cron.log" in line
+
+
+def test_main_cron_uses_positional_prompt(monkeypatch):
+    from termux_agent import cli
+
+    captured = {}
+    monkeypatch.setattr(cli, "load_config", lambda *_: _min_cfg())
+
+    def fake_cron(schedule, prompt, **kwargs):
+        captured.update(schedule=schedule, prompt=prompt)
+        return 0
+
+    monkeypatch.setattr(cli, "cmd_cron", fake_cron)
+
+    assert cli.main(["--cron", "*/5 * * * *", "check", "status"]) == 0
+    assert captured == {"schedule": "*/5 * * * *", "prompt": "check status"}
 
 
 # --- allow-dir / sessions/<id> endpoint / cleanup / screenshot-dir ---

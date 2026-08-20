@@ -5,7 +5,7 @@
 [![Version](https://img.shields.io/badge/version-1.2.0-blue)](#)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](#)
 [![Python](https://img.shields.io/badge/python-3.10%2B-informational)](#)
-[![Tests](https://img.shields.io/badge/tests-353%20passing-brightgreen)](#)
+[![Tests](https://img.shields.io/badge/tests-355%20passing-brightgreen)](#)
 [![CI](https://github.com/aixwim/termux-agent/actions/workflows/ci.yml/badge.svg)](#)
 
 ---
@@ -91,6 +91,7 @@ Restrict any group with `--no-shell`, `--no-web`, `--no-git`, or pin exact tools
 
 - OpenAI, Anthropic, OpenRouter, Ollama, Groq, DeepSeek, Gemini, xAI (Grok), Mistral, Cerebras, and OpenCode Zen.
 - Automatic fallback models on rate limits, transient retries for flaky networks, model rotation (`--rotate`), and a latency benchmark (`--bench`).
+- JSON runs include elapsed and first-token time, attempted models, retries, fallbacks, agent rounds, and tool-call counts for troubleshooting provider behavior.
 
 ### Termux / device integration
 
@@ -307,7 +308,9 @@ curl -X POST http://127.0.0.1:8787/chat \
 
 ```bash
 pip install -e ".[dev]"
+python -m flake8 termux_agent tests --select=E9,F63,F7,F82
 python -m pytest tests/ -q
+python -m pip_audit -r requirements.txt --progress-spinner off  # optional security audit
 python tests/mock_server.py &   # mock provider for offline testing
 termux-agent --model mock-model "..."   # use the mock provider
 ```
@@ -323,7 +326,8 @@ termux_agent/
 └── ui/             # renderer (rich) + REPL (prompt_toolkit)
 ```
 
-CI runs the full test suite on Python 3.10–3.14 via GitHub Actions.
+CI runs Flake8 and the full test suite on Python 3.10–3.14, plus a separate
+runtime dependency vulnerability audit, via GitHub Actions.
 
 ---
 

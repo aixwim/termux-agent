@@ -110,6 +110,14 @@ class Agent:
                 self.system_prompt += f"\n\n[Memory]\n{mem}"
         self.messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
         self.usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        self.model_attempts: list[str] = []
+        self.retry_count = 0
+        self.fallback_count = 0
+        self.elapsed_seconds = 0.0
+        self.first_token_seconds: float | None = None
+        self.round_count = 0
+        self.tool_call_count = 0
+        self._run_started = 0.0
 
     def _add_usage(self, usage: dict) -> None:
         for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
@@ -184,12 +192,23 @@ class Agent:
         Returns the final answer text."""
         self.messages.append({"role": "user", "content": user_input})
         self._compacted_this_turn = False
+        self.model_attempts = []
+        self.retry_count = 0
+        self.fallback_count = 0
+        started = __import__("time").perf_counter()
+        self._run_started = started
+        self.first_token_seconds = None
+        self.round_count = 0
+        self.tool_call_count = 0
         models = [self.provider.model, *self.provider.fallback_models]
         try:
-            return self._attempt(models, on_text_delta, on_tool_use)
-        except ProviderError as e:
-            self.messages.append({"role": "assistant", "content": f"[error] {e}"})
-            return f"Error: {e}"
+            try:
+                return self._attempt(models, on_text_delta, on_tool_use)
+            except ProviderError as e:
+                self.messages.append({"role": "assistant", "content": f"[error] {e}"})
+                return f"Error: {e}"
+        finally:
+            self.elapsed_seconds = __import__("time").perf_counter() - started
 
     @staticmethod
     def _is_transient(msg: str) -> bool:
@@ -208,7 +227,9 @@ class Agent:
         for i, model in enumerate(models):
             if i:
                 self.provider.model = model
+                self.fallback_count += 1
             for attempt in range(self.retries + 1):
+                self.model_attempts.append(model)
                 try:
                     return self._run_rounds(on_text_delta, on_tool_use)
                 except ProviderError as e:
@@ -216,12 +237,14 @@ class Agent:
                     msg = str(e)
                     if "empty response" in msg:
                         if attempt < self.retries:
+                            self.retry_count += 1
                             time.sleep(self.retry_backoff * (attempt + 1))
                             continue
                         break  # exhausted retries -> try next fallback model
                     if "429" in msg:
                         break  # rate limited -> try next fallback model
                     if self._is_transient(msg) and attempt < self.retries:
+                        self.retry_count += 1
                         time.sleep(self.retry_backoff * (attempt + 1))
                         continue
                     raise  # not transient, or retries exhausted
@@ -234,6 +257,7 @@ class Agent:
         on_tool_use: Callable[[str, str], None] | None,
     ) -> str:
         for _round in range(self.max_tool_rounds):
+            self.round_count += 1
             text_parts: list[str] = []
             tool_calls: list[dict] = []
             events: Iterable[StreamEvent] = self.provider.stream(
@@ -241,6 +265,8 @@ class Agent:
             )
             for ev in events:
                 if ev.kind == "text_delta":
+                    if ev.text and self.first_token_seconds is None:
+                        self.first_token_seconds = __import__("time").perf_counter() - self._run_started
                     text_parts.append(ev.text)
                     if on_text_delta:
                         on_text_delta(ev.text)
@@ -266,6 +292,7 @@ class Agent:
                 {"role": "assistant", "content": text, "tool_calls": tool_calls}
             )
             for tc in tool_calls:
+                self.tool_call_count += 1
                 name = tc.get("name", "")
                 raw_args = tc.get("arguments", "")
                 try:

@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+- Add a Termux-compatible Flake8 gate for critical Python errors to local development and CI.
+- Add a least-privilege CI dependency audit using `pip-audit`.
+- Fix `--cron` using its prompt before the CLI had initialized it.
+- Add JSON run diagnostics for elapsed time, model attempts, retries, and fallbacks.
+- Add time-to-first-token, agent round, and tool-call metrics to JSON and `--stats` output.
+
 ## [1.2.0] - 2026-08-20
 
 ### Highlights

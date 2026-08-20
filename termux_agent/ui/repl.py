@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from prompt_toolkit import PromptSession
 
 from termux_agent.agent import Agent
 from termux_agent.config import CONFIG_DIR

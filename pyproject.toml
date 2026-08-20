@@ -42,7 +42,7 @@ Documentation = "https://github.com/aixwim/termux-agent/blob/main/README.md"
 termux-agent = "termux_agent.cli:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "httpx>=0.27"]
+dev = ["pytest>=8", "httpx>=0.27", "flake8>=7.0"]
 
 [tool.setuptools.packages.find]
 include = ["termux_agent*"]

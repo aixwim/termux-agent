@@ -419,6 +419,15 @@ def cmd_one_shot(
             render_info(
                 f"Tokens: prompt {u.get('prompt_tokens', 0)} | completion {u.get('completion_tokens', 0)} | total {u.get('total_tokens', 0)}"
             )
+        else:
+            render_info("Tokens: unavailable from provider")
+        first_token = getattr(agent, "first_token_seconds", None)
+        first_token_text = f"{first_token:.2f}s" if first_token is not None else "n/a"
+        render_info(
+            f"Run: {getattr(agent, 'elapsed_seconds', 0.0):.2f}s | first token: {first_token_text} | "
+            f"rounds: {getattr(agent, 'round_count', 0)} | tools: {getattr(agent, 'tool_call_count', 0)} | "
+            f"retries: {getattr(agent, 'retry_count', 0)} | fallbacks: {getattr(agent, 'fallback_count', 0)}"
+        )
     return 0
 
 
@@ -431,6 +440,22 @@ def _emit_json(payload: dict, agent: "Agent | None", include_usage: bool = False
         usage = getattr(agent, "usage", {})
         if usage or include_usage:
             payload["usage"] = usage or {}
+        attempts = getattr(agent, "model_attempts", None)
+        elapsed = getattr(agent, "elapsed_seconds", None)
+        if attempts is not None or elapsed is not None:
+            payload["diagnostics"] = {
+                "elapsed_seconds": round(float(elapsed or 0.0), 3),
+                "first_token_seconds": (
+                    round(float(agent.first_token_seconds), 3)
+                    if getattr(agent, "first_token_seconds", None) is not None
+                    else None
+                ),
+                "model_attempts": list(attempts or []),
+                "retry_count": int(getattr(agent, "retry_count", 0)),
+                "fallback_count": int(getattr(agent, "fallback_count", 0)),
+                "round_count": int(getattr(agent, "round_count", 0)),
+                "tool_call_count": int(getattr(agent, "tool_call_count", 0)),
+            }
     print(json.dumps(payload, ensure_ascii=False))
 
 
@@ -3394,10 +3419,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.restore:
         return cmd_restore(args.restore, dry_run=args.dry_run, as_json=args.json, merge=args.merge)
     if args.cron:
-        if not prompt:
+        cron_prompt = " ".join(args.prompt).strip()
+        if not cron_prompt:
             render_error("--cron requires a one-shot prompt.")
             return 2
-        return cmd_cron(args.cron, prompt, as_json=args.json, notify=args.notify, output=args.output)
+        return cmd_cron(args.cron, cron_prompt, as_json=args.json, notify=args.notify, output=args.output)
     if args.stats_all:
         return cmd_stats_all(as_json=args.json, output=args.output)
     if args.cleanup:

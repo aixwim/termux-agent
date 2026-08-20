@@ -45,6 +45,9 @@ def test_agent_runs_tool_then_answers(tmp_path: Path):
     agent = Agent(provider, ToolContext(working_dir=tmp_path, confirm_commands=False))
     assert agent.run("baca sample.txt") == "Isinya: `ini isi sample`."
     assert len(agent.messages) == 5  # system, user, assistant(tool), tool, assistant(final)
+    assert agent.round_count == 2
+    assert agent.tool_call_count == 1
+    assert agent.first_token_seconds is not None
 
 
 def test_agent_handles_bad_tool_arguments(tmp_path: Path):
@@ -91,6 +94,13 @@ def test_agent_retries_empty_response_then_falls_back(tmp_path: Path):
     assert agent.run("x") == "fallback worked"
     assert attempts == ["empty-model", "empty-model", "working-model"]
     assert agent.provider.model == "working-model"
+    assert agent.model_attempts == attempts
+    assert agent.retry_count == 1
+    assert agent.fallback_count == 1
+    assert agent.elapsed_seconds >= 0
+    assert agent.round_count == 3
+    assert agent.tool_call_count == 0
+    assert agent.first_token_seconds is not None
 
 
 def test_agent_max_rounds(tmp_path: Path):
