@@ -85,9 +85,10 @@ DEFAULTS: dict[str, Any] = {
                 "big-pickle",
             ],
             "fallback_models": [
-                "deepseek-v4-flash-free",
-                "mimo-v2.5-free",
-                "big-pickle",
+                "hy3-free",
+                "nemotron-3.5-lightning-free",
+                "laguna-s-2.1-free",
+                "muse-spark-1.2-contributor-free",
             ],
             "api_key_env": "OPENCODE_API_KEY",
         },

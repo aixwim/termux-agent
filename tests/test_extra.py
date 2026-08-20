@@ -1832,6 +1832,7 @@ def test_load_config_explicit_file(tmp_path: Path, monkeypatch):
         return 0
 
     monkeypatch.setattr(cli, "cmd_one_shot", fake_one_shot)
+    monkeypatch.chdir(tmp_path)  # keep project configs out of the cwd ancestor chain
     assert cli.main(["--config", str(cf), "hi"]) == 0
     assert seen == {"provider": "anthropic", "model": "claude-x"}
 

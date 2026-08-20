@@ -145,9 +145,11 @@ class PlainStreamPrinter:
 
     def __init__(self) -> None:
         self._buf = ""
+        self.streamed_chars = 0
 
     def feed(self, delta: str) -> None:
         self._buf += delta
+        self.streamed_chars += len(delta)
         console = _console()
         while "\n" in self._buf:
             line, self._buf = self._buf.split("\n", 1)

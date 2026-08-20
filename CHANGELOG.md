@@ -10,6 +10,11 @@ All notable changes to this project are documented here.
 
 - **`--tokens --all` works** — the `--tokens` flag no longer swallows `--all` as its file argument; whole-store estimation works as documented.
 
+### Fixes
+
+- **REPL shows rate-limit/API errors** — when a model fails (e.g. zen `429 FreeUsageLimitError`) before producing any streamed text, the REPL now prints the error instead of silently returning to the prompt.
+- **Zen fallback models updated** — the fallback list no longer points at the three free models that were rate-limited (`deepseek-v4-flash-free`, `mimo-v2.5-free`, `big-pickle`); it now tries `hy3-free`, `nemotron-3.5-lightning-free`, `laguna-s-2.1-free`, `muse-spark-1.2-contributor-free`.
+
 ## [1.1.0] - 2026-08-20
 
 ### Optimization for Termux

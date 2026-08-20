@@ -765,6 +765,11 @@ class Repl:
             return
         if not self.quiet:
             printer.flush()
+        if answer and printer.streamed_chars == 0:
+            if answer.startswith("Error:"):
+                render_error(answer)
+            else:
+                render_answer(answer)
         self._last_answer = answer
         self.session.append({"role": "assistant", "content": answer})
         self._log_turn("turn", {"user": user_input, "assistant": answer})
