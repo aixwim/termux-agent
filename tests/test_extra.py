@@ -3528,8 +3528,6 @@ def test_repl_attach(tmp_path: Path, monkeypatch):
 
 
 def test_repl_search(tmp_path: Path, monkeypatch):
-    import io
-
     from types import SimpleNamespace
 
     from termux_agent import session
@@ -3549,12 +3547,11 @@ def test_repl_search(tmp_path: Path, monkeypatch):
         ctx=SimpleNamespace(working_dir=tmp_path),
     )
     monkeypatch.setattr("termux_agent.ui.repl.Session", lambda **k: Session())
-    out = io.StringIO()
-    monkeypatch.setattr("termux_agent.ui.repl.console", SimpleNamespace(print=lambda *a, **k: out.write(" ".join(map(str, a)) + "\n")))
+    rows = []
+    monkeypatch.setattr("termux_agent.ui.repl.render_table", lambda title, columns, data: rows.extend(data))
     repl = Repl(agent, provider_name="zen", model="m")
     repl._handle_command("/search raccoons", None)
-    assert "20260820-000001" in out.getvalue()
-    assert "20260820-000002" not in out.getvalue()
+    assert rows == [["20260820-000001", "tell me about raccoons"]]
 
 
 def test_rerun_attach(tmp_path: Path, monkeypatch):
@@ -5297,6 +5294,72 @@ def test_activity_uses_transient_rich_status(monkeypatch):
     assert captured["label"] == " Thinking Ctrl+C to cancel"
     assert captured["kwargs"] == {"spinner": "dots", "spinner_style": "bright_cyan"}
     assert captured["entered"] and captured["exited"]
+
+
+def test_plain_summary_aligns_key_values(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append(str(value))
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: True)
+    renderer.render_summary("session", [("model", "fast"), ("tokens", 42)])
+
+    assert calls == ["== session ==", "model   fast", "tokens  42"]
+
+
+def test_rich_summary_builds_titled_panel(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append(value)
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: False)
+    renderer.render_summary("configuration", [("model", "fast")])
+
+    assert len(calls) == 1
+    assert str(calls[0].title) == " configuration "
+
+
+def test_plain_table_aligns_rows(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append(str(value))
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: True)
+    renderer.render_table("sessions", ["id", "size"], [["abc", "2 KiB"], ["d", "9 B"]])
+
+    assert calls == ["== sessions ==", "id   size ", "abc  2 KiB", "d    9 B  "]
+
+
+def test_rich_table_treats_markup_as_literal(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append(value)
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: False)
+    renderer.render_table("search", ["session", "match"], [["one", "[red]literal[/red]"]])
+
+    assert len(calls) == 1
+    assert calls[0].row_count == 1
 
 
 def test_plain_banner_is_two_compact_lines(monkeypatch):

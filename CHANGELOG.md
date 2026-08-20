@@ -4,6 +4,7 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Present interactive configuration, session usage, recent sessions, and search results as aligned, phone-friendly summaries and safe tables.
 - Refresh the interactive terminal theme with clearer answer panels, user/assistant identity, semantic status icons, compact tool activity, a scannable `/help` table, a TTY-only thinking indicator, and a more informative mobile-friendly banner.
 - Add a Termux-compatible Flake8 gate for critical Python errors to local development and CI.
 - Add a least-privilege CI dependency audit using `pip-audit`.

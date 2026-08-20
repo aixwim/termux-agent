@@ -19,6 +19,8 @@ from termux_agent.ui.renderer import (
     render_error,
     render_help,
     render_info,
+    render_summary,
+    render_table,
     render_tool_use,
 )
 
@@ -264,8 +266,12 @@ class Repl:
             if not sessions:
                 render_info("No sessions yet.")
             else:
+                rows = []
                 for s in sessions[:10]:
-                    render_info(f"  {s.name} ({s.stat().st_size}B)")
+                    size = s.stat().st_size
+                    display_size = f"{size} B" if size < 1024 else f"{size / 1024:.1f} KiB"
+                    rows.append([s.stem, display_size])
+                render_table("recent sessions", ["session", "size"], rows)
         elif c == "/resume":
             self._resume(rest)
         elif c == "/compact":
@@ -284,11 +290,18 @@ class Repl:
         elif c == "/undo":
             render_info(self.agent.ctx.undo())
         elif c == "/config":
-            render_info(
-                f"provider: {self.provider_name} | model: {self.model}\n"
-                f"agent: {self.agent_name} | cwd: {self.agent.ctx.working_dir}\n"
-                f"temperature: {self.agent.temperature} | max_tool_rounds: {self.agent.max_tool_rounds} | "
-                f"max_context_tokens: {self.agent.max_context_tokens} | confirm_commands: {self.agent.ctx.confirm_commands}"
+            render_summary(
+                "configuration",
+                [
+                    ("provider", self.provider_name),
+                    ("model", self.model),
+                    ("agent", self.agent_name),
+                    ("working directory", self.agent.ctx.working_dir),
+                    ("temperature", self.agent.temperature),
+                    ("max tool rounds", self.agent.max_tool_rounds),
+                    ("context limit", self.agent.max_context_tokens or "automatic"),
+                    ("confirm commands", "on" if self.agent.ctx.confirm_commands else "off"),
+                ],
             )
         elif c == "/forget":
             from termux_agent.session import delete_session
@@ -583,12 +596,23 @@ class Repl:
         u = self.agent.usage
         if not u or not any(u.values()):
             total = sum(len(str(m.get("content", ""))) // 4 for m in self.agent.messages if m.get("content"))
-            render_info(f"Provider reports no usage; estimated context so far: ~{total} tokens.")
+            render_summary(
+                "session usage",
+                [
+                    ("token source", "local estimate"),
+                    ("estimated context", f"~{total} tokens"),
+                    ("messages", max(0, len(self.agent.messages) - 1)),
+                ],
+            )
             return
-        render_info(
-            f"Tokens: prompt {u.get('prompt_tokens', 0)} | "
-            f"completion {u.get('completion_tokens', 0)} | "
-            f"total {u.get('total_tokens', 0)}"
+        render_summary(
+            "session usage",
+            [
+                ("prompt tokens", u.get("prompt_tokens", 0)),
+                ("completion tokens", u.get("completion_tokens", 0)),
+                ("total tokens", u.get("total_tokens", 0)),
+                ("messages", max(0, len(self.agent.messages) - 1)),
+            ],
         )
 
     def _list_models(self) -> None:
@@ -604,19 +628,19 @@ class Repl:
             render_error("Usage: /search TERM")
             return
         term = term.lower()
-        found = 0
+        rows = []
         for s in list_sessions():
             for rec in session_messages(s):
                 content = str(rec.get("content", ""))
                 if term in content.lower():
                     snippet = content.strip().replace("\n", " ")[:120]
-                    console.print(f"[bold]{s.stem}[/bold]  {snippet}")
-                    found += 1
+                    rows.append([s.stem, snippet])
                     break
-        if not found:
+        if not rows:
             render_info(f"No sessions matched '{term}'.")
         else:
-            render_info(f"{found} session(s) matched. Use /resume <id> to open one.")
+            render_table("session search", ["session", "match"], rows)
+            render_info(f"{len(rows)} session(s) matched. Use /resume <id> to open one.")
 
     def _rebuild_system_prompt(self) -> str:
         p = self._base_prompt

@@ -184,6 +184,67 @@ def render_help(help_text: str) -> None:
         console.print(hint)
 
 
+def render_summary(title: str, items: list[tuple[str, object]]) -> None:
+    """Render compact key/value metadata for session and configuration views."""
+    console = _console()
+    if prefer_plain():
+        console.print(f"== {title} ==")
+        width = max((len(key) for key, _ in items), default=0)
+        for key, value in items:
+            console.print(f"{key:<{width}}  {value}")
+        return
+
+    grid = _table(expand=True, padding=(0, 1), box=None, show_header=False, show_edge=False)
+    grid.add_column(style=MUTED, no_wrap=True)
+    grid.add_column(style="white", ratio=1)
+    for key, value in items:
+        grid.add_row(key, str(value))
+    console.print(
+        _panel(
+            grid,
+            title=_text(f" {title} ", style=f"bold {ACCENT}"),
+            title_align="left",
+            border_style=BORDER,
+            padding=(0, 1),
+        )
+    )
+
+
+def render_table(title: str, columns: list[str], rows: list[list[object]]) -> None:
+    """Render safe tabular output without interpreting cell content as markup."""
+    console = _console()
+    if prefer_plain():
+        console.print(f"== {title} ==")
+        widths = [len(column) for column in columns]
+        for row in rows:
+            for index, value in enumerate(row[: len(widths)]):
+                widths[index] = max(widths[index], len(str(value)))
+        console.print("  ".join(f"{column:<{widths[i]}}" for i, column in enumerate(columns)))
+        for row in rows:
+            cells = [str(value) for value in row]
+            console.print("  ".join(f"{value:<{widths[i]}}" for i, value in enumerate(cells)))
+        return
+
+    table = _table(
+        title=_text(title, style=f"bold {ACCENT}"),
+        title_justify="left",
+        box=None,
+        padding=(0, 1),
+        show_edge=False,
+        expand=True,
+    )
+    for index, column in enumerate(columns):
+        table.add_column(
+            column,
+            style=f"bold {ACCENT}" if index == 0 else MUTED,
+            no_wrap=index == 0,
+            ratio=1 if index == 0 else 2,
+        )
+    for row in rows:
+        table.add_row(*(_text(str(value)) for value in row))
+    console.print(table)
+
+
 def render_info(msg: str) -> None:
     console = _console()
     stripped = msg.strip()
