@@ -5032,6 +5032,46 @@ def test_show_redact(tmp_path: Path, monkeypatch):
     assert "api_key" not in data
 
 
+# --- bundle/restore json + dry-run ---
+def test_bundle_json_and_restore_dryrun(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+    from termux_agent.config import CONFIG_DIR, CONFIG_FILE
+
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    cfg_file = cfg_dir / "config.yaml"
+    cfg_file.write_text("provider: zen\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "CONFIG_DIR", cfg_dir)
+    monkeypatch.setattr(cli, "CONFIG_FILE", cfg_file)
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "hi"}], "zen", "m", session_id="bun-s")
+    session.record_messages([{"role": "user", "content": "yo"}], "zen", "m", session_id="bun-s2")
+
+    out_dir = tmp_path / "bundle"
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_bundle(str(out_dir), as_json=True) == 0
+    manifest = _json.loads(out.getvalue())
+    assert manifest["sessions"] == 2
+
+    target = tmp_path / "target"
+    monkeypatch.setattr(cli, "CONFIG_DIR", target)
+    monkeypatch.setattr(cli, "CONFIG_FILE", target / "config.yaml")
+    out2 = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out2)
+    assert cli.cmd_restore(str(out_dir), dry_run=True, as_json=True) == 0
+    report = _json.loads(out2.getvalue())
+    assert report["dry_run"] is True
+    assert len(report["items"]) == 3
+    assert not (target / "config.yaml").exists()
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
