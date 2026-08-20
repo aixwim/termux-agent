@@ -5160,6 +5160,26 @@ def test_plain_stream_preserves_line_breaks(monkeypatch):
     assert all(call.get("end") is None for _, call in calls)
 
 
+def test_rich_stream_has_assistant_heading_and_spacing(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append((str(value), kwargs))
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: False)
+    printer = renderer.PlainStreamPrinter()
+    printer.feed("")
+    printer.feed("hello")
+    printer.flush()
+
+    assert [text for text, _ in calls] == ["  assistant ", "hello", ""]
+    assert printer.streamed_chars == 5
+
+
 def test_tool_use_is_compact_and_truncated(monkeypatch):
     from termux_agent.ui import renderer
 
@@ -5178,6 +5198,105 @@ def test_tool_use_is_compact_and_truncated(monkeypatch):
     assert len(calls) == 1
     assert "read_file" in calls[0]
     assert calls[0].endswith("…")
+
+
+def test_rich_info_uses_semantic_status_markers(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append(str(value))
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: False)
+
+    renderer.render_info("[OK] provider reachable")
+    renderer.render_info("Run: 1.20s | tools: 2")
+    renderer.render_error("request failed")
+
+    assert calls[0] == "  ✓ provider reachable"
+    assert calls[1].startswith("  › Run: 1.20s")
+    assert calls[2] == "  ✕ error  request failed"
+
+
+def test_plain_help_preserves_script_friendly_text(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append(str(value))
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: True)
+    renderer.render_help("Commands:\n  /help  show help\nType a message.")
+
+    assert calls == ["Commands:\n  /help  show help\nType a message."]
+
+
+def test_rich_help_builds_command_table_and_hint(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append(value)
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: False)
+    renderer.render_help("Commands:\n  /help  show help\nType a message.")
+
+    assert len(calls) == 2
+    assert calls[0].row_count == 1
+    assert str(calls[1]) == "  › Type a message."
+
+
+def test_activity_is_silent_outside_interactive_terminal(monkeypatch):
+    from termux_agent.ui import renderer
+
+    class FakeConsole:
+        is_terminal = False
+
+        def status(self, *args, **kwargs):
+            raise AssertionError("status must not run for non-interactive output")
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: False)
+    with renderer.activity("Thinking"):
+        pass
+
+
+def test_activity_uses_transient_rich_status(monkeypatch):
+    from termux_agent.ui import renderer
+
+    captured = {}
+
+    class Status:
+        def __enter__(self):
+            captured["entered"] = True
+
+        def __exit__(self, *_):
+            captured["exited"] = True
+
+    class FakeConsole:
+        is_terminal = True
+
+        def status(self, label, **kwargs):
+            captured.update(label=str(label), kwargs=kwargs)
+            return Status()
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: False)
+    with renderer.activity("Thinking"):
+        pass
+
+    assert captured["label"] == " Thinking Ctrl+C to cancel"
+    assert captured["kwargs"] == {"spinner": "dots", "spinner_style": "bright_cyan"}
+    assert captured["entered"] and captured["exited"]
 
 
 def test_plain_banner_is_two_compact_lines(monkeypatch):

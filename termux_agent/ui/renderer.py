@@ -2,9 +2,15 @@
 from __future__ import annotations
 
 import os
+import re
+from contextlib import nullcontext
 from typing import Any
 
 _console_instance = None
+
+ACCENT = "bright_cyan"
+MUTED = "grey62"
+BORDER = "grey35"
 
 
 def __getattr__(name: str) -> Any:
@@ -37,7 +43,7 @@ def _console() -> Any:
     if _console_instance is None:
         from rich.console import Console
 
-        _console_instance = Console(highlight=False, soft_wrap=False)
+        _console_instance = Console(highlight=False, soft_wrap=True)
     return _console_instance
 
 
@@ -65,9 +71,26 @@ def _text(*args: Any, **kwargs: Any) -> Any:
     return Text(*args, **kwargs)
 
 
+def _table(*args: Any, **kwargs: Any) -> Any:
+    from rich.table import Table
+
+    return Table(*args, **kwargs)
+
+
 def disable_color() -> None:
     """Disable ANSI colors on the shared console (--no-color / NO_COLOR)."""
     _console().no_color = True
+
+
+def activity(message: str = "Thinking") -> Any:
+    """Return a transient Rich status for interactive terminals only."""
+    console = _console()
+    if prefer_plain() or not getattr(console, "is_terminal", False):
+        return nullcontext()
+    label = _text()
+    label.append(f" {message} ", style=f"bold {ACCENT}")
+    label.append("Ctrl+C to cancel", style=MUTED)
+    return console.status(label, spinner="dots", spinner_style=ACCENT)
 
 
 def render_answer(text: str) -> None:
@@ -81,7 +104,15 @@ def render_answer(text: str) -> None:
         console.print(text)
         return
     try:
-        console.print(_markdown(text))
+        console.print(
+            _panel(
+                _markdown(text),
+                title=_text(" assistant ", style=f"bold {ACCENT}"),
+                title_align="left",
+                border_style=BORDER,
+                padding=(0, 1),
+            )
+        )
     except Exception:  # noqa: BLE001
         console.print(text)
 
@@ -103,8 +134,9 @@ def render_tool_use(name: str, args_preview: str) -> None:
         console.print(_text(f"[tool] {name}" + (f"  {preview}" if preview else "")))
         return
     line = _text()
-    line.append("  ◆ ", style="bold cyan")
-    line.append(name, style="bold bright_cyan")
+    line.append("  ◇ ", style=ACCENT)
+    line.append("tool ", style=f"bold {ACCENT}")
+    line.append(name, style="bold white")
     if preview:
         line.append(f"  {preview}", style="dim")
     console.print(line)
@@ -121,15 +153,60 @@ def render_code(code: str, language: str = "text") -> None:
         console.print(code)
 
 
+def render_help(help_text: str) -> None:
+    """Render slash-command help as a compact two-column reference."""
+    console = _console()
+    if prefer_plain():
+        console.print(help_text)
+        return
+
+    lines = [line.rstrip() for line in help_text.strip().splitlines()]
+    title = lines.pop(0).rstrip(":") if lines else "Commands"
+    footer = lines.pop() if lines and not lines[-1].lstrip().startswith("/") else ""
+    table = _table(
+        title=_text(title, style=f"bold {ACCENT}"),
+        title_justify="left",
+        box=None,
+        padding=(0, 1),
+        show_edge=False,
+        expand=True,
+    )
+    table.add_column("command", style=f"bold {ACCENT}", no_wrap=True, ratio=1)
+    table.add_column("description", style=MUTED, ratio=2)
+    for line in lines:
+        parts = re.split(r"\s{2,}", line.strip(), maxsplit=1)
+        if len(parts) == 2:
+            table.add_row(parts[0], parts[1])
+    console.print(table)
+    if footer:
+        hint = _text("  › ", style=ACCENT)
+        hint.append(footer, style=MUTED)
+        console.print(hint)
+
+
 def render_info(msg: str) -> None:
     console = _console()
     stripped = msg.strip()
-    if stripped.startswith("== ") and stripped.endswith(" ==") and not prefer_plain():
-        console.rule(stripped[3:-3], style="dim cyan")
+    if prefer_plain():
+        console.print(msg)
+    elif stripped.startswith("== ") and stripped.endswith(" =="):
+        console.rule(_text(stripped[3:-3].upper(), style=f"bold {MUTED}"), style=BORDER)
     elif stripped.startswith("[OK]"):
-        console.print(_text(msg, style="green"))
+        line = _text("  ✓ ", style="bold green")
+        line.append(stripped[4:].strip(), style="white")
+        console.print(line)
+    elif stripped.startswith(("Run:", "Tokens:")):
+        line = _text("  › ", style=ACCENT)
+        parts = re.split(r"(\s+\|\s+)", stripped)
+        for part in parts:
+            line.append(part, style=BORDER if "|" in part else MUTED)
+        console.print(line)
+    elif stripped.startswith("provider:"):
+        line = _text("  ● ", style="green")
+        line.append(stripped, style=MUTED)
+        console.print(line)
     else:
-        console.print(_text(msg, style="dim"))
+        console.print(_text(msg, style=MUTED))
 
 
 def render_error(msg: str) -> None:
@@ -139,8 +216,9 @@ def render_error(msg: str) -> None:
         console.print(_text(msg, style="bold red"))
         return
     line = _text()
-    line.append("error  ", style="bold white on red")
-    line.append(f" {msg}", style="red")
+    line.append("  ✕ ", style="bold red")
+    line.append("error", style="bold red")
+    line.append(f"  {msg}", style="red")
     console.print(line)
 
 
@@ -152,13 +230,26 @@ def render_banner(provider: str, model: str, agent: str, cwd: object) -> None:
         console.print(_text(f"cwd: {cwd}  ·  /help for commands"))
         return
     body = _text()
-    body.append(provider, style="bold cyan")
-    body.append(" / ", style="dim")
-    body.append(model, style="bright_white")
-    body.append(f"  [{agent}]\n", style="magenta")
-    body.append(str(cwd), style="dim")
-    body.append("  ·  /help", style="dim cyan")
-    console.print(_panel(body, title=_text("termux-agent", style="bold cyan"), border_style="cyan", padding=(0, 1), expand=False))
+    body.append("● ", style="green")
+    body.append(provider, style=f"bold {ACCENT}")
+    body.append("  /  ", style=BORDER)
+    body.append(model, style="bold white")
+    body.append("\n")
+    body.append("agent ", style=MUTED)
+    body.append(agent, style="magenta")
+    body.append("   cwd ", style=MUTED)
+    body.append(str(cwd), style="white")
+    console.print(
+        _panel(
+            body,
+            title=_text(" termux-agent ", style=f"bold {ACCENT}"),
+            subtitle=_text(" /help · Ctrl+C to cancel ", style=MUTED),
+            title_align="left",
+            subtitle_align="right",
+            border_style=BORDER,
+            padding=(0, 1),
+        )
+    )
 
 
 class PlainStreamPrinter:
@@ -166,9 +257,17 @@ class PlainStreamPrinter:
 
     def __init__(self) -> None:
         self._buf = ""
+        self._started = False
         self.streamed_chars = 0
 
     def feed(self, delta: str) -> None:
+        if not delta:
+            return
+        if not self._started:
+            self._started = True
+            if not prefer_plain():
+                heading = _text("  assistant ", style=f"bold {ACCENT}")
+                _console().print(heading)
         self._buf += delta
         self.streamed_chars += len(delta)
         console = _console()
@@ -180,3 +279,5 @@ class PlainStreamPrinter:
         if self._buf:
             _console().print(self._buf, style="bright_white")
             self._buf = ""
+        if self._started and not prefer_plain():
+            _console().print()

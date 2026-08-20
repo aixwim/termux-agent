@@ -17,6 +17,7 @@ from termux_agent.ui.renderer import (
     render_answer,
     render_banner,
     render_error,
+    render_help,
     render_info,
     render_tool_use,
 )
@@ -25,7 +26,13 @@ from termux_agent.ui.renderer import (
 def _prompt_style() -> object:
     from prompt_toolkit.styles import Style
 
-    return Style.from_dict({"prompt": "bold cyan"})
+    return Style.from_dict(
+        {
+            "prompt.label": "bold ansicyan",
+            "prompt.arrow": "bold ansibrightcyan",
+            "prompt.continuation": "ansibrightblack",
+        }
+    )
 
 
 def copy_to_clipboard(text: str) -> bool:
@@ -170,7 +177,9 @@ class Repl:
         ps = make_prompt_session(self.provider_name)
         while True:
             try:
-                user = ps.prompt("❯ ")
+                user = ps.prompt(
+                    [("class:prompt.label", "you "), ("class:prompt.arrow", "› ")]
+                )
             except (KeyboardInterrupt, EOFError):
                 console.print()
                 break
@@ -195,7 +204,7 @@ class Repl:
         lines = [first]
         try:
             while True:
-                more = ps.prompt("...> ")
+                more = ps.prompt([("class:prompt.continuation", "  · ")])
                 lines.append(more)
                 if more.rstrip().endswith("}}"):
                     break
@@ -224,7 +233,7 @@ class Repl:
         if c in ("/exit", "/quit"):
             return True
         if c == "/help":
-            console.print(HELP)
+            render_help(HELP)
         elif c == "/new":
             self.session = Session(provider_name=self.provider_name, model=self.model)
             self.agent.messages = [

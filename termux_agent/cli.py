@@ -231,7 +231,7 @@ def cmd_one_shot(
     attach: list[str] | None = None,
     rotate: bool = False,
 ) -> int:
-    from termux_agent.ui.renderer import render_answer, render_tool_use
+    from termux_agent.ui.renderer import activity, render_answer, render_tool_use
 
     if attach:
         for f in attach:
@@ -346,7 +346,9 @@ def cmd_one_shot(
                     answer = _run_guarded(agent, prompt, _log_tool, timeout, on_text_delta=printer.feed)
                     printer.flush()
                 else:
-                    answer = _run_guarded(agent, prompt, _log_tool, timeout)
+                    status = activity("Thinking") if not as_json and not quiet else __import__("contextlib").nullcontext()
+                    with status:
+                        answer = _run_guarded(agent, prompt, _log_tool, timeout)
                 break
             except KeyboardInterrupt:
                 raise
