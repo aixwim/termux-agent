@@ -1065,6 +1065,49 @@ def cmd_restore(bundle_dir: str) -> int:
     return 0
 
 
+def cmd_rerun(
+    cfg: dict,
+    ref: str | None,
+    provider: str | None,
+    model: str | None,
+    output: str | None = None,
+    as_json: bool = False,
+    timeout: int | None = None,
+) -> int:
+    """Re-run the last user prompt of a session with the current model (fresh run)."""
+    import json as _json
+
+    from termux_agent.session import export_session
+    from termux_agent.ui.renderer import render_answer, render_error
+
+    try:
+        data = export_session(ref)
+    except FileNotFoundError:
+        render_error("Session not found.")
+        return 1
+    last_user = next(
+        (str(m.get("content", "")) for m in reversed(data.get("messages", [])) if m.get("role") == "user"),
+        "",
+    )
+    if not last_user.strip():
+        render_error("Session has no user prompt to re-run.")
+        return 1
+    try:
+        agent = build_agent(cfg, provider, model, auto_accept=True)
+        answer = _run_guarded(agent, last_user, lambda *a, **k: None, timeout)
+    except Exception as e:  # noqa: BLE001
+        render_error(f"Rerun failed: {e}")
+        return 1
+    if output:
+        Path(output).write_text(answer + "\n", encoding="utf-8")
+        render_info(f"Answer written to {output}")
+    if as_json:
+        print(_json.dumps({"ok": True, "session": data.get("id", "?"), "prompt": last_user, "answer": answer}, ensure_ascii=False))
+    elif not output:
+        render_answer(answer)
+    return 0
+
+
 def cmd_cleanup() -> int:
     """Remove leftover screenshot-*.png files from the current directory."""
     removed = 0
@@ -1231,7 +1274,16 @@ def cmd_list_providers(cfg: dict, as_json: bool = False) -> int:
     return 0
 
 
-def cmd_list_agents(cfg: dict) -> int:
+def cmd_list_agents(cfg: dict, as_json: bool = False) -> int:
+    import json as _json
+
+    if as_json:
+        items = [
+            {"name": n, "description": spec.get("description", ""), "tools": spec.get("tools") or []}
+            for n, spec in cfg.get("agents", {}).items()
+        ]
+        print(_json.dumps({"agents": items}, ensure_ascii=False))
+        return 0
     for name, spec in cfg.get("agents", {}).items():
         tools = spec.get("tools") or []
         label = "all tools" if not tools else ", ".join(tools)
@@ -1239,18 +1291,29 @@ def cmd_list_agents(cfg: dict) -> int:
     return 0
 
 
-def cmd_list_models(cfg: dict, provider_name: str | None = None) -> int:
+def cmd_list_models(cfg: dict, provider_name: str | None = None, as_json: bool = False) -> int:
+    import json as _json
+
     name = provider_name or cfg.get("provider", "zen")
     try:
         provider = create_provider(name, cfg)
     except ConfigError as e:
-        render_error(str(e))
+        if as_json:
+            print(_json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+        else:
+            render_error(str(e))
         return 1
     live = provider.list_models()
     if live:
-        render_info(f"Models for '{name}':")
-        for m in live:
-            render_info(f"  {m}")
+        if as_json:
+            print(_json.dumps({"provider": name, "models": live}, ensure_ascii=False))
+        else:
+            render_info(f"Models for '{name}':")
+            for m in live:
+                render_info(f"  {m}")
+        return 0
+    if as_json:
+        print(_json.dumps({"provider": name, "models": cfg.get("providers", {}).get(name, {}).get("models", [])}, ensure_ascii=False))
         return 0
     render_info(f"'{name}' does not expose a live model list; showing presets:")
     for m in cfg.get("providers", {}).get(name, {}).get("models", []):
@@ -1449,6 +1512,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--show", metavar="SESSION", help="Show a full session transcript (default: latest); use --json for raw output")
     parser.add_argument("--tokens", metavar="FILE", help="Estimate the token count of a file (omit to read stdin)")
     parser.add_argument("--summarize", nargs="?", const="latest", metavar="SESSION", help="Have the agent summarize a session transcript (default: latest); --output saves it")
+    parser.add_argument("--rerun", nargs="?", const="latest", metavar="SESSION", help="Re-run the last user prompt of a session as a fresh one-shot (default: latest); --output saves it")
     parser.add_argument("--bundle", metavar="DIR", help="Back up config, memory, and all sessions into a portable directory")
     parser.add_argument("--restore", metavar="DIR", help="Restore config, memory, and sessions from a bundle directory")
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors (same as NO_COLOR=1)")
@@ -1557,6 +1621,16 @@ def main(argv: list[str] | None = None) -> int:
             as_json=args.json,
             timeout=args.timeout,
         )
+    if args.rerun:
+        return cmd_rerun(
+            cfg,
+            args.rerun,
+            args.provider,
+            args.model,
+            output=args.output,
+            as_json=args.json,
+            timeout=args.timeout,
+        )
     if args.tokens is not None:
         return cmd_tokens(args.tokens)
     if args.bundle:
@@ -1629,10 +1703,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_providers:
         return cmd_list_providers(cfg, as_json=args.json)
     if args.list_agents:
-        return cmd_list_agents(cfg)
+        return cmd_list_agents(cfg, as_json=args.json)
     if args.models is not None:
         pname = None if args.models == "__default__" else args.models
-        return cmd_list_models(cfg, pname)
+        return cmd_list_models(cfg, pname, as_json=args.json)
     if args.install_completion:
         from termux_agent.completion import install
 

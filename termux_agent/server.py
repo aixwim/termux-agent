@@ -5,6 +5,7 @@ Endpoints:
   GET  /models   -> list of model ids for the provider
   GET  /config   -> effective config summary
   GET  /tools    -> registered tool specs
+  GET  /agents   -> configured agent roles
   GET  /sessions -> list saved sessions (first 50)
   GET  /sessions/<id> -> full session transcript
   POST /chat     -> {"prompt": ..., "history": [...], "agent": ..., "auto_accept": ...}
@@ -140,11 +141,21 @@ class _AgentHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/health":
             self._send(200, {"ok": True, "version": __version__})
-        elif self.path in ("/models", "/sessions", "/config", "/tools"):
+        elif self.path in ("/models", "/sessions", "/config", "/tools", "/agents"):
             if not _authorized(self):
                 _send_unauthorized(self)
                 return
-            if self.path == "/tools":
+            if self.path == "/agents":
+                self._send(
+                    200,
+                    {
+                        "agents": [
+                            {"name": n, "description": spec.get("description", ""), "tools": spec.get("tools") or []}
+                            for n, spec in self.cfg.get("agents", {}).items()
+                        ]
+                    },
+                )
+            elif self.path == "/tools":
                 from termux_agent.tools.base import tool_specs
 
                 self._send(200, {"tools": [{"name": s.name, "description": s.description} for s in tool_specs()]})

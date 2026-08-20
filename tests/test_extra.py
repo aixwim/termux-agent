@@ -2846,6 +2846,84 @@ def test_one_shot_screenshot_dir(tmp_path: Path, monkeypatch):
     assert captured.get("path") and shot_dir.name in captured["path"]
 
 
+# --- agents/models json / rerun ---
+def test_list_agents_json(monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_list_agents(_min_cfg(), as_json=True) == 0
+    data = _json.loads(out.getvalue())
+    assert any(a["name"] == "root" for a in data["agents"])
+
+
+def test_list_models_json(monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "create_provider", lambda *a, **k: SimpleNamespace(list_models=lambda: ["m1", "m2"]))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_list_models(_min_cfg(), "zen", as_json=True) == 0
+    data = _json.loads(out.getvalue())
+    assert data["provider"] == "zen"
+    assert "m1" in data["models"]
+
+
+def test_cmd_rerun(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    sid = "20260820-000001"
+    (sdir / f"{sid}.jsonl").write_text(
+        '{"role":"user","content":"fix this"}\n{"role":"assistant","content":"old answer"}\n'
+    )
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    seen = {}
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+        )
+        agent.run = lambda p, on_tool_use=None, on_text_delta=None: (seen.update(prompt=p) or "NEW ANSWER")
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_rerun(_min_cfg(), sid, "zen", None, as_json=True) == 0
+    assert seen["prompt"] == "fix this"
+    data = _json.loads(out.getvalue())
+    assert data["answer"] == "NEW ANSWER"
+
+
+def test_cmd_rerun_missing_session(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_rerun(_min_cfg(), "nope", "zen", None) == 1
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
