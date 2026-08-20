@@ -747,6 +747,7 @@ def cmd_watch(
     output: str | None = None,
     exit_on_change: bool = False,
     max_wait: int | None = None,
+    append: bool = False,
 ) -> int:
     """Re-run a one-shot task every N seconds until Ctrl+C. Optionally re-attach a screenshot."""
     import json as _json
@@ -846,7 +847,8 @@ def cmd_watch(
                     render_info(f"\n--- round {round_no} (changed) ---")
                 last_answer = answer
                 if output:
-                    Path(output).write_text(answer + "\n", encoding="utf-8")
+                    with open(Path(output).expanduser(), "a" if append else "w", encoding="utf-8") as f:
+                        f.write(answer + "\n")
                 if as_json:
                     print(_json.dumps({"round": round_no, "answer": answer}, ensure_ascii=False))
                 else:
@@ -1025,7 +1027,7 @@ def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None, 
     return 0
 
 
-def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False, session_ref: str | None = None) -> int:
+def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False, session_ref: str | None = None, output: str | None = None) -> int:
     """Estimate token usage of a file, inline text, or session transcript."""
     import sys as _sys
 
@@ -1061,10 +1063,20 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
     else:
         chars = len(text)
     estimated = max(1, chars // 4)
-    if as_json:
+    if as_json or output:
         import json as _json
 
-        print(_json.dumps({"ok": True, "chars": chars, "tokens": estimated}, ensure_ascii=False))
+        payload = {"ok": True, "chars": chars, "tokens": estimated}
+        if output:
+            try:
+                Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                render_info(f"Token estimate written to {output}")
+            except OSError as e:
+                render_error(f"Cannot write output file {output}: {e}")
+                return 1
+        if as_json:
+            print(_json.dumps(payload, ensure_ascii=False))
+            return 0
         return 0
     render_info(f"{chars} characters, ~{estimated} tokens (rough heuristic: chars/4).")
     return 0
@@ -1181,12 +1193,21 @@ def cmd_prune(keep: int, as_json: bool = False, dry_run: bool = False, output: s
     return 0
 
 
-def cmd_config_show(cfg: dict, as_json: bool = False, redact: bool = False) -> int:
+def cmd_config_show(cfg: dict, as_json: bool = False, redact: bool = False, output: str | None = None) -> int:
     import json as _json
     import yaml as _yaml
 
     if redact:
         cfg = _redact_cfg(cfg)
+    if output:
+        try:
+            text = _json.dumps(cfg, ensure_ascii=False, default=str, indent=2) if as_json else _yaml.safe_dump(cfg, sort_keys=False)
+            Path(output).expanduser().write_text(text, encoding="utf-8")
+            render_info(f"Configuration written to {output}")
+        except OSError as e:
+            render_error(f"Cannot write output file {output}: {e}")
+            return 1
+        return 0
     if as_json:
         print(_json.dumps(cfg, ensure_ascii=False, default=str))
         return 0
@@ -2303,6 +2324,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-wait", type=int, default=None, metavar="SECONDS", help="With --watch: stop after this many seconds")
     parser.add_argument("--diff", action="store_true", help="With --watch: only print/notify when the answer changes; with --rerun: show the diff vs the previous answer")
     parser.add_argument("--exit-on-change", action="store_true", help="With --watch: stop as soon as the answer differs from the previous round")
+    parser.add_argument("--append", action="store_true", help="With --watch --output: append each answer instead of overwriting")
     parser.add_argument("--batch", metavar="FILE", help="Run one one-shot per line of the file (blank lines skipped; '-' reads stdin); --output writes results as JSON")
     parser.add_argument("--retries", type=int, metavar="N", help="Override transient retry count for network hiccups")
     parser.add_argument("--no-fallback", action="store_true", help="Disable fallback models on 429/errors (use only the selected model)")
@@ -2508,7 +2530,7 @@ def main(argv: list[str] | None = None) -> int:
             notify=args.notify,
         )
     if args.tokens is not None or args.session is not None:
-        return cmd_tokens(args.tokens, as_json=args.json, session_ref=args.session)
+        return cmd_tokens(args.tokens, as_json=args.json, session_ref=args.session, output=args.output)
     if args.bundle:
         return cmd_bundle(args.bundle, as_json=args.json)
     if args.restore:
@@ -2525,7 +2547,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.prune_days is not None:
         return cmd_prune_days(args.prune_days, as_json=args.json, dry_run=args.dry_run, keep=args.keep)
     if args.config_show:
-        return cmd_config_show(cfg, as_json=args.json, redact=args.redact)
+        return cmd_config_show(cfg, as_json=args.json, redact=args.redact, output=args.output)
     if args.config_set:
         if len(args.config_set) != 2:
             render_error("--config-set requires KEY and VALUE (e.g. --config-set temperature 0.2).")
@@ -2732,6 +2754,7 @@ def main(argv: list[str] | None = None) -> int:
             output=args.output,
             exit_on_change=args.exit_on_change,
             max_wait=args.max_wait,
+            append=args.append,
         )
 
     if args.batch:

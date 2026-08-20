@@ -5315,6 +5315,56 @@ def test_import_markdown(tmp_path: Path, monkeypatch):
     assert len(list(sdir.glob("*.jsonl"))) == 0
 
 
+# --- watch append / config-show+tokens output ---
+def test_watch_append(tmp_path: Path, monkeypatch):
+    import io
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda p, on_tool_use=None, on_text_delta=None: "A",
+    ))
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    out_file = tmp_path / "watch.log"
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_watch(_min_cfg(), "hi", "zen", None, interval=1, output=str(out_file), max_rounds=2, append=True) == 0
+    assert out_file.read_text(encoding="utf-8").strip().splitlines() == ["A", "A"]
+
+
+def test_config_show_output(tmp_path: Path, monkeypatch):
+    import yaml as _yaml
+
+    from termux_agent import cli
+
+    out_file = tmp_path / "cfg.yaml"
+    out = __import__("io").StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_config_show(_min_cfg(), output=str(out_file)) == 0
+    data = _yaml.safe_load(out_file.read_text(encoding="utf-8"))
+    assert data["provider"] == "zen"
+
+
+def test_tokens_output(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from termux_agent import cli
+
+    out_file = tmp_path / "tokens.json"
+    out = __import__("io").StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_tokens(None, text="a" * 40, as_json=True, output=str(out_file)) == 0
+    data = _json.loads(out_file.read_text(encoding="utf-8"))
+    assert data["tokens"] == 10
+    assert data["chars"] == 40
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
