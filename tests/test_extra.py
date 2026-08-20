@@ -3753,6 +3753,59 @@ def test_import_stdin(tmp_path: Path, monkeypatch):
     assert len(list(sdir.glob("*.jsonl"))) == 1
 
 
+# --- repl temp / bundle stdout ---
+def test_repl_temp(tmp_path: Path, monkeypatch):
+    import io
+
+    from types import SimpleNamespace
+
+    from termux_agent.session import Session
+    from termux_agent.ui.repl import Repl
+
+    agent = SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path, undo=lambda: "noop"),
+        system_prompt="BASE",
+        messages=[{"role": "system", "content": "BASE"}],
+        allowed_tools=set(),
+        temperature=0.7,
+        run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+    )
+    monkeypatch.setattr("termux_agent.ui.repl.Session", lambda **k: Session())
+    repl = Repl(agent, provider_name="zen", model="m")
+    out = io.StringIO()
+    monkeypatch.setattr("termux_agent.ui.repl.render_info", lambda s: out.write(str(s)))
+    assert repl._handle_command("/temp 0.2", None) is False
+    assert agent.temperature == 0.2
+    assert repl._handle_command("/temp 9.0", None) is False
+    assert agent.temperature == 0.2
+
+
+def test_bundle_stdout(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+    import tarfile
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(cli, "CONFIG_FILE", tmp_path / "config.json")
+    cli.CONFIG_FILE.write_text(_json.dumps({"provider": "zen"}))
+    out = io.BytesIO()
+
+    class FakeStdout:
+        buffer = out
+
+    monkeypatch.setattr(cli.sys, "stdout", FakeStdout())
+    assert cli.cmd_bundle("-") == 0
+    out.seek(0)
+    with tarfile.open(fileobj=out, mode="r:gz") as tf:
+        names = tf.getnames()
+    assert "config.json" in names
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

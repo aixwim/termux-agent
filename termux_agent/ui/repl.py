@@ -64,6 +64,7 @@ Special commands (start with /):
   /search TERM    find sessions whose transcript contains the term
   /retry          re-run the last turn
   /quiet          toggle streaming (print the answer only when done)
+  /temp [N]       show or set sampling temperature (0.0-2.0)
 Type a normal message to ask; Ctrl+C to cancel."""
 
 
@@ -246,6 +247,20 @@ class Repl:
                 render_error(f"Session not found: {rest or 'latest'}")
         elif c == "/models":
             self._list_models()
+        elif c == "/temp":
+            rest = (rest or "").strip()
+            if not rest:
+                render_info(f"temperature: {self.agent.temperature}  (usage: /temp 0.7)")
+                return False
+            try:
+                value = float(rest)
+                if not 0.0 <= value <= 2.0:
+                    raise ValueError
+            except ValueError:
+                render_error("Temperature must be a number between 0.0 and 2.0.")
+                return False
+            self.agent.temperature = value
+            render_info(f"temperature set to {value} (applies from the next turn).")
         elif c == "/diff":
             self._show_diff()
         elif c == "/prompt":

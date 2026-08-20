@@ -1169,12 +1169,36 @@ def cmd_summarize(
 
 
 def cmd_bundle(target_dir: str) -> int:
-    """Back up config, memory, and all sessions into a portable directory."""
+    """Back up config, memory, and all sessions into a portable directory (or a gzipped tar to stdout with '-')."""
     import json as _json
     import shutil
 
     from termux_agent.agent import MEMORY_FILE
     from termux_agent.session import SESSIONS_DIR, list_sessions
+
+    def _collect() -> list[Path]:
+        files = []
+        if CONFIG_FILE.is_file():
+            files.append(CONFIG_FILE)
+        if MEMORY_FILE.is_file():
+            files.append(MEMORY_FILE)
+        for s in list_sessions():
+            files.append(s)
+        return files
+
+    if target_dir == "-":
+        import io
+        import tarfile
+
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+            for f in _collect():
+                tf.add(f, arcname=f.name)
+        import sys as _sys
+
+        _sys.stdout.buffer.write(buf.getvalue())
+        _sys.stdout.buffer.flush()
+        return 0
 
     out = Path(target_dir)
     out.mkdir(parents=True, exist_ok=True)
