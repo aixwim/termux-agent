@@ -940,7 +940,7 @@ def cmd_plan(
     return 0
 
 
-def cmd_export(ref: str | None = None, as_markdown: bool = False, redact: bool = False) -> int:
+def cmd_export(ref: str | None = None, as_markdown: bool = False, redact: bool = False, output: str | None = None) -> int:
     """Print a session as portable JSON (default: latest)."""
     from termux_agent.session import export_session
 
@@ -951,6 +951,17 @@ def cmd_export(ref: str | None = None, as_markdown: bool = False, redact: bool =
         return 1
     if redact:
         data = _redact_cfg(data)
+    if output:
+        import json as _json
+
+        text = _json.dumps(data, ensure_ascii=False, indent=2) if not as_markdown else _session_to_markdown(data)
+        try:
+            Path(output).expanduser().write_text(text + ("\n" if as_markdown else ""), encoding="utf-8")
+            render_info(f"Session written to {output}")
+        except OSError as e:
+            render_error(f"Cannot write output file {output}: {e}")
+            return 1
+        return 0
     if as_markdown:
         print(_session_to_markdown(data))
         return 0
@@ -1097,7 +1108,7 @@ def cmd_import(path: str, dry_run: bool = False, as_json: bool = False) -> int:
     return 0
 
 
-def cmd_prune(keep: int, as_json: bool = False, dry_run: bool = False) -> int:
+def cmd_prune(keep: int, as_json: bool = False, dry_run: bool = False, output: str | None = None) -> int:
     import json as _json
 
     from termux_agent.session import list_sessions, prune_sessions
@@ -1105,9 +1116,20 @@ def cmd_prune(keep: int, as_json: bool = False, dry_run: bool = False) -> int:
     removed = 0 if dry_run else prune_sessions(max(0, keep))
     if dry_run:
         removed = max(0, len(list_sessions()) - max(0, keep))
-    if as_json:
-        print(_json.dumps({"removed": removed, "kept": max(0, keep), "dry_run": dry_run}, ensure_ascii=False))
-        return 0
+    if as_json or output:
+        payload = {"removed": removed, "kept": max(0, keep), "dry_run": dry_run}
+        if output:
+            try:
+                Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                render_info(f"Prune report written to {output}")
+            except OSError as e:
+                render_error(f"Cannot write output file {output}: {e}")
+                return 1
+        if as_json:
+            print(_json.dumps(payload, ensure_ascii=False))
+            return 0
+        if output:
+            return 0
     if dry_run:
         render_info(f"Would remove {removed} old session(s), keeping the newest {max(0, keep)}. (dry run)")
     else:
@@ -1925,7 +1947,7 @@ def cmd_list_models(cfg: dict, provider_name: str | None = None, as_json: bool =
     return 0
 
 
-def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: bool = False, update: bool = False) -> int:
+def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: bool = False, update: bool = False, output: str | None = None) -> int:
     """Environment diagnostics: versions, Termux, config, PATH, provider connectivity."""
     import os
     import platform
@@ -2040,11 +2062,22 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
         else:
             add("update check", False, f"{__version__} installed, {latest} available - pip install -U termux-agent")
 
-    if as_json:
+    if as_json or output:
         import json as _json
 
-        _emit_json({"ok": all(c["ok"] for c in checks), "checks": checks}, None)
-        return 0 if all(c["ok"] for c in checks) else 1
+        payload = {"ok": all(c["ok"] for c in checks), "checks": checks}
+        if output:
+            try:
+                Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                render_info(f"Doctor report written to {output}")
+            except OSError as e:
+                render_error(f"Cannot write output file {output}: {e}")
+                return 1
+        if as_json:
+            _emit_json(payload, None)
+            return 0 if all(c["ok"] for c in checks) else 1
+        if output:
+            return 0 if all(c["ok"] for c in checks) else 1
 
     issues = sum(1 for c in checks if not c["ok"])
     render_info("== environment ==")
@@ -2087,7 +2120,7 @@ def _latest_pypi_version() -> str | None:
         return None
 
 
-def cmd_smoke(cfg: dict, provider: str | None, model: str | None, as_json: bool = False, output: str | None = None) -> int:
+def cmd_smoke(cfg: dict, provider: str | None, model: str | None, as_json: bool = False, output: str | None = None, timeout: int | None = None) -> int:
     """End-to-end smoke test: send a tiny prompt and verify the whole pipeline."""
     import json as _json
     import time
@@ -2108,7 +2141,13 @@ def cmd_smoke(cfg: dict, provider: str | None, model: str | None, as_json: bool 
         )
     start = time.monotonic()
     try:
-        answer = agent.run("Reply with exactly: OK", on_tool_use=render_tool_use)
+        answer = _run_guarded(agent, "Reply with exactly: OK", render_tool_use, timeout)
+    except TimeoutError:
+        if as_json:
+            print(_json.dumps({"ok": False, "provider": agent.provider.name, "model": agent.provider.model, "error": f"timed out after {timeout}s"}, ensure_ascii=False))
+        else:
+            render_error(f"Smoke test timed out after {timeout}s.")
+        return 1
     except Exception as e:  # noqa: BLE001
         if as_json:
             print(_json.dumps({"ok": False, "provider": agent.provider.name, "model": agent.provider.model, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False))
@@ -2358,7 +2397,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.bench:
         return cmd_bench(cfg, args.bench, args.timeout or 60, as_json=args.json, output=args.output)
     if args.export:
-        return cmd_export(args.export, as_markdown=args.markdown, redact=args.redact)
+        return cmd_export(args.export, as_markdown=args.markdown, redact=args.redact, output=args.output)
     if args.export_all:
         return cmd_export_all(args.export_all, as_markdown=args.markdown, as_json=args.json, redact=args.redact)
     if args.forget:
@@ -2405,7 +2444,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cleanup:
         return cmd_cleanup()
     if args.prune is not None:
-        return cmd_prune(args.prune, as_json=args.json, dry_run=args.dry_run)
+        return cmd_prune(args.prune, as_json=args.json, dry_run=args.dry_run, output=args.output)
     if args.prune_days is not None:
         return cmd_prune_days(args.prune_days, as_json=args.json, dry_run=args.dry_run, keep=args.keep)
     if args.config_show:
@@ -2442,9 +2481,9 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.doctor or args.doctor_network:
-        return cmd_doctor(cfg, network=args.doctor_network and not args.quick, as_json=args.json, termux=args.doctor_termux, update=args.doctor_update and not args.quick)
+        return cmd_doctor(cfg, network=args.doctor_network and not args.quick, as_json=args.json, termux=args.doctor_termux, update=args.doctor_update and not args.quick, output=args.output)
     if args.smoke:
-        return cmd_smoke(cfg, args.provider, args.model, as_json=args.json, output=args.output)
+        return cmd_smoke(cfg, args.provider, args.model, as_json=args.json, output=args.output, timeout=args.timeout)
     if args.serve_stop:
         return cmd_serve_stop(args.serve_pidfile)
     if args.serve:

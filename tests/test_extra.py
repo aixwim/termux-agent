@@ -5167,7 +5167,7 @@ def test_doctor_quick(monkeypatch):
 
     got = {}
 
-    def fake_doctor(cfg, network=False, as_json=False, termux=False, update=False):
+    def fake_doctor(cfg, network=False, as_json=False, termux=False, update=False, output=None):
         got.update(network=network, update=update)
         return 0
 
@@ -5194,6 +5194,82 @@ def test_sessions_output(tmp_path: Path, monkeypatch):
     assert cli.cmd_sessions(limit=20, output=str(out_file)) == 0
     data = _json.loads(out_file.read_text(encoding="utf-8"))
     assert data["sessions"][0]["id"] == "ses-out"
+
+
+# --- doctor/prune/export output + smoke timeout ---
+def test_doctor_output(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from termux_agent import cli
+
+    out_file = tmp_path / "doctor.json"
+    out = __import__("io").StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    monkeypatch.setattr(cli.sys, "stderr", out)
+    code = cli.cmd_doctor(_min_cfg(), output=str(out_file))
+    assert code == 0
+    data = _json.loads(out_file.read_text(encoding="utf-8"))
+    assert data["ok"] is True
+    assert any(c["label"] == "config" for c in data["checks"])
+
+
+def test_prune_output(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "hi"}], "zen", "m", session_id="pr-1")
+    session.record_messages([{"role": "user", "content": "hi"}], "zen", "m", session_id="pr-2")
+    out_file = tmp_path / "prune.json"
+    out = __import__("io").StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_prune(1, output=str(out_file), dry_run=True) == 0
+    data = _json.loads(out_file.read_text(encoding="utf-8"))
+    assert data["removed"] == 1
+    assert data["dry_run"] is True
+    assert len(list(sdir.glob("*.jsonl"))) == 2
+
+
+def test_export_output(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "hi"}], "zen", "m", session_id="exp-out")
+    out_file = tmp_path / "session.json"
+    out = __import__("io").StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_export("exp-out", output=str(out_file)) == 0
+    data = _json.loads(out_file.read_text(encoding="utf-8"))
+    assert data["id"] == "exp-out"
+
+
+def test_smoke_timeout(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+    ))
+    monkeypatch.setattr(cli, "_run_guarded", lambda *a, **k: (_ for _ in ()).throw(TimeoutError()))
+    monkeypatch.setattr(cli, "_maybe_notify", lambda *a, **k: None)
+    out = __import__("io").StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_smoke(_min_cfg(), "zen", "m", as_json=True, timeout=5) == 1
+    data = _json.loads(out.getvalue())
+    assert data["ok"] is False
+    assert "timed out" in data["error"]
 
 
 # --- init wizard ---
