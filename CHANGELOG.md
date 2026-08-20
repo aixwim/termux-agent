@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here.
 
+### Fixes
+
+- **Piped REPL commands now work** — piping slash-commands (`printf '/sessions\n' | termux-agent`) used to be swallowed as a one-shot prompt; they now reach the REPL correctly.
+- **Friendly error for unknown providers** — no more raw traceback for `--provider nope`.
+- **`--doctor --fix` works** — the intuitive `--fix` alias is now accepted alongside `--doctor-fix`.
+
 ## [1.1.0] - 2026-08-20
 
 ### Optimization for Termux

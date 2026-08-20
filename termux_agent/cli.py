@@ -3222,7 +3222,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--models", nargs="?", const="__default__", metavar="PROVIDER", help="List models for a provider (live, or preset fallback)")
     parser.add_argument("--doctor", action="store_true", help="Diagnose environment & config; --doctor-termux also checks termux-api commands")
     parser.add_argument("--health", action="store_true", help="Quick offline health check (version, config, working dir, provider, session storage)")
-    parser.add_argument("--doctor-fix", action="store_true", help="With --doctor, repair common issues (e.g. create a missing config file)")
+    parser.add_argument("--doctor-fix", "--fix", action="store_true", dest="doctor_fix", help="With --doctor, repair common issues (e.g. create a missing config file)")
     parser.add_argument("--doctor-termux", action="store_true", help="With --doctor, check termux-api availability for notifications/clipboard/screenshots etc.")
     parser.add_argument("--doctor-network", action="store_true", help="Also check provider connectivity (needs internet)")
     parser.add_argument("--doctor-update", action="store_true", help="With --doctor, check the latest published version on PyPI")
@@ -3532,8 +3532,17 @@ def main(argv: list[str] | None = None) -> int:
 
     prompt = " ".join(args.prompt).strip()
     if args.prompt_file != "-" and not prompt and not sys.stdin.isatty():
-        # Pipelines: read the whole stdin as a one-shot prompt.
-        prompt = sys.stdin.read().strip()
+        # Pipelines: read the whole stdin as a one-shot prompt. But if the
+        # piped input looks like REPL slash-commands (e.g. printf '/session\n'),
+        # feed it to the REPL instead so interactive commands still work.
+        _piped = sys.stdin.read()
+        _lines = [ln for ln in _piped.splitlines() if ln.strip()]
+        if _lines and _lines[0].lstrip().startswith("/"):
+            import io as _io
+
+            sys.stdin = _io.StringIO(_piped)
+        else:
+            prompt = _piped.strip()
     if args.prompt_file:
         from pathlib import Path as _Path
 
@@ -3653,49 +3662,53 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if prompt:
-        return cmd_one_shot(
-            cfg,
-            prompt,
-            args.provider,
-            args.model,
-            auto_accept=args.yes,
-            agent_name=args.agent,
-            working_dir=args.cwd,
-            temperature=args.temperature,
-            max_tool_rounds=args.max_tool_rounds,
-            readonly=args.readonly,
-            plan=args.plan,
-            as_json=args.json,
-            max_context_tokens=args.max_context_tokens,
-            quiet=args.quiet,
-            copy=args.copy,
-            stats=args.stats,
-            no_tools=args.chat,
-            wakelock=args.wakelock,
-            speak=args.speak,
-            timeout=args.timeout,
-            output=args.output,
-            clip=args.clip,
-            screenshot=args.screenshot,
-            stream=args.stream and not args.no_stream,
-            retries=args.retries,
-            no_fallback=args.no_fallback,
-            rules_file=args.rules,
-            system_prompt_file=args.system_prompt_file,
-            context=args.context,
-            disabled_groups=_disabled_groups_from(args),
-            max_output_chars=args.max_output_chars,
-            command_timeout=args.command_timeout,
-            no_save=args.no_save,
-            git_context=args.git_context,
-            only_tools=_split_tools(args.only_tools),
-            log_file=args.log,
-            memory=not args.no_memory,
-            allow_dirs=_allow_dirs_from(args),
-            screenshot_dir=args.screenshot_dir,
-            attach=args.attach,
-            rotate=args.rotate,
-        )
+        try:
+            return cmd_one_shot(
+                cfg,
+                prompt,
+                args.provider,
+                args.model,
+                auto_accept=args.yes,
+                agent_name=args.agent,
+                working_dir=args.cwd,
+                temperature=args.temperature,
+                max_tool_rounds=args.max_tool_rounds,
+                readonly=args.readonly,
+                plan=args.plan,
+                as_json=args.json,
+                max_context_tokens=args.max_context_tokens,
+                quiet=args.quiet,
+                copy=args.copy,
+                stats=args.stats,
+                no_tools=args.chat,
+                wakelock=args.wakelock,
+                speak=args.speak,
+                timeout=args.timeout,
+                output=args.output,
+                clip=args.clip,
+                screenshot=args.screenshot,
+                stream=args.stream and not args.no_stream,
+                retries=args.retries,
+                no_fallback=args.no_fallback,
+                rules_file=args.rules,
+                system_prompt_file=args.system_prompt_file,
+                context=args.context,
+                disabled_groups=_disabled_groups_from(args),
+                max_output_chars=args.max_output_chars,
+                command_timeout=args.command_timeout,
+                no_save=args.no_save,
+                git_context=args.git_context,
+                only_tools=_split_tools(args.only_tools),
+                log_file=args.log,
+                memory=not args.no_memory,
+                allow_dirs=_allow_dirs_from(args),
+                screenshot_dir=args.screenshot_dir,
+                attach=args.attach,
+                rotate=args.rotate,
+            )
+        except ConfigError as e:
+            render_error(f"Configuration error: {e}\nRun 'termux-agent --init' first, or fix ~/.termux-agent/config.yaml.")
+            return 1
 
     if args.json:
         render_error("--json requires a one-shot prompt (e.g. termux-agent --json 'summarize this repo').")
