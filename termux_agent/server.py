@@ -423,6 +423,13 @@ class _AgentHandler(BaseHTTPRequestHandler):
             self._stream_chat(agent, prompt, session_ref)
             return
         answer = agent.run(prompt)
+        if data.get("notify"):
+            from termux_agent.notify import notify as _notify
+
+            try:
+                _notify(f"Chat done: {answer[:120]}")
+            except Exception:  # noqa: BLE001
+                pass
         from termux_agent.session import record_messages
 
         session_id = record_messages(

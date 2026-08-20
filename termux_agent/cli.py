@@ -1152,12 +1152,24 @@ def cmd_forget(ref: str | None = None, as_json: bool = False) -> int:
     return 0
 
 
-def cmd_export_all(target_dir: str, as_markdown: bool = False) -> int:
+def cmd_export_all(target_dir: str, as_markdown: bool = False, as_json: bool = False) -> int:
     import json as _json
 
+    from termux_agent import __version__
     from termux_agent.session import export_session, list_sessions
 
     out = Path(target_dir)
+    if as_json:
+        sessions = []
+        for s in list_sessions():
+            sessions.append(export_session(s.stem))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            _json.dumps({"app": "termux-agent", "version": __version__, "sessions": sessions}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        render_info(f"Exported {len(sessions)} session(s) to {out}.")
+        return 0
     out.mkdir(parents=True, exist_ok=True)
     if as_markdown:
         md_dir = out / "markdown"
@@ -1954,6 +1966,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="A CLI coding agent for Termux, like opencode.",
     )
     parser.add_argument("--version", action="store_true", help="Show the version and exit")
+    parser.add_argument("--help-json", action="store_true", help="Print the full CLI reference as machine-readable JSON and exit")
     parser.add_argument("--provider", help="Provider name (e.g. openai, anthropic, ollama)")
     parser.add_argument("--model", help="Model name (overrides the config default)")
     parser.add_argument("--agent", help="Sub-agent name (e.g. explore, coder, shell)")
@@ -2082,12 +2095,39 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def cmd_help_json() -> int:
+    """Print the full CLI reference as machine-readable JSON (flags, help, defaults)."""
+    import json as _json
+
+    parser = build_parser()
+    flags = []
+    for a in parser._actions:
+        if a.option_strings:
+            flags.append(
+                {
+                    "flags": a.option_strings,
+                    "dest": a.dest,
+                    "metavar": a.metavar,
+                    "help": (a.help or "").replace("\n", " "),
+                    "default": a.default,
+                    "type": getattr(a.type, "__name__", None),
+                    "nargs": a.nargs,
+                    "const": a.const,
+                }
+            )
+    print(_json.dumps({"prog": "termux-agent", "description": "A CLI coding agent for Termux, like opencode.", "flags": flags}, ensure_ascii=False, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
     if args.provider and ":" in args.provider and not args.model:
         args.provider, args.model = args.provider.split(":", 1)
+
+    if args.help_json:
+        return cmd_help_json()
 
     if args.version:
         import json as _json
@@ -2127,7 +2167,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.export:
         return cmd_export(args.export, as_markdown=args.markdown)
     if args.export_all:
-        return cmd_export_all(args.export_all, as_markdown=args.markdown)
+        return cmd_export_all(args.export_all, as_markdown=args.markdown, as_json=args.json)
     if args.forget:
         return cmd_forget(args.forget, as_json=args.json)
     if args.import_path:

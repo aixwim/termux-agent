@@ -4571,6 +4571,83 @@ def test_repl_attach_url(tmp_path: Path, monkeypatch):
         srv_http.server_close()
 
 
+# --- help json / server notify / export-all json ---
+def test_help_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.main(["--help-json"]) == 0
+    data = _json.loads(out.getvalue())
+    assert data["prog"] == "termux-agent"
+    flags = {f["flags"][0] for f in data["flags"]}
+    assert "--watch" in flags
+    assert "--serve" in flags
+
+
+def test_server_chat_notify(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+
+    seen = {}
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "done!",
+        )
+
+    def fake_notify(msg):
+        seen["msg"] = msg
+
+    monkeypatch.setattr("termux_agent.notify.notify", fake_notify)
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/chat",
+            data=_json.dumps({"prompt": "hi", "notify": True}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["ok"] is True
+        assert "done!" in seen["msg"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_export_all_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "x"}], "zen", "m", session_id="all-x")
+    out_file = tmp_path / "combined.json"
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_export_all(str(out_file), as_json=True) == 0
+    data = _json.loads(out_file.read_text())
+    assert data["app"] == "termux-agent"
+    assert len(data["sessions"]) == 1
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
