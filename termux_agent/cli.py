@@ -1552,10 +1552,16 @@ def cmd_serve_stop(pidfile: str | None = None) -> int:
     return 0
 
 
-def cmd_cron(schedule: str, prompt: str, command: str | None = None) -> int:
+def cmd_cron(schedule: str, prompt: str, command: str | None = None, as_json: bool = False) -> int:
     """Print a ready-to-add cron line running termux-agent one-shot."""
+    import json as _json
+
     command = command or f"termux-agent --no-save --quiet {prompt!r}"
-    print(f"{schedule} cd {Path.cwd()} && {command} >> ~/.termux-agent/cron.log 2>&1")
+    line = f"{schedule} cd {Path.cwd()} && {command} >> ~/.termux-agent/cron.log 2>&1"
+    if as_json:
+        print(_json.dumps({"schedule": schedule, "command": command, "line": line}, ensure_ascii=False))
+        return 0
+    print(line)
     return 0
 
 
@@ -2162,7 +2168,7 @@ def main(argv: list[str] | None = None) -> int:
         if not prompt:
             render_error("--cron requires a one-shot prompt.")
             return 2
-        return cmd_cron(args.cron, prompt)
+        return cmd_cron(args.cron, prompt, as_json=args.json)
     if args.cleanup:
         return cmd_cleanup()
     if args.prune is not None:

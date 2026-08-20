@@ -4472,6 +4472,105 @@ def test_server_chat_image_url(tmp_path: Path, monkeypatch):
         srv_http.server_close()
 
 
+# --- cron json / sessions limit / repl attach url ---
+def test_cron_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    monkeypatch.setattr("pathlib.Path.cwd", lambda *a, **k: tmp_path)
+    assert cli.cmd_cron("0 9 * * *", "check mail", as_json=True) == 0
+    data = _json.loads(out.getvalue())
+    assert data["schedule"] == "0 9 * * *"
+    assert data["command"].startswith("termux-agent")
+
+
+def test_server_sessions_limit(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    for i in range(5):
+        session.record_messages([{"role": "user", "content": f"m{i}"}], "zen", "m", session_id=f"lim-{i}")
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/sessions?limit=2", timeout=10) as r:
+            data = _json.loads(r.read())
+        assert len(data["sessions"]) == 2
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_repl_attach_url(tmp_path: Path, monkeypatch):
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import threading
+
+    from types import SimpleNamespace
+
+    from termux_agent.session import Session
+    from termux_agent.ui.repl import Repl
+
+    seen = {}
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = b"remote content here"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv_http = HTTPServer(("127.0.0.1", 0), H)
+    port = srv_http.server_address[1]
+    t = threading.Thread(target=srv_http.serve_forever, daemon=True)
+    t.start()
+    try:
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            system_prompt="BASE",
+            messages=[{"role": "system", "content": "BASE"}],
+            allowed_tools=set(),
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            run=lambda p, on_tool_use=None, on_text_delta=None: (seen.setdefault("prompt", p) or "ok"),
+        )
+        monkeypatch.setattr("termux_agent.ui.repl.Session", lambda **k: Session())
+        repl = Repl(agent, provider_name="zen", model="m")
+        url = f"http://127.0.0.1:{port}/notes.txt"
+        assert repl._handle_command(f"/attach {url}", None) is False
+        assert "remote content here" in seen["prompt"]
+    finally:
+        srv_http.shutdown()
+        srv_http.server_close()
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

@@ -60,7 +60,7 @@ Special commands (start with /):
   /system         show the effective system prompt
   /context        attach/refresh device context (battery/wifi/time) in the system prompt
   /image PATH     attach an image to the next turn
-  /attach FILE    read a file's contents into the next turn (repeatable)
+  /attach FILE    read a file's contents into the next turn (URLs are fetched too; repeatable)
   /search TERM    find sessions whose transcript contains the term
   /retry          re-run the last turn
   /quiet          toggle streaming (print the answer only when done)
@@ -315,10 +315,28 @@ class Repl:
             self._run_turn(f"Describe or analyze this image:\n\n[image: {img}]")
         elif c == "/attach":
             if not rest:
-                render_error("Usage: /attach FILE [FILE ...]")
+                render_error("Usage: /attach FILE [FILE ...]  (URLs are fetched too)")
                 return False
             parts: list[str] = []
             for f in rest.split():
+                if f.startswith(("http://", "https://")):
+                    import tempfile
+                    import urllib.parse
+                    import urllib.request
+
+                    try:
+                        with urllib.request.urlopen(f, timeout=30) as resp:
+                            raw = resp.read()
+                        tmp = Path(tempfile.gettempdir()) / "termux-agent-attach.txt"
+                        tmp.write_bytes(raw)
+                        p = tmp
+                        content = raw.decode("utf-8", errors="replace")
+                        label = f"<file name={Path(urllib.parse.urlparse(f).path).name or 'remote'}>"
+                        parts.append(f"{label}\n{content}\n</file>")
+                        continue
+                    except Exception as e:  # noqa: BLE001
+                        render_error(f"Cannot fetch {f}: {e}")
+                        return False
                 p = Path(f).expanduser()
                 try:
                     content = p.read_text(encoding="utf-8")

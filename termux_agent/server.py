@@ -258,8 +258,15 @@ class _AgentHandler(BaseHTTPRequestHandler):
             else:
                 from termux_agent.session import list_sessions, read_session
 
+                import urllib.parse
+
+                q = urllib.parse.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+                try:
+                    limit = max(1, min(int(q.get("limit", ["50"])[0]), 500))
+                except ValueError:
+                    limit = 50
                 sessions = []
-                for s in list_sessions()[:50]:
+                for s in list_sessions()[:limit]:
                     recs = read_session(s)
                     info = next((r for r in recs if r.get("provider")), {})
                     first_user = next((r["content"] for r in recs if r.get("role") == "user" and r.get("content")), "")
