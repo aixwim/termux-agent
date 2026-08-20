@@ -21,6 +21,31 @@ import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with an optional cap on concurrent requests (0 = unlimited)."""
+
+    def __init__(self, *args: Any, max_workers: int = 0, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.daemon_threads = True
+        self._sema = threading.BoundedSemaphore(max_workers) if max_workers else None
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        if self._sema:
+            self._sema.acquire()
+        try:
+            super().process_request(request, client_address)
+        except Exception:  # noqa: BLE001
+            if self._sema:
+                self._sema.release()
+            raise
+
+    def process_request_thread(self, request: Any, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            if self._sema:
+                self._sema.release()
 from typing import Any
 
 from termux_agent import __version__
@@ -95,7 +120,7 @@ def build_server(
     _AgentHandler.model = model
     _AgentHandler.auto_accept = auto_accept
     _AgentHandler.token = token
-    return ThreadingHTTPServer(("", 0), _AgentHandler)
+    return BoundedThreadingHTTPServer(("", 0), _AgentHandler, max_workers=0)
 
 
 class _AgentHandler(BaseHTTPRequestHandler):
@@ -503,7 +528,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
         self._send(200, {"ok": True, "deleted": removed.stem})
 
 
-def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | None = None, model: str | None = None, auto_accept: bool = False, token: str | None = None, log_file: str | None = None, cors_origin: str = "*", tls_cert: str | None = None, tls_key: str | None = None) -> int:
+def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | None = None, model: str | None = None, auto_accept: bool = False, token: str | None = None, log_file: str | None = None, cors_origin: str = "*", tls_cert: str | None = None, tls_key: str | None = None, max_workers: int = 0) -> int:
     from termux_agent.cli import build_agent as _build
 
     handler = _AgentHandler
@@ -515,7 +540,7 @@ def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | 
     handler.token = token
     handler.log_path = log_file
     handler.cors_origin = cors_origin
-    httpd = ThreadingHTTPServer((host, port), handler)
+    httpd = BoundedThreadingHTTPServer((host, port), handler, max_workers=max_workers)
     scheme = "http"
     if tls_cert:
         import ssl

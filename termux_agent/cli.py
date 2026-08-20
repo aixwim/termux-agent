@@ -1470,7 +1470,7 @@ def cmd_summarize(
     return 0
 
 
-def cmd_bundle(target_dir: str, as_json: bool = False) -> int:
+def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = True) -> int:
     """Back up config, memory, and all sessions into a portable directory (or a gzipped tar to stdout with '-')."""
     import json as _json
     import shutil
@@ -1484,8 +1484,9 @@ def cmd_bundle(target_dir: str, as_json: bool = False) -> int:
             files.append(CONFIG_FILE)
         if MEMORY_FILE.is_file():
             files.append(MEMORY_FILE)
-        for s in list_sessions():
-            files.append(s)
+        if include_sessions:
+            for s in list_sessions():
+                files.append(s)
         return files
 
     if target_dir == "-":
@@ -1512,9 +1513,10 @@ def cmd_bundle(target_dir: str, as_json: bool = False) -> int:
         shutil.copy2(MEMORY_FILE, out / MEMORY_FILE.name)
         copied.append(MEMORY_FILE.name)
     ses_dir = out / "sessions"
-    ses_dir.mkdir(parents=True, exist_ok=True)
+    if include_sessions:
+        ses_dir.mkdir(parents=True, exist_ok=True)
     n_sessions = 0
-    for s in list_sessions():
+    for s in list_sessions() if include_sessions else []:
         shutil.copy2(s, ses_dir / s.name)
         n_sessions += 1
     manifest = {
@@ -1742,6 +1744,7 @@ def cmd_serve(
     cors_origin: str = "*",
     tls_cert: str | None = None,
     tls_key: str | None = None,
+    max_workers: int = 0,
 ) -> int:
     """Run the HTTP API server, optionally detached in the background."""
     if background:
@@ -1770,6 +1773,8 @@ def cmd_serve(
             cmd += ["--tls-cert", tls_cert]
         if tls_key:
             cmd += ["--tls-key", tls_key]
+        if max_workers:
+            cmd += ["--serve-workers", str(max_workers)]
         with open(log_path, "a", encoding="utf-8") as logf:
             proc = subprocess.Popen(
                 cmd,
@@ -1787,7 +1792,7 @@ def cmd_serve(
         return 0
     from termux_agent.server import serve
 
-    return serve(cfg, host=host, port=port, provider=provider, model=model, auto_accept=auto_accept, token=token, log_file=log_file, cors_origin=cors_origin, tls_cert=tls_cert, tls_key=tls_key)
+    return serve(cfg, host=host, port=port, provider=provider, model=model, auto_accept=auto_accept, token=token, log_file=log_file, cors_origin=cors_origin, tls_cert=tls_cert, tls_key=tls_key, max_workers=max_workers)
 
 
 def cmd_serve_stop(pidfile: str | None = None) -> int:
@@ -1864,7 +1869,7 @@ def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 
                 "first": first_user[:100],
             }
         )
-        if len(items) >= max(1, limit):
+        if limit > 0 and len(items) >= limit:
             break
     if as_json or output:
         payload = {"sessions": items}
@@ -2358,13 +2363,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-web", action="store_true", help="Disable web_fetch and web_search tools")
     parser.add_argument("--no-git", action="store_true", help="Disable all git tools")
     parser.add_argument("--no-save", action="store_true", help="Do not persist this one-shot run as a session")
+    parser.add_argument("--no-sessions", action="store_true", help="With --bundle: exclude session files (config+memory only)")
     parser.add_argument("--no-memory", action="store_true", help="Run without the persistent memory file (~/.termux-agent/memory.md)")
     parser.add_argument("--git", action="store_true", dest="git_context", help="Inject the repo state (status/diff/log) into the system prompt")
     parser.add_argument("--show", metavar="SESSION", help="Show a full session transcript (default: latest); use --json for raw output")
     parser.add_argument("--tokens", metavar="FILE", help="Estimate the token count of a file (omit to read stdin; --session for a session transcript)")
     parser.add_argument("--summarize", nargs="?", const="latest", metavar="SESSION", help="Have the agent summarize a session transcript (default: latest); --output saves it")
     parser.add_argument("--rerun", nargs="?", const="latest", metavar="SESSION", help="Re-run the last user prompt of a session as a fresh one-shot (default: latest); --output saves it")
-    parser.add_argument("--bundle", metavar="DIR", help="Back up config, memory, and all sessions into a portable directory ('-' streams a gzipped tar to stdout)")
+    parser.add_argument("--bundle", metavar="DIR", help="Back up config, memory, and all sessions into a portable directory ('-' streams a gzipped tar to stdout; --no-sessions excludes sessions)")
     parser.add_argument("--restore", metavar="DIR", help="Restore config, memory, and sessions from a bundle directory ('-' reads a gzipped tar from stdin; --dry-run previews)")
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors (same as NO_COLOR=1)")
     parser.add_argument("--allow-dir", action="append", metavar="DIR", help="Grant the agent file access to an extra directory (repeatable)")
@@ -2385,13 +2391,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cors-origin", default="*", metavar="ORIGIN", help="Allowed CORS origin for the server (default: *)")
     parser.add_argument("--tls-cert", metavar="FILE", help="Serve HTTPS with this certificate (pair with --tls-key)")
     parser.add_argument("--tls-key", metavar="FILE", help="Private key for --tls-cert")
+    parser.add_argument("--serve-workers", type=int, default=0, metavar="N", help="Cap concurrent server requests (0 = unlimited)")
     parser.add_argument("--serve-stop", action="store_true", help="Stop a background server started with --serve --serve-background")
     parser.add_argument("prompt", nargs="*", help="One-shot prompt (no arguments = interactive mode)")
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml (--force to overwrite)")
     parser.add_argument("--force", action="store_true", help="Overwrite existing files (with --init)")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
     parser.add_argument("--session", metavar="SESSION", help="With --tokens: estimate a session transcript instead of a file")
-    parser.add_argument("--limit", type=int, default=20, metavar="N", help="Max sessions to list (with --sessions/--export-all)")
+    parser.add_argument("--limit", type=int, default=20, metavar="N", help="Max sessions to list (with --sessions/--export-all; --all lists every session)")
+    parser.add_argument("--all", action="store_true", help="With --sessions: list every session (ignore --limit)")
     parser.add_argument("--session-dir", metavar="DIR", help="Use this directory for session files instead of ~/.termux-agent/sessions")
     parser.add_argument("--search", help="Filter --sessions by keyword in the first message")
     parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest); --markdown for a readable transcript, --redact to mask secrets")
@@ -2556,7 +2564,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.tokens is not None or args.session is not None:
         return cmd_tokens(args.tokens, as_json=args.json, session_ref=args.session, output=args.output)
     if args.bundle:
-        return cmd_bundle(args.bundle, as_json=args.json)
+        return cmd_bundle(args.bundle, as_json=args.json, include_sessions=not args.no_sessions)
     if args.restore:
         return cmd_restore(args.restore, dry_run=args.dry_run, as_json=args.json)
     if args.cron:
@@ -2580,7 +2588,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_tools:
         return cmd_list_tools(as_json=args.json, output=args.output)
     if args.sessions:
-        return cmd_sessions(args.search, as_json=args.json, limit=args.limit, output=args.output)
+        return cmd_sessions(args.search, as_json=args.json, limit=0 if args.all else args.limit, output=args.output)
     if args.show_system_prompt:
         return cmd_show_system_prompt(
             cfg,
@@ -2631,6 +2639,7 @@ def main(argv: list[str] | None = None) -> int:
             cors_origin=args.cors_origin,
             tls_cert=args.tls_cert,
             tls_key=args.tls_key,
+            max_workers=args.serve_workers or 0,
         )
 
     if args.verbose:

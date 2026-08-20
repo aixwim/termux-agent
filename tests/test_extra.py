@@ -1515,7 +1515,8 @@ def test_parser_all_flags_present():
     for flag in (
         "--clip --screenshot --export --import --prune --output --timeout --speak --wakelock --notify "
         "--chat --json --quiet --resume --serve --models --smoke --plan --copy --stats --doctor "
-        "--install-completion --list-providers --list-agents --image --prompt-file --api-key --search"
+        "--install-completion --list-providers --list-agents --image --prompt-file --api-key --search "
+        "--serve-workers --no-sessions --all"
     ).split():
         assert flag in help_txt, f"missing {flag}"
 
@@ -4902,7 +4903,7 @@ def test_tls_serve(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("ssl.PROTOCOL_TLS_SERVER", "TLS")
 
     class FakeServer:
-        def __init__(self, addr, handler):
+        def __init__(self, addr, handler, max_workers=0):
             self.server_address = (addr[0], 9999)
             self.socket = None
 
@@ -4912,7 +4913,7 @@ def test_tls_serve(tmp_path: Path, monkeypatch):
         def server_close(self):
             pass
 
-    monkeypatch.setattr(srv, "ThreadingHTTPServer", FakeServer)
+    monkeypatch.setattr(srv, "BoundedThreadingHTTPServer", FakeServer)
     code = srv.serve(_min_cfg(), tls_cert=str(cert), tls_key=str(key))
     assert code == 0
     assert loaded.get("cert") == str(cert)
@@ -5484,6 +5485,96 @@ def test_repl_bench(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("termux_agent.cli.cmd_bench", lambda *a, **k: 0)
     repl = Repl(agent, provider_name="zen", model="m")
     assert repl._handle_command("/bench", None) is False
+
+
+# --- bundle no-sessions / serve workers / sessions all ---
+def test_bundle_no_sessions(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+    from termux_agent.config import CONFIG_DIR, CONFIG_FILE
+
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    cfg_file = cfg_dir / "config.yaml"
+    cfg_file.write_text("provider: zen\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "CONFIG_DIR", cfg_dir)
+    monkeypatch.setattr(cli, "CONFIG_FILE", cfg_file)
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "hi"}], "zen", "m", session_id="ns-s")
+
+    out_dir = tmp_path / "bundle"
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_bundle(str(out_dir), as_json=True, include_sessions=False) == 0
+    manifest = _json.loads(out.getvalue())
+    assert manifest["sessions"] == 0
+    assert not (out_dir / "sessions").exists()
+    assert (out_dir / "manifest.json").is_file()
+
+
+def test_serve_workers_wiring(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+
+    seen = {}
+
+    class FakeProc:
+        pid = 777
+
+    def fake_popen(cmd, **kw):
+        seen["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_serve(_min_cfg(), "127.0.0.1", 8788, "zen", "m", True, "tok", background=True, max_workers=4)
+    assert code == 0
+    assert "--serve-workers" in seen["cmd"]
+    assert seen["cmd"][seen["cmd"].index("--serve-workers") + 1] == "4"
+
+
+def test_serve_workers_foreground(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    seen = {}
+
+    def fake_serve(cfg, **kw):
+        seen.update(kw)
+        return 0
+
+    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr("termux_agent.server.serve", fake_serve)
+    code = cli.cmd_serve(_min_cfg(), "127.0.0.1", 8789, "zen", "m", False, None, max_workers=3)
+    assert code == 0
+    assert seen["max_workers"] == 3
+
+
+def test_sessions_all(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    for i in range(5):
+        (sdir / f"20260820-00000{i}.jsonl").write_text('{"role":"user","content":"x"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_sessions(as_json=True, limit=0) == 0
+    assert len(_json.loads(out.getvalue())["sessions"]) == 5
 
 
 # --- init wizard ---
