@@ -59,14 +59,15 @@ def build_agent(
     command_timeout: int | None = None,
     only_tools: list[str] | None = None,
     memory: bool = True,
+    allow_dirs: list[str] | None = None,
 ) -> Agent:
+    from pathlib import Path
+
     name = provider_name or cfg.get("provider", "zen")
     provider = create_provider(name, cfg, model)
     if no_fallback:
         provider.fallback_models = []
     if working_dir:
-        from pathlib import Path
-
         cwd = Path(working_dir).expanduser().resolve()
         cwd.mkdir(parents=True, exist_ok=True)
     else:
@@ -82,6 +83,11 @@ def build_agent(
         from termux_agent.config import detect_storage_roots
 
         ctx._allowed_dirs = [*ctx._allowed_dirs, *detect_storage_roots()]
+    if allow_dirs:
+        ctx._allowed_dirs = [
+            *ctx._allowed_dirs,
+            *[str(Path(d).expanduser().resolve()) for d in allow_dirs if d],
+        ]
     agent_key = agent_name or cfg.get("agent", "root")
     agent_spec = cfg.get("agents", {}).get(agent_key)
     if agent_spec is None:
@@ -217,6 +223,8 @@ def cmd_one_shot(
     only_tools: list[str] | None = None,
     log_file: str | None = None,
     memory: bool = True,
+    allow_dirs: list[str] | None = None,
+    screenshot_dir: str | None = None,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -231,7 +239,12 @@ def cmd_one_shot(
     if screenshot:
         from termux_agent.notify import screenshot as _screenshot
 
-        img = _screenshot()
+        shot_dir = Path(screenshot_dir).expanduser() if screenshot_dir else None
+        if shot_dir:
+            shot_dir.mkdir(parents=True, exist_ok=True)
+            img = _screenshot(str(shot_dir / f"screenshot-{int(__import__('time').time())}.png"))
+        else:
+            img = _screenshot()
         if not img:
             render_error("Could not take a screenshot (is termux-api installed and screen sharing granted?).")
             return 2
@@ -265,7 +278,7 @@ def cmd_one_shot(
             render_error(f"--system-prompt file is empty: {system_prompt_file}")
             return 1
 
-    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools, retries, no_fallback, extra_rules, sys_prompt, disabled_groups, max_output_chars, command_timeout, only_tools=only_tools, memory=memory)
+    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools, retries, no_fallback, extra_rules, sys_prompt, disabled_groups, max_output_chars, command_timeout, only_tools=only_tools, memory=memory, allow_dirs=allow_dirs)
     if context:
         from termux_agent.notify import device_context
 
@@ -540,6 +553,10 @@ def _disabled_groups_from(args) -> list[str]:
     return groups
 
 
+def _allow_dirs_from(args) -> list[str] | None:
+    return list(getattr(args, "allow_dir", None) or []) or None
+
+
 def cmd_batch(
     cfg: dict,
     prompts_file: str,
@@ -556,6 +573,7 @@ def cmd_batch(
     working_dir: str | None = None,
     only_tools: list[str] | None = None,
     workers: int = 1,
+    allow_dirs: list[str] | None = None,
 ) -> int:
     """Run one one-shot per line of a prompts file (blank lines skipped)."""
     import json as _json
@@ -574,7 +592,7 @@ def cmd_batch(
 
     def _run_one(p: str) -> dict:
         try:
-            agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools)
+            agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools, allow_dirs=allow_dirs)
             answer = _run_guarded(agent, p, lambda *a, **k: None, timeout)
         except Exception as e:  # noqa: BLE001
             return {"prompt": p, "answer": None, "error": str(e)}
@@ -619,13 +637,15 @@ def cmd_watch(
     working_dir: str | None = None,
     only_tools: list[str] | None = None,
     context: bool = False,
+    allow_dirs: list[str] | None = None,
+    screenshot_dir: str | None = None,
 ) -> int:
     """Re-run a one-shot task every N seconds until Ctrl+C. Optionally re-attach a screenshot."""
     import time
 
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
-    agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools)
+    agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools, allow_dirs=allow_dirs)
     if context:
         from termux_agent.notify import device_context
 
@@ -640,7 +660,12 @@ def cmd_watch(
             if with_screenshot:
                 from termux_agent.notify import screenshot
 
-                img = screenshot()
+                shot_dir = Path(screenshot_dir).expanduser() if screenshot_dir else None
+                if shot_dir:
+                    shot_dir.mkdir(parents=True, exist_ok=True)
+                    img = screenshot(str(shot_dir / f"screenshot-{int(__import__('time').time())}.png"))
+                else:
+                    img = screenshot()
                 if img:
                     p = f"{prompt}\n\n[image: {img}]"
                     render_info(f"Attached screenshot: {img}")
@@ -1040,6 +1065,19 @@ def cmd_restore(bundle_dir: str) -> int:
     return 0
 
 
+def cmd_cleanup() -> int:
+    """Remove leftover screenshot-*.png files from the current directory."""
+    removed = 0
+    for p in Path.cwd().glob("screenshot-*.png"):
+        try:
+            p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    render_info(f"Removed {removed} leftover screenshot file(s).")
+    return 0
+
+
 def cmd_cron(schedule: str, prompt: str, command: str | None = None) -> int:
     """Print a ready-to-add cron line running termux-agent one-shot."""
     command = command or f"termux-agent --no-save --quiet {prompt!r}"
@@ -1126,6 +1164,7 @@ def cmd_resume(
     max_output_chars: int | None = None,
     command_timeout: int | None = None,
     git_context: bool = False,
+    allow_dirs: list[str] | None = None,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -1144,7 +1183,7 @@ def cmd_resume(
     if git_context:
         cwd = Path(working_dir).expanduser().resolve() if working_dir else resolve_working_dir(cfg)
         extra_rules = _git_context(cwd)
-    agent = build_agent(cfg, provider_name, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools=False, retries=None, no_fallback=False, extra_rules=extra_rules or None, system_prompt=None, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout)
+    agent = build_agent(cfg, provider_name, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools=False, retries=None, no_fallback=False, extra_rules=extra_rules or None, system_prompt=None, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, allow_dirs=allow_dirs)
     agent.messages = [{"role": "system", "content": agent.system_prompt}] + history
     if prompt:
         streamed = stream and not as_json and not quiet
@@ -1391,6 +1430,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", metavar="FILE", help="Also write the answer to this file (plain text)")
     parser.add_argument("--clip", action="store_true", help="Use the clipboard as the prompt (needs termux-api)")
     parser.add_argument("--screenshot", action="store_true", help="Attach a screenshot of the screen to the prompt (needs termux-api + screen share)")
+    parser.add_argument("--screenshot-dir", metavar="DIR", help="Save screenshots into this directory instead of the current one")
+    parser.add_argument("--cleanup", action="store_true", help="Delete leftover screenshot-*.png files in the current directory")
     parser.add_argument("--stream", action="store_true", help="Stream the answer to the terminal as it is generated (typewriter mode)")
     parser.add_argument("--watch", type=int, metavar="SECONDS", help="Re-run the one-shot prompt every N seconds until Ctrl+C (combine with --screenshot)")
     parser.add_argument("--batch", metavar="FILE", help="Run one one-shot per line of the file (blank lines skipped); --output writes results as JSON")
@@ -1411,6 +1452,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bundle", metavar="DIR", help="Back up config, memory, and all sessions into a portable directory")
     parser.add_argument("--restore", metavar="DIR", help="Restore config, memory, and sessions from a bundle directory")
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors (same as NO_COLOR=1)")
+    parser.add_argument("--allow-dir", action="append", metavar="DIR", help="Grant the agent file access to an extra directory (repeatable)")
     parser.add_argument("--cron", metavar="SCHEDULE", help="Print a ready-to-add cron line, e.g. '*/10 * * * *'")
     parser.add_argument("--only-tools", metavar="LIST", help="Restrict the agent to exactly these comma-separated tool names, e.g. read_file,grep,glob")
     parser.add_argument("--log", metavar="FILE", help="Append a timestamped JSONL run log (tool calls, errors, result) for one-shot runs")
@@ -1526,6 +1568,8 @@ def main(argv: list[str] | None = None) -> int:
             render_error("--cron requires a one-shot prompt.")
             return 2
         return cmd_cron(args.cron, prompt)
+    if args.cleanup:
+        return cmd_cleanup()
     if args.prune is not None:
         return cmd_prune(args.prune, as_json=args.json)
     if args.prune_days is not None:
@@ -1644,6 +1688,7 @@ def main(argv: list[str] | None = None) -> int:
             disabled_groups=_disabled_groups_from(args),
             max_output_chars=args.max_output_chars,
             command_timeout=args.command_timeout,
+            allow_dirs=_allow_dirs_from(args),
         )
 
     if args.watch:
@@ -1666,6 +1711,8 @@ def main(argv: list[str] | None = None) -> int:
             working_dir=args.cwd,
             only_tools=_split_tools(args.only_tools),
             context=args.context,
+            allow_dirs=_allow_dirs_from(args),
+            screenshot_dir=args.screenshot_dir,
         )
 
     if args.batch:
@@ -1685,6 +1732,7 @@ def main(argv: list[str] | None = None) -> int:
             working_dir=args.cwd,
             only_tools=_split_tools(args.only_tools),
             workers=args.workers,
+            allow_dirs=_allow_dirs_from(args),
         )
 
     if prompt:
@@ -1726,6 +1774,8 @@ def main(argv: list[str] | None = None) -> int:
             only_tools=_split_tools(args.only_tools),
             log_file=args.log,
             memory=not args.no_memory,
+            allow_dirs=_allow_dirs_from(args),
+            screenshot_dir=args.screenshot_dir,
         )
 
     if args.json:

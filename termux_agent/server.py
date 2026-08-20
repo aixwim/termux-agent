@@ -6,6 +6,7 @@ Endpoints:
   GET  /config   -> effective config summary
   GET  /tools    -> registered tool specs
   GET  /sessions -> list saved sessions (first 50)
+  GET  /sessions/<id> -> full session transcript
   POST /chat     -> {"prompt": ..., "history": [...], "agent": ..., "auto_accept": ...}
 """
 from __future__ import annotations
@@ -189,6 +190,17 @@ class _AgentHandler(BaseHTTPRequestHandler):
                         }
                     )
                 self._send(200, {"sessions": sessions})
+        elif self.path.startswith("/sessions/"):
+            if not _authorized(self):
+                _send_unauthorized(self)
+                return
+            sid = self.path.rsplit("/", 1)[-1]
+            try:
+                from termux_agent.session import export_session
+
+                self._send(200, export_session(sid))
+            except FileNotFoundError:
+                self._send(404, {"ok": False, "error": "session not found"})
         else:
             self._send(404, {"ok": False, "error": "not found"})
 

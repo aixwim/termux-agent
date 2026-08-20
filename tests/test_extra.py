@@ -2779,6 +2779,73 @@ def test_cmd_cron(tmp_path: Path, monkeypatch):
     assert "cron.log" in line
 
 
+# --- allow-dir / sessions/<id> endpoint / cleanup / screenshot-dir ---
+def test_build_agent_allow_dirs(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    cfg = _min_cfg()
+    cfg["agents"]["root"] = {"prompt": "Be helpful."}
+    monkeypatch.setattr(cli, "create_provider", lambda *a, **k: SimpleNamespace(fallback_models=[], chat=None))
+    monkeypatch.setattr(cli, "resolve_working_dir", lambda cfg: tmp_path)
+    a = cli.build_agent(cfg, "zen", "m", auto_accept=True, allow_dirs=[str(extra)])
+    assert str(extra.resolve()) in a.ctx._allowed_dirs
+
+
+def test_allow_dirs_from():
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    assert cli._allow_dirs_from(SimpleNamespace(allow_dir=["/a", "/b"])) == ["/a", "/b"]
+    assert cli._allow_dirs_from(SimpleNamespace(allow_dir=[])) is None
+
+
+def test_cmd_cleanup(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "screenshot-123.png").write_bytes(b"x")
+    (tmp_path / "notes.png").write_bytes(b"x")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_cleanup() == 0
+    assert not (tmp_path / "screenshot-123.png").exists()
+    assert (tmp_path / "notes.png").exists()
+    assert "1" in out.getvalue()
+
+
+def test_one_shot_screenshot_dir(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    shot_dir = tmp_path / "shots"
+    captured = {}
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+        )
+        agent.run = lambda p, on_tool_use=None, on_text_delta=None: "ok"
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr("termux_agent.notify.screenshot", lambda path=None: (captured.update(path=path) or "shot.png"))
+    assert cli.cmd_one_shot(_min_cfg(), "hi", "zen", None, screenshot=True, screenshot_dir=str(shot_dir)) == 0
+    assert captured.get("path") and shot_dir.name in captured["path"]
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

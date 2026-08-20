@@ -21,8 +21,8 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Watch mode**: `--watch SECONDS` re-runs a one-shot prompt on an interval until Ctrl+C (combine with `--screenshot` to monitor the screen). In the REPL, `/system` shows the effective system prompt.
 - **Device awareness & introspection**: `--context` injects battery/wifi/time into the system prompt (needs termux-api); `--doctor --doctor-termux` verifies which termux-api commands are installed; `--list-tools` lists registered tools; `--list-providers --json` lists providers; `--config-show` prints the effective merged config; `--prune --json` reports what was deleted. In the REPL, `/memory` shows (or clears) the persistent memory.
 - **Batch & housekeeping**: `--batch FILE` runs one one-shot per line (results to `--output` as JSON); `--sessions --search` now matches across all messages; `--prune-days N` deletes sessions older than N days.
-- **Safety & resource limits**: `--no-shell`, `--no-web`, `--no-git` disable whole tool groups (useful for untrusted/unattended use); `--only-tools LIST` restricts to exact tool names; `--max-output-chars N` and `--command-timeout SECONDS` override config limits. In the REPL, `/context` attaches or refreshes device context and `/image PATH` attaches an image.
-- **Review & scripting**: `--show [SESSION]` prints a full transcript (`--json` for raw); `--summarize [SESSION]` distills a conversation via the agent; `--export --markdown` writes a readable transcript; `--export-all --markdown` dumps every session as `.md`; `--tokens FILE` estimates token usage; `--no-save` keeps one-shot runs out of the session store; `--no-memory` ignores saved notes; `--session-dir DIR` uses an alternate session store; `--git` injects repo state into the system prompt; `--log FILE` writes a timestamped JSONL run log; `--batch --workers N` runs prompts in parallel; `--forget --json` reports deletions; `--bundle`/`--restore` back up and restore config+memory+sessions; `--cron` prints a ready-to-add cron line; `--no-color` disables ANSI. The HTTP API exposes `GET /tools`, accepts per-request `provider`/`model`/`rules`/`image` overrides in `POST /chat`.
+- **Safety & resource limits**: `--no-shell`, `--no-web`, `--no-git` disable whole tool groups (useful for untrusted/unattended use); `--only-tools LIST` restricts to exact tool names; `--allow-dir DIR` grants file access to extra directories (repeatable); `--max-output-chars N` and `--command-timeout SECONDS` override config limits. In the REPL, `/context` attaches or refreshes device context and `/image PATH` attaches an image.
+- **Review & scripting**: `--show [SESSION]` prints a full transcript (`--json` for raw); `--summarize [SESSION]` distills a conversation via the agent; `--export --markdown` writes a readable transcript; `--export-all --markdown` dumps every session as `.md`; `--tokens FILE` estimates token usage; `--no-save` keeps one-shot runs out of the session store; `--no-memory` ignores saved notes; `--session-dir DIR` uses an alternate session store; `--git` injects repo state into the system prompt; `--log FILE` writes a timestamped JSONL run log; `--batch --workers N` runs prompts in parallel; `--forget --json` reports deletions; `--bundle`/`--restore` back up and restore config+memory+sessions; `--cron` prints a ready-to-add cron line; `--no-color` disables ANSI; `--screenshot-dir DIR` stores captures elsewhere and `--cleanup` removes leftover screenshots. The HTTP API exposes `GET /tools` and `GET /sessions/<id>`, and accepts per-request `provider`/`model`/`rules`/`image` overrides in `POST /chat`.
 - **Chat mode**: `--chat` disables all tools for a plain conversation (no file/command access).
 - **Timeouts & saving**: `--timeout SECONDS` aborts a slow one-shot task (exit 124); one-shot tasks are now saved as sessions too, so you can `--resume` them.
 - **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--export-all DIR` backs up every session, `--import FILE` restores one, `--prune N` / `--forget [ID]` delete sessions. `--bench [PROVIDER]` times one tiny request per model to help you pick a fast default.
@@ -211,6 +211,13 @@ termux-agent --cron '*/10 * * * *' "backup my notes"
 
 # plain output for scripts
 termux-agent --no-color --quiet "summarize main.py"
+
+# grant access to extra directories beyond the working dir
+termux-agent --allow-dir ~/storage/downloads --allow-dir ./shared "organize the downloads"
+
+# screenshots to a folder, and tidy up leftovers
+termux-agent --screenshot --screenshot-dir ~/shots "what's on screen?"
+termux-agent --cleanup
 
 # estimate token usage before a big prompt
 termux-agent --tokens main.py
