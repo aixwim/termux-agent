@@ -4,6 +4,9 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Support quoted attachment paths and enforce a 2 MiB local/remote attachment limit to protect mobile memory.
+- Add `/history [N]` for a safe compact conversation view and `/clear` for resetting the terminal viewport without losing context.
+- Add searchable `/help [TERM]` output and typo-aware suggestions for unknown REPL commands.
 - Add a live REPL status bar for provider/model, agent, mode, message count, and help discovery.
 - Add slash-command completion, history-based inline suggestions, and dynamic completion for paths, sessions, providers, models, agents, and common tuning values.
 - Add a `/status` REPL dashboard for active configuration, session state, token counts, and last-run diagnostics.

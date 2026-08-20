@@ -68,7 +68,9 @@ HELP = """\
 Special commands (start with /):
   /exit, /quit    quit
   /new            start a new session
-  /help           show this help
+  /help [TERM]    show help or search commands
+  /clear          clear the terminal without resetting the session
+  /history [N]    show the most recent conversation messages
   /provider NAME  switch provider (e.g. /provider groq)
   /model MODEL    switch model (e.g. /model gpt-4o-mini)
   /cwd            show the working directory
@@ -109,6 +111,8 @@ Special commands (start with /):
   /maxrounds [N]  show or set max tool rounds (1-200)
 Type a normal message to ask; Ctrl+C to cancel."""
 
+ATTACH_MAX_BYTES = 2 * 1024 * 1024
+
 
 def _slash_commands() -> list[str]:
     """Extract slash commands from HELP so completion and documentation stay in sync."""
@@ -123,6 +127,18 @@ def _slash_commands() -> list[str]:
             if name.startswith("/") and name not in commands:
                 commands.append(name)
     return commands
+
+
+def _filtered_help(query: str) -> str:
+    """Return HELP narrowed to command/description lines matching a query."""
+    query = query.strip().lower()
+    if not query:
+        return HELP
+    lines = HELP.strip().splitlines()
+    matches = [line for line in lines[1:-1] if query in line.lower()]
+    if not matches:
+        return ""
+    return "\n".join([f"Help results for {query!r}:", *matches, lines[-1]])
 
 
 def _command_completer() -> object:
@@ -176,6 +192,7 @@ def _command_completer() -> object:
             "/agent": DynamicCompleter(lambda: config_completer("agent")),
             "/temp": WordCompleter(["0", "0.2", "0.5", "0.7", "1.0"], sentence=True),
             "/maxrounds": WordCompleter(["10", "20", "40", "80"], sentence=True),
+            "/history": WordCompleter(["5", "10", "20", "50"], sentence=True),
         }
     )
     root = WordCompleter(_slash_commands(), sentence=True, ignore_case=True)
@@ -347,7 +364,15 @@ class Repl:
         if c in ("/exit", "/quit"):
             return True
         if c == "/help":
-            render_help(HELP)
+            help_text = _filtered_help(rest)
+            if help_text:
+                render_help(help_text)
+            else:
+                render_error(f"No commands matched {rest!r}. Run /help to see everything.")
+        elif c == "/clear":
+            console.clear()
+        elif c == "/history":
+            self._show_history(rest)
         elif c == "/new":
             self.session = Session(provider_name=self.provider_name, model=self.model)
             self.agent.messages = [
@@ -520,19 +545,25 @@ class Repl:
             if not rest:
                 render_error("Usage: /attach FILE [FILE ...]  (URLs are fetched too)")
                 return False
+            import shlex
+
+            try:
+                targets = shlex.split(rest)
+            except ValueError as e:
+                render_error(f"Invalid attachment path or quoting: {e}")
+                return False
             parts: list[str] = []
-            for f in rest.split():
+            for f in targets:
                 if f.startswith(("http://", "https://")):
-                    import tempfile
                     import urllib.parse
                     import urllib.request
 
                     try:
                         with urllib.request.urlopen(f, timeout=30) as resp:
-                            raw = resp.read()
-                        tmp = Path(tempfile.gettempdir()) / "termux-agent-attach.txt"
-                        tmp.write_bytes(raw)
-                        p = tmp
+                            raw = resp.read(ATTACH_MAX_BYTES + 1)
+                        if len(raw) > ATTACH_MAX_BYTES:
+                            render_error(f"Attachment exceeds 2 MiB limit: {f}")
+                            return False
                         content = raw.decode("utf-8", errors="replace")
                         label = f"<file name={Path(urllib.parse.urlparse(f).path).name or 'remote'}>"
                         parts.append(f"{label}\n{content}\n</file>")
@@ -542,7 +573,10 @@ class Repl:
                         return False
                 p = Path(f).expanduser()
                 try:
-                    content = p.read_text(encoding="utf-8")
+                    if p.stat().st_size > ATTACH_MAX_BYTES:
+                        render_error(f"Attachment exceeds 2 MiB limit: {p}")
+                        return False
+                    content = p.read_bytes().decode("utf-8", errors="replace")
                 except OSError as e:
                     render_error(f"Cannot read {p}: {e}")
                     return False
@@ -608,7 +642,11 @@ class Repl:
             render_info("Benchmarking models (one tiny request each)...")
             cmd_bench(load_config(), self.provider_name)
         else:
-            render_error(f"Unknown command: {c}")
+            from difflib import get_close_matches
+
+            suggestions = get_close_matches(c, _slash_commands(), n=2, cutoff=0.45)
+            hint = f" Did you mean {', '.join(suggestions)}?" if suggestions else " Run /help for commands."
+            render_error(f"Unknown command: {c}.{hint}")
         return False
 
     def _switch_agent(self, name: str) -> None:
@@ -760,6 +798,30 @@ class Repl:
                 ("retries / fallbacks", f"{getattr(self.agent, 'retry_count', 0)} / {getattr(self.agent, 'fallback_count', 0)}"),
             ],
         )
+
+    def _show_history(self, value: str) -> None:
+        try:
+            limit = int(value) if value else 10
+            if not 1 <= limit <= 50:
+                raise ValueError
+        except ValueError:
+            render_error("History count must be an integer between 1 and 50.")
+            return
+        messages = [
+            message
+            for message in getattr(self.agent, "messages", [])
+            if message.get("role") in ("user", "assistant")
+        ][-limit:]
+        if not messages:
+            render_info("Conversation history is empty.")
+            return
+        rows = []
+        for message in messages:
+            content = " ".join(str(message.get("content", "")).split())
+            if len(content) > 120:
+                content = content[:119] + "…"
+            rows.append([message.get("role", "?"), content or "(empty)"])
+        render_table("conversation history", ["role", "message"], rows)
 
     def _list_models(self) -> None:
         from termux_agent.cli import cmd_list_models

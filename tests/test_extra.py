@@ -5551,6 +5551,136 @@ def test_repl_bottom_toolbar_tracks_live_state(tmp_path: Path):
     assert "PLAN" in toolbar
 
 
+def test_help_filter_searches_commands_and_descriptions():
+    from termux_agent.ui.repl import _filtered_help
+
+    result = _filtered_help("session")
+
+    assert result.startswith("Help results for 'session':")
+    assert "/sessions" in result
+    assert "/resume" in result
+    assert "/maxrounds" not in result
+    assert _filtered_help("does-not-exist") == ""
+
+
+def test_unknown_repl_command_suggests_nearest_match(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import Repl
+
+    errors = []
+    monkeypatch.setattr("termux_agent.ui.repl.render_error", errors.append)
+    agent = SimpleNamespace(system_prompt="BASE", ctx=SimpleNamespace(working_dir=tmp_path))
+    repl = Repl(agent, provider_name="zen", model="fast")
+
+    assert repl._handle_command("/statsu", None) is False
+    assert errors == ["Unknown command: /statsu. Did you mean /stats, /status?"]
+
+
+def test_repl_history_is_limited_compact_and_safe(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import Repl
+
+    captured = {}
+    monkeypatch.setattr(
+        "termux_agent.ui.repl.render_table",
+        lambda title, columns, rows: captured.update(title=title, columns=columns, rows=rows),
+    )
+    agent = SimpleNamespace(
+        system_prompt="BASE",
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        messages=[
+            {"role": "system", "content": "BASE"},
+            {"role": "user", "content": "old"},
+            {"role": "assistant", "content": "[red]" + "x" * 130},
+            {"role": "tool", "content": "hidden"},
+            {"role": "user", "content": "new\nquestion"},
+        ],
+    )
+    repl = Repl(agent, provider_name="zen", model="fast")
+
+    repl._show_history("2")
+
+    assert captured["title"] == "conversation history"
+    assert captured["columns"] == ["role", "message"]
+    assert [row[0] for row in captured["rows"]] == ["assistant", "user"]
+    assert captured["rows"][0][1].endswith("…")
+    assert captured["rows"][1][1] == "new question"
+
+
+def test_repl_history_rejects_invalid_limit(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import Repl
+
+    errors = []
+    monkeypatch.setattr("termux_agent.ui.repl.render_error", errors.append)
+    agent = SimpleNamespace(system_prompt="BASE", ctx=SimpleNamespace(working_dir=tmp_path), messages=[])
+    repl = Repl(agent, provider_name="zen", model="fast")
+
+    repl._show_history("100")
+
+    assert errors == ["History count must be an integer between 1 and 50."]
+
+
+def test_repl_clear_keeps_session_state(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import Repl
+
+    cleared = []
+    monkeypatch.setattr("termux_agent.ui.repl.console", SimpleNamespace(clear=lambda: cleared.append(True)))
+    messages = [{"role": "system", "content": "BASE"}, {"role": "user", "content": "keep"}]
+    agent = SimpleNamespace(
+        system_prompt="BASE", ctx=SimpleNamespace(working_dir=tmp_path), messages=messages
+    )
+    repl = Repl(agent, provider_name="zen", model="fast")
+
+    assert repl._handle_command("/clear", None) is False
+    assert cleared == [True]
+    assert agent.messages == messages
+
+
+def test_repl_attach_supports_quoted_paths(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import Repl
+
+    attachment = tmp_path / "project notes.txt"
+    attachment.write_text("quoted path works")
+    captured = {}
+    agent = SimpleNamespace(
+        system_prompt="BASE",
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        run=lambda prompt, **kwargs: captured.update(prompt=prompt) or "ok",
+    )
+    monkeypatch.setattr("termux_agent.ui.repl.PlainStreamPrinter", lambda: SimpleNamespace(feed=lambda x: None, flush=lambda: None, streamed_chars=0))
+    monkeypatch.setattr("termux_agent.ui.repl.render_answer", lambda answer: None)
+    repl = Repl(agent, provider_name="zen", model="fast")
+
+    assert repl._handle_command(f'/attach "{attachment}"', None) is False
+    assert "quoted path works" in captured["prompt"]
+    assert str(attachment) in captured["prompt"]
+
+
+def test_repl_attach_rejects_large_files_before_reading(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import ATTACH_MAX_BYTES, Repl
+
+    attachment = tmp_path / "large.txt"
+    attachment.write_bytes(b"x")
+    monkeypatch.setattr(Path, "stat", lambda self: SimpleNamespace(st_size=ATTACH_MAX_BYTES + 1))
+    errors = []
+    monkeypatch.setattr("termux_agent.ui.repl.render_error", errors.append)
+    agent = SimpleNamespace(system_prompt="BASE", ctx=SimpleNamespace(working_dir=tmp_path))
+    repl = Repl(agent, provider_name="zen", model="fast")
+
+    assert repl._handle_command(f"/attach {attachment}", None) is False
+    assert errors == [f"Attachment exceeds 2 MiB limit: {attachment}"]
+
+
 def test_plain_banner_is_two_compact_lines(monkeypatch):
     from termux_agent.ui import renderer
 
