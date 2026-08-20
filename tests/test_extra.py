@@ -5750,6 +5750,119 @@ def test_one_shot_stats_json(tmp_path: Path, monkeypatch):
     assert data["answer"] == "ANSWER"
 
 
+# --- serve mct default / resume+watch attach ---
+def test_serve_max_context_tokens_default(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+
+    seen = {}
+
+    def fake_build(*a, **k):
+        seen.update(k)
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None, max_context_tokens=4096)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/chat",
+            data=_json.dumps({"prompt": "hi"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["ok"] is True
+        assert seen["max_context_tokens"] == 4096
+        seen.clear()
+        req2 = urllib.request.Request(
+            f"http://127.0.0.1:{port}/chat",
+            data=_json.dumps({"prompt": "hi", "max_context_tokens": 2000}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req2, timeout=10) as r:
+            assert _json.loads(r.read())["ok"] is True
+        assert seen["max_context_tokens"] == 2000
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
+def test_resume_attach(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text(
+        '{"role":"user","content":"hi","provider":"zen","model":"m"}\n{"role":"assistant","content":"hello"}\n'
+    )
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    notes = tmp_path / "notes.txt"
+    notes.write_text("important context", encoding="utf-8")
+
+    seen = {}
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            system_prompt="SYS",
+            messages=[{"role": "system", "content": "SYS"}],
+            run=lambda prompt, on_tool_use=None, on_text_delta=None: seen.setdefault("p", prompt) or "CONTINUED",
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_resume(_min_cfg(), "20260820-000001", "continue please", attach=[str(notes)])
+    assert code == 0
+    assert "important context" in seen["p"]
+
+
+def test_watch_attach(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    notes = tmp_path / "data.txt"
+    notes.write_text("payload", encoding="utf-8")
+    seen = {}
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            run=lambda p, on_tool_use=None, on_text_delta=None: "A",
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: (seen.setdefault("p", p), agent.run(p))[1])
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_watch(_min_cfg(), "read this", "zen", None, interval=1, max_rounds=1, attach=[str(notes)])
+    assert code == 0
+    assert "payload" in seen["p"]
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

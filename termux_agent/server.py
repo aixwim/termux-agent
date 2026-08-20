@@ -113,6 +113,7 @@ def build_server(
     model: str | None,
     auto_accept: bool = False,
     token: str | None = None,
+    max_context_tokens: int | None = None,
 ) -> ThreadingHTTPServer:
     _AgentHandler.build_agent = staticmethod(build_agent)
     _AgentHandler.cfg = cfg
@@ -120,6 +121,7 @@ def build_server(
     _AgentHandler.model = model
     _AgentHandler.auto_accept = auto_accept
     _AgentHandler.token = token
+    _AgentHandler.max_context_tokens = max_context_tokens
     return BoundedThreadingHTTPServer(("", 0), _AgentHandler, max_workers=0)
 
 
@@ -133,6 +135,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
     token: str | None = None
     log_path: str | None = None
     cors_origin: str = "*"
+    max_context_tokens: int | None = None
 
     def log_message(self, fmt: str, *args: Any) -> None:
         pass
@@ -285,6 +288,9 @@ class _AgentHandler(BaseHTTPRequestHandler):
         if not prompt:
             self._send(400, {"error": {"message": "no user message found", "type": "invalid_request_error"}})
             return
+        mct = data.get("max_context_tokens")
+        if mct is None:
+            mct = self.max_context_tokens
         try:
             agent = self.build_agent(
                 self.cfg,
@@ -293,7 +299,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 auto_accept=True,
                 temperature=float(data["temperature"]) if isinstance(data.get("temperature"), (int, float)) else None,
                 max_tool_rounds=int(data["max_tool_rounds"]) if isinstance(data.get("max_tool_rounds"), int) else None,
-                max_context_tokens=int(data["max_context_tokens"]) if isinstance(data.get("max_context_tokens"), int) else None,
+                max_context_tokens=int(mct) if isinstance(mct, int) else None,
                 only_tools=[t for t in data.get("only_tools") if isinstance(t, str)] if isinstance(data.get("only_tools"), list) else None,
             )
         except Exception as e:  # noqa: BLE001
@@ -554,6 +560,8 @@ class _AgentHandler(BaseHTTPRequestHandler):
             temp = data.get("temperature")
             mtr = data.get("max_tool_rounds")
             mct = data.get("max_context_tokens")
+            if mct is None:
+                mct = self.max_context_tokens
             from concurrent.futures import ThreadPoolExecutor
 
             def _one(p: str) -> dict:
@@ -616,6 +624,8 @@ class _AgentHandler(BaseHTTPRequestHandler):
             temp = data.get("temperature")
             mtr = data.get("max_tool_rounds")
             mct = data.get("max_context_tokens")
+            if mct is None:
+                mct = self.max_context_tokens
             agent = self.build_agent(
                 self.cfg,
                 data.get("provider") or self.provider,
@@ -701,7 +711,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
         self._send(200, {"ok": True, "deleted": removed.stem})
 
 
-def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | None = None, model: str | None = None, auto_accept: bool = False, token: str | None = None, log_file: str | None = None, cors_origin: str = "*", tls_cert: str | None = None, tls_key: str | None = None, max_workers: int = 0) -> int:
+def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | None = None, model: str | None = None, auto_accept: bool = False, token: str | None = None, log_file: str | None = None, cors_origin: str = "*", tls_cert: str | None = None, tls_key: str | None = None, max_workers: int = 0, max_context_tokens: int | None = None) -> int:
     from termux_agent.cli import build_agent as _build
 
     handler = _AgentHandler
@@ -713,6 +723,7 @@ def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | 
     handler.token = token
     handler.log_path = log_file
     handler.cors_origin = cors_origin
+    handler.max_context_tokens = max_context_tokens
     httpd = BoundedThreadingHTTPServer((host, port), handler, max_workers=max_workers)
     scheme = "http"
     if tls_cert:

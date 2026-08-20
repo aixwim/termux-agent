@@ -748,6 +748,7 @@ def cmd_watch(
     exit_on_change: bool = False,
     max_wait: int | None = None,
     append: bool = False,
+    attach: list[str] | None = None,
 ) -> int:
     """Re-run a one-shot task every N seconds until Ctrl+C. Optionally re-attach a screenshot."""
     import json as _json
@@ -756,6 +757,16 @@ def cmd_watch(
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
     agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools, allow_dirs=allow_dirs)
+    if attach:
+        for f in attach:
+            try:
+                content = Path(f).expanduser().read_text(encoding="utf-8")
+            except OSError as e:
+                render_error(f"Cannot read --attach file: {e}")
+                return 1
+            prompt = f"{prompt}\n\n<file name={f}>\n{content}\n</file>".strip()
+        if not as_json:
+            render_info(f"Attached {len(attach)} file(s) to the prompt.")
     if context:
         from termux_agent.notify import device_context
 
@@ -1763,6 +1774,7 @@ def cmd_serve(
     tls_cert: str | None = None,
     tls_key: str | None = None,
     max_workers: int = 0,
+    max_context_tokens: int | None = None,
 ) -> int:
     """Run the HTTP API server, optionally detached in the background."""
     if background:
@@ -1793,6 +1805,8 @@ def cmd_serve(
             cmd += ["--tls-key", tls_key]
         if max_workers:
             cmd += ["--serve-workers", str(max_workers)]
+        if max_context_tokens:
+            cmd += ["--max-context-tokens", str(max_context_tokens)]
         with open(log_path, "a", encoding="utf-8") as logf:
             proc = subprocess.Popen(
                 cmd,
@@ -1810,7 +1824,7 @@ def cmd_serve(
         return 0
     from termux_agent.server import serve
 
-    return serve(cfg, host=host, port=port, provider=provider, model=model, auto_accept=auto_accept, token=token, log_file=log_file, cors_origin=cors_origin, tls_cert=tls_cert, tls_key=tls_key, max_workers=max_workers)
+    return serve(cfg, host=host, port=port, provider=provider, model=model, auto_accept=auto_accept, token=token, log_file=log_file, cors_origin=cors_origin, tls_cert=tls_cert, tls_key=tls_key, max_workers=max_workers, max_context_tokens=max_context_tokens)
 
 
 def cmd_serve_stop(pidfile: str | None = None) -> int:
@@ -1949,6 +1963,7 @@ def cmd_resume(
     command_timeout: int | None = None,
     git_context: bool = False,
     allow_dirs: list[str] | None = None,
+    attach: list[str] | None = None,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -1970,6 +1985,16 @@ def cmd_resume(
     agent = build_agent(cfg, provider_name, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools=False, retries=None, no_fallback=False, extra_rules=extra_rules or None, system_prompt=None, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, allow_dirs=allow_dirs)
     agent.messages = [{"role": "system", "content": agent.system_prompt}] + history
     if prompt:
+        for f in attach or []:
+            try:
+                content = Path(f).expanduser().read_text(encoding="utf-8")
+            except OSError as e:
+                render_error(f"Cannot read --attach file: {e}")
+                return 1
+            prompt = f"{prompt}\n\n<file name={f}>\n{content}\n</file>".strip()
+        if attach:
+            if not as_json and not quiet:
+                render_info(f"Attached {len(attach)} file(s) to the prompt.")
         streamed = stream and not as_json and not quiet
 
         def _log(name: str, args_str: str) -> None:
@@ -2357,7 +2382,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=int, metavar="SECONDS", help="Abort a one-shot task if it takes longer than this")
     parser.add_argument("--output", metavar="FILE", help="Also write the answer to this file (plain text); with --bench/--smoke writes the structured result (JSON)")
     parser.add_argument("--clip", action="store_true", help="Use the clipboard as the prompt (needs termux-api)")
-    parser.add_argument("--attach", metavar="FILE", action="append", help="Read a file's contents into the prompt (repeatable)")
+    parser.add_argument("--attach", metavar="FILE", action="append", help="Read a file's contents into the prompt (one-shot, resume, watch, batch, rerun; repeatable)")
     parser.add_argument("--screenshot", action="store_true", help="Attach a screenshot of the screen to the prompt (needs termux-api + screen share)")
     parser.add_argument("--screenshot-dir", metavar="DIR", help="Save screenshots into this directory instead of the current one")
     parser.add_argument("--cleanup", action="store_true", help="Delete leftover screenshot-*.png files in the current directory")
@@ -2658,6 +2683,7 @@ def main(argv: list[str] | None = None) -> int:
             tls_cert=args.tls_cert,
             tls_key=args.tls_key,
             max_workers=args.serve_workers or 0,
+            max_context_tokens=args.max_context_tokens,
         )
 
     if args.verbose:
@@ -2783,6 +2809,7 @@ def main(argv: list[str] | None = None) -> int:
             max_output_chars=args.max_output_chars,
             command_timeout=args.command_timeout,
             allow_dirs=_allow_dirs_from(args),
+            attach=args.attach,
         )
 
     if args.watch:
@@ -2815,6 +2842,7 @@ def main(argv: list[str] | None = None) -> int:
             exit_on_change=args.exit_on_change,
             max_wait=args.max_wait,
             append=args.append,
+            attach=args.attach,
         )
 
     if args.batch:
