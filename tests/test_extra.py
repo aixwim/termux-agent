@@ -3455,6 +3455,72 @@ def test_sessions_limit(tmp_path: Path, monkeypatch):
     assert len(_json.loads(out.getvalue())["sessions"]) == 2
 
 
+# --- rotate / show-system-prompt ---
+def test_one_shot_rotate_falls_back(tmp_path: Path, monkeypatch):
+    import io
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    models_tried = []
+
+    def fake_build(*a, **k):
+        which = a[2] if len(a) > 2 else None
+        models_tried.append(which)
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model=which or "m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+        )
+
+        def _run(p, on_tool_use=None, on_text_delta=None):
+            if which == "bad-model":
+                raise RuntimeError("rate limited")
+            return "GOOD"
+
+        agent.run = _run
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr(cli, "resolve_working_dir", lambda cfg: tmp_path)
+    monkeypatch.setattr(cli, "_maybe_notify", lambda *a, **k: None)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    cfg = _min_cfg()
+    cfg["providers"]["zen"]["models"] = ["bad-model", "good-model"]
+    code = cli.cmd_one_shot(cfg, "hi", "zen", None, rotate=True, as_json=True)
+    assert code == 0
+    assert models_tried == ["bad-model", "good-model"]
+    import json as _json
+
+    assert _json.loads(out.getvalue())["answer"] == "GOOD"
+
+
+def test_show_system_prompt(tmp_path: Path, monkeypatch):
+    import io
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            system_prompt="SYS PROMPT TEXT",
+            messages=[],
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_show_system_prompt(_min_cfg(), "zen", None) == 0
+    assert "SYS PROMPT TEXT" in out.getvalue()
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

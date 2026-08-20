@@ -226,6 +226,7 @@ def cmd_one_shot(
     allow_dirs: list[str] | None = None,
     screenshot_dir: str | None = None,
     attach: list[str] | None = None,
+    rotate: bool = False,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -289,11 +290,21 @@ def cmd_one_shot(
             render_error(f"--system-prompt file is empty: {system_prompt_file}")
             return 1
 
-    agent = build_agent(cfg, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools, retries, no_fallback, extra_rules, sys_prompt, disabled_groups, max_output_chars, command_timeout, only_tools=only_tools, memory=memory, allow_dirs=allow_dirs)
-    if context:
-        from termux_agent.notify import device_context
+    def _make_agent(which_model: str | None = None) -> Agent:
+        a = build_agent(cfg, provider, which_model if which_model else model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools, retries, no_fallback, extra_rules, sys_prompt, disabled_groups, max_output_chars, command_timeout, only_tools=only_tools, memory=memory, allow_dirs=allow_dirs)
+        if context:
+            from termux_agent.notify import device_context
 
-        _attach_agent_context(agent, device_context())
+            _attach_agent_context(a, device_context())
+        return a
+
+    models_to_try = [model]
+    if rotate and not model:
+        pmodels = cfg.get("providers", {}).get(provider or cfg.get("provider", "zen"), {}).get("models") or []
+        if pmodels:
+            models_to_try = pmodels
+
+    agent = _make_agent(models_to_try[0] if (rotate and not model) else model)
     if plan and not readonly:
         return cmd_plan(cfg, prompt, provider, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, max_context_tokens, as_json)
     if not as_json and not quiet:
@@ -319,14 +330,30 @@ def cmd_one_shot(
         wake_lock()
     streamed = stream and not as_json and not quiet
     try:
-        if streamed:
-            from termux_agent.ui.renderer import PlainStreamPrinter
+        for idx, m in enumerate(models_to_try):
+            if idx > 0:
+                agent = _make_agent(m)
+                if not as_json and not quiet:
+                    render_info(f"Trying fallback model: {m}")
+            try:
+                if streamed:
+                    from termux_agent.ui.renderer import PlainStreamPrinter
 
-            printer = PlainStreamPrinter()
-            answer = _run_guarded(agent, prompt, _log_tool, timeout, on_text_delta=printer.feed)
-            printer.flush()
-        else:
-            answer = _run_guarded(agent, prompt, _log_tool, timeout)
+                    printer = PlainStreamPrinter()
+                    answer = _run_guarded(agent, prompt, _log_tool, timeout, on_text_delta=printer.feed)
+                    printer.flush()
+                else:
+                    answer = _run_guarded(agent, prompt, _log_tool, timeout)
+                break
+            except KeyboardInterrupt:
+                raise
+            except TimeoutError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                if idx == len(models_to_try) - 1:
+                    raise
+                if not as_json and not quiet:
+                    render_error(f"Model {m} failed: {e}")
     except KeyboardInterrupt:
         if wakelock:
             from termux_agent.notify import wake_unlock
@@ -1246,6 +1273,44 @@ def cmd_rerun(
     return 0
 
 
+def cmd_show_system_prompt(
+    cfg: dict,
+    provider: str | None,
+    model: str | None,
+    agent_name: str | None = None,
+    working_dir: str | None = None,
+    no_tools: bool = False,
+    rules_file: str | None = None,
+    system_prompt_file: str | None = None,
+    context: bool = False,
+    disabled_groups: list[str] | None = None,
+) -> int:
+    """Print the effective system prompt without running a turn."""
+    extra_rules = ""
+    if rules_file:
+        try:
+            extra_rules = Path(rules_file).expanduser().read_text(encoding="utf-8").strip()
+        except OSError as e:
+            render_error(f"Cannot read --rules file: {e}")
+            return 1
+    sys_prompt = None
+    if system_prompt_file:
+        try:
+            sys_prompt = Path(system_prompt_file).expanduser().read_text(encoding="utf-8").strip()
+        except OSError as e:
+            render_error(f"Cannot read --system-prompt file: {e}")
+            return 1
+    agent = build_agent(cfg, provider, model, False, agent_name, working_dir, disabled_groups=disabled_groups, extra_rules=extra_rules, system_prompt=sys_prompt, no_tools=no_tools)
+    if context:
+        from termux_agent.notify import device_context
+
+        _attach_agent_context(agent, device_context())
+    from termux_agent.ui.renderer import console
+
+    console.print(agent.system_prompt)
+    return 0
+
+
 def cmd_cleanup() -> int:
     """Remove leftover screenshot-*.png files from the current directory."""
     removed = 0
@@ -1708,6 +1773,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cleanup", action="store_true", help="Delete leftover screenshot-*.png files in the current directory")
     parser.add_argument("--stream", action="store_true", help="Stream the answer to the terminal as it is generated (typewriter mode)")
     parser.add_argument("--no-stream", action="store_true", help="Force a non-streaming one-shot/resume even in a TTY")
+    parser.add_argument("--rotate", action="store_true", help="On failure, retry with the next model in the provider's list (handy for free-tier rate limits)")
     parser.add_argument("--watch", type=int, metavar="SECONDS", help="Re-run the one-shot prompt every N seconds until Ctrl+C (combine with --screenshot)")
     parser.add_argument("--max-rounds", type=int, default=None, metavar="N", help="With --watch: stop after this many rounds")
     parser.add_argument("--diff", action="store_true", help="With --watch: only print/notify when the answer changes; with --rerun: show the diff vs the previous answer")
@@ -1716,6 +1782,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-fallback", action="store_true", help="Disable fallback models on 429/errors (use only the selected model)")
     parser.add_argument("--rules", metavar="FILE", help="Add extra instructions to the system prompt (like AGENTS.md but per-invocation)")
     parser.add_argument("--system-prompt", dest="system_prompt_file", metavar="FILE", help="Replace the entire system prompt with the file contents (custom persona)")
+    parser.add_argument("--show-system-prompt", action="store_true", help="Print the effective system prompt and exit (no turn runs)")
     parser.add_argument("--context", action="store_true", help="Add device context (battery/wifi/time, via termux-api) to the system prompt")
     parser.add_argument("--no-shell", action="store_true", help="Disable the run_command tool")
     parser.add_argument("--no-web", action="store_true", help="Disable web_fetch and web_search tools")
@@ -1898,6 +1965,19 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_list_tools()
     if args.sessions:
         return cmd_sessions(args.search, as_json=args.json, limit=args.limit)
+    if args.show_system_prompt:
+        return cmd_show_system_prompt(
+            cfg,
+            args.provider,
+            args.model,
+            agent_name=args.agent,
+            working_dir=args.cwd,
+            no_tools=args.chat,
+            rules_file=args.rules,
+            system_prompt_file=args.system_prompt_file,
+            context=args.context,
+            disabled_groups=_disabled_groups_from(args),
+        )
 
     # Auto-create ~/.termux-agent/config.yaml on first run (like opencode).
     if not CONFIG_FILE.exists() and not args.config:
@@ -2124,6 +2204,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_dirs=_allow_dirs_from(args),
             screenshot_dir=args.screenshot_dir,
             attach=args.attach,
+            rotate=args.rotate,
         )
 
     if args.json:
