@@ -977,6 +977,76 @@ def cmd_summarize(
     return 0
 
 
+def cmd_bundle(target_dir: str) -> int:
+    """Back up config, memory, and all sessions into a portable directory."""
+    import json as _json
+    import shutil
+
+    from termux_agent.agent import MEMORY_FILE
+    from termux_agent.session import SESSIONS_DIR, list_sessions
+
+    out = Path(target_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    copied = []
+    if CONFIG_FILE.is_file():
+        shutil.copy2(CONFIG_FILE, out / CONFIG_FILE.name)
+        copied.append(CONFIG_FILE.name)
+    if MEMORY_FILE.is_file():
+        shutil.copy2(MEMORY_FILE, out / MEMORY_FILE.name)
+        copied.append(MEMORY_FILE.name)
+    ses_dir = out / "sessions"
+    ses_dir.mkdir(parents=True, exist_ok=True)
+    n_sessions = 0
+    for s in list_sessions():
+        shutil.copy2(s, ses_dir / s.name)
+        n_sessions += 1
+    manifest = {
+        "app": "termux-agent",
+        "version": __version__,
+        "config": CONFIG_FILE.name if CONFIG_FILE.is_file() else None,
+        "memory": MEMORY_FILE.name if MEMORY_FILE.is_file() else None,
+        "sessions": n_sessions,
+    }
+    (out / "manifest.json").write_text(_json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    render_info(f"Bundled {n_sessions} session(s) + config + memory into {out}.")
+    return 0
+
+
+def cmd_restore(bundle_dir: str) -> int:
+    """Restore config, memory, and sessions from a bundle directory."""
+    import json as _json
+    import shutil
+
+    from termux_agent.agent import MEMORY_FILE
+    from termux_agent.session import SESSIONS_DIR
+
+    src = Path(bundle_dir)
+    if not (src / "manifest.json").is_file():
+        render_error(f"No manifest.json found in {src} — not a termux-agent bundle.")
+        return 1
+    manifest = _json.loads((src / "manifest.json").read_text(encoding="utf-8"))
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    restored = []
+    for name in ("config.yaml", "memory.md"):
+        f = src / name
+        if f.is_file():
+            shutil.copy2(f, CONFIG_DIR / name)
+            restored.append(name)
+    for f in sorted((src / "sessions").glob("*.jsonl")) if (src / "sessions").is_dir() else []:
+        shutil.copy2(f, SESSIONS_DIR / f.name)
+        restored.append(f"session/{f.name}")
+    render_info(f"Restored {len(restored)} item(s) from {src} ({manifest.get('app', '?')} v{manifest.get('version', '?')}).")
+    return 0
+
+
+def cmd_cron(schedule: str, prompt: str, command: str | None = None) -> int:
+    """Print a ready-to-add cron line running termux-agent one-shot."""
+    command = command or f"termux-agent --no-save --quiet {prompt!r}"
+    print(f"{schedule} cd {Path.cwd()} && {command} >> ~/.termux-agent/cron.log 2>&1")
+    return 0
+
+
 def cmd_sessions(search: str | None = None, as_json: bool = False) -> int:
     import json as _json
 
@@ -1336,8 +1406,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-memory", action="store_true", help="Run without the persistent memory file (~/.termux-agent/memory.md)")
     parser.add_argument("--git", action="store_true", dest="git_context", help="Inject the repo state (status/diff/log) into the system prompt")
     parser.add_argument("--show", metavar="SESSION", help="Show a full session transcript (default: latest); use --json for raw output")
-    parser.add_argument("--summarize", nargs="?", const="latest", metavar="SESSION", help="Have the agent summarize a session transcript (default: latest); --output saves it")
     parser.add_argument("--tokens", metavar="FILE", help="Estimate the token count of a file (omit to read stdin)")
+    parser.add_argument("--summarize", nargs="?", const="latest", metavar="SESSION", help="Have the agent summarize a session transcript (default: latest); --output saves it")
+    parser.add_argument("--bundle", metavar="DIR", help="Back up config, memory, and all sessions into a portable directory")
+    parser.add_argument("--restore", metavar="DIR", help="Restore config, memory, and sessions from a bundle directory")
+    parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors (same as NO_COLOR=1)")
+    parser.add_argument("--cron", metavar="SCHEDULE", help="Print a ready-to-add cron line, e.g. '*/10 * * * *'")
     parser.add_argument("--only-tools", metavar="LIST", help="Restrict the agent to exactly these comma-separated tool names, e.g. read_file,grep,glob")
     parser.add_argument("--log", metavar="FILE", help="Append a timestamped JSONL run log (tool calls, errors, result) for one-shot runs")
     parser.add_argument("--workers", type=int, default=1, metavar="N", help="Run --batch prompts in parallel with N workers")
@@ -1406,6 +1480,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"termux-agent {__version__}")
         return 0
 
+    if args.no_color:
+        from termux_agent.ui import renderer
+
+        renderer.disable_color()
+
     if args.session_dir:
         from termux_agent import session as sessionmod
 
@@ -1438,6 +1517,15 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.tokens is not None:
         return cmd_tokens(args.tokens)
+    if args.bundle:
+        return cmd_bundle(args.bundle)
+    if args.restore:
+        return cmd_restore(args.restore)
+    if args.cron:
+        if not prompt:
+            render_error("--cron requires a one-shot prompt.")
+            return 2
+        return cmd_cron(args.cron, prompt)
     if args.prune is not None:
         return cmd_prune(args.prune, as_json=args.json)
     if args.prune_days is not None:

@@ -2704,6 +2704,81 @@ def test_forget_json_missing(tmp_path: Path, monkeypatch):
     assert _json.loads(out.getvalue())["ok"] is False
 
 
+# --- bundle / restore / no-color / cron ---
+def test_cmd_bundle_and_restore(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text('{"role":"user","content":"x"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text("provider: zen\n")
+    monkeypatch.setattr(cli, "CONFIG_DIR", cfg_dir)
+    monkeypatch.setattr(cli, "CONFIG_FILE", cfg_dir / "config.yaml")
+    mem = tmp_path / "memory.md"
+    mem.write_text("note")
+    monkeypatch.setattr("termux_agent.agent.MEMORY_FILE", mem)
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+
+    bundle_dir = tmp_path / "bundle"
+    assert cli.cmd_bundle(str(bundle_dir)) == 0
+    assert (bundle_dir / "manifest.json").is_file()
+    assert (bundle_dir / "sessions" / "20260820-000001.jsonl").is_file()
+
+    # restore into a fresh location
+    rest = tmp_path / "rest"
+    (rest / "sessions").mkdir(parents=True)
+    new_sdir = rest / "sessions"
+    monkeypatch.setattr(session, "SESSIONS_DIR", new_sdir)
+    new_cfg_dir = rest / "cfg"
+    new_cfg_dir.mkdir()
+    monkeypatch.setattr(cli, "CONFIG_DIR", new_cfg_dir)
+    monkeypatch.setattr(cli, "CONFIG_FILE", new_cfg_dir / "config.yaml")
+    assert cli.cmd_restore(str(bundle_dir)) == 0
+    assert (new_cfg_dir / "config.yaml").is_file()
+    assert (new_sdir / "20260820-000001.jsonl").is_file()
+
+
+def test_cmd_restore_rejects_non_bundle(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_restore(str(bad)) == 1
+
+
+def test_disable_color():
+    from termux_agent.ui import renderer
+
+    renderer.disable_color()
+    assert renderer.console.no_color is True
+
+
+def test_cmd_cron(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    monkeypatch.chdir(tmp_path)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_cron("*/10 * * * *", "backup notes") == 0
+    line = out.getvalue()
+    assert line.startswith("*/10 * * * * cd")
+    assert "termux-agent --no-save --quiet" in line
+    assert "cron.log" in line
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

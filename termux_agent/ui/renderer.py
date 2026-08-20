@@ -10,6 +10,11 @@ from rich.text import Text
 console = Console(highlight=False, soft_wrap=True)
 
 
+def disable_color() -> None:
+    """Disable ANSI colors on the shared console (--no-color / NO_COLOR)."""
+    console.no_color = True
+
+
 def render_answer(text: str) -> None:
     if not text:
         return
