@@ -1070,7 +1070,47 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
     return 0
 
 
-def cmd_import(path: str, dry_run: bool = False, as_json: bool = False) -> int:
+def _markdown_to_session(text: str) -> dict:
+    """Parse a markdown transcript (from --export --markdown or REPL /export) back into session data."""
+    import re
+
+    messages: list[dict] = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = re.match(r"^### (system|user|assistant|tool(?: \(.*\))?)\s*$", line)
+        if not m:
+            i += 1
+            continue
+        role = m.group(1)
+        if role.startswith("tool"):
+            role = "tool"
+            name = re.search(r"\((.*)\)", m.group(1))
+            name = name.group(1) if name else ""
+        else:
+            name = ""
+        i += 1
+        content_lines: list[str] = []
+        if i < len(lines) and lines[i] == "```":
+            i += 1
+            while i < len(lines) and lines[i] != "```":
+                content_lines.append(lines[i])
+                i += 1
+            i += 1
+        else:
+            while i < len(lines) and not re.match(r"^### (system|user|assistant|tool)", lines[i]):
+                content_lines.append(lines[i])
+                i += 1
+        content = "\n".join(content_lines)
+        msg: dict = {"role": role, "content": content}
+        if name:
+            msg["name"] = name
+        messages.append(msg)
+    return {"messages": messages}
+
+
+def cmd_import(path: str, dry_run: bool = False, as_json: bool = False, markdown: bool = False) -> int:
     """Import a portable session JSON file and save it as a session (--dry-run validates only)."""
     import json as _json
 
@@ -1080,10 +1120,14 @@ def cmd_import(path: str, dry_run: bool = False, as_json: bool = False) -> int:
         if path == "-":
             import sys as _sys
 
-            data = _json.load(_sys.stdin)
+            text = _sys.stdin.read()
         else:
             with open(path, encoding="utf-8") as f:
-                data = _json.load(f)
+                text = f.read()
+        if markdown:
+            data = _markdown_to_session(text)
+        else:
+            data = _json.loads(text)
         sid = None if dry_run else import_session(data)
     except FileNotFoundError:
         if as_json:
@@ -1253,10 +1297,25 @@ def cmd_prune_days(days: int, as_json: bool = False, dry_run: bool = False, keep
     return 0
 
 
-def cmd_list_tools() -> int:
+def cmd_list_tools(as_json: bool = False, output: str | None = None) -> int:
+    import json as _json
+
     from termux_agent.tools.base import tool_specs
 
     specs = tool_specs()
+    if as_json or output:
+        payload = {"tools": [{"name": s.name, "description": s.description} for s in specs]}
+        if output:
+            try:
+                Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                render_info(f"Tool list written to {output}")
+            except OSError as e:
+                render_error(f"Cannot write output file {output}: {e}")
+                return 1
+        if as_json:
+            print(_json.dumps(payload, ensure_ascii=False))
+            return 0
+        return 0
     for s in specs:
         render_info(f"{s.name}: {s.description}")
     render_info(f"\n{len(specs)} tools registered.")
@@ -1874,36 +1933,54 @@ def cmd_resume(
     return 0
 
 
-def cmd_list_providers(cfg: dict, as_json: bool = False) -> int:
+def cmd_list_providers(cfg: dict, as_json: bool = False, output: str | None = None) -> int:
     import json as _json
 
-    if as_json:
-        items = [
-            {"name": n, "type": pc.get("type"), "models": pc.get("models") or []}
-            for n, pc in cfg.get("providers", {}).items()
-        ]
-        print(_json.dumps({"providers": items}, ensure_ascii=False))
+    items = [
+        {"name": n, "type": pc.get("type"), "models": pc.get("models") or []}
+        for n, pc in cfg.get("providers", {}).items()
+    ]
+    if as_json or output:
+        payload = {"providers": items}
+        if output:
+            try:
+                Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                render_info(f"Provider list written to {output}")
+            except OSError as e:
+                render_error(f"Cannot write output file {output}: {e}")
+                return 1
+        if as_json:
+            print(_json.dumps(payload, ensure_ascii=False))
+            return 0
         return 0
-    for name, pc in cfg.get("providers", {}).items():
-        models = ", ".join(pc.get("models") or [])
-        render_info(f"{name:12} {pc.get('type'):16} models: {models}")
+    for it in items:
+        render_info(f"{it['name']:12} {str(it['type']):16} models: {', '.join(it['models'])}")
     return 0
 
 
-def cmd_list_agents(cfg: dict, as_json: bool = False) -> int:
+def cmd_list_agents(cfg: dict, as_json: bool = False, output: str | None = None) -> int:
     import json as _json
 
-    if as_json:
-        items = [
-            {"name": n, "description": spec.get("description", ""), "tools": spec.get("tools") or []}
-            for n, spec in cfg.get("agents", {}).items()
-        ]
-        print(_json.dumps({"agents": items}, ensure_ascii=False))
+    items = [
+        {"name": n, "description": spec.get("description", ""), "tools": spec.get("tools") or []}
+        for n, spec in cfg.get("agents", {}).items()
+    ]
+    if as_json or output:
+        payload = {"agents": items}
+        if output:
+            try:
+                Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                render_info(f"Agent list written to {output}")
+            except OSError as e:
+                render_error(f"Cannot write output file {output}: {e}")
+                return 1
+        if as_json:
+            print(_json.dumps(payload, ensure_ascii=False))
+            return 0
         return 0
-    for name, spec in cfg.get("agents", {}).items():
-        tools = spec.get("tools") or []
-        label = "all tools" if not tools else ", ".join(tools)
-        render_info(f"{name:10} {spec.get('description', '')}  [{label}]")
+    for it in items:
+        label = "all tools" if not it["tools"] else ", ".join(it["tools"])
+        render_info(f"{it['name']:10} {it['description']}  [{label}]")
     return 0
 
 
@@ -2275,7 +2352,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--search", help="Filter --sessions by keyword in the first message")
     parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest); --markdown for a readable transcript, --redact to mask secrets")
     parser.add_argument("--markdown", action="store_true", help="With --export/--show, print a readable Markdown transcript")
-    parser.add_argument("--import", dest="import_path", metavar="FILE", help="Import a portable session JSON file ('-' reads stdin; --dry-run validates only)")
+    parser.add_argument("--import", dest="import_path", metavar="FILE", help="Import a portable session JSON file ('-' reads stdin; --dry-run validates only, --markdown imports a Markdown transcript)")
     parser.add_argument("--prune", type=int, metavar="N", help="Delete all sessions except the newest N (--dry-run previews)")
     parser.add_argument("--prune-days", type=int, metavar="DAYS", help="Delete sessions older than this many days (--dry-run previews)")
     parser.add_argument("--keep", type=int, default=0, metavar="N", help="With --prune-days: keep the N newest sessions")
@@ -2403,7 +2480,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.forget:
         return cmd_forget(args.forget, as_json=args.json)
     if args.import_path:
-        return cmd_import(args.import_path, dry_run=args.dry_run, as_json=args.json)
+        return cmd_import(args.import_path, dry_run=args.dry_run, as_json=args.json, markdown=args.markdown)
     if args.show:
         return cmd_show(args.show, as_json=args.json, output=args.output, redact=args.redact)
     if args.summarize:
@@ -2455,7 +2532,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return cmd_config_set(args.config_set[0], args.config_set[1], as_json=args.json)
     if args.list_tools:
-        return cmd_list_tools()
+        return cmd_list_tools(as_json=args.json, output=args.output)
     if args.sessions:
         return cmd_sessions(args.search, as_json=args.json, limit=args.limit, output=args.output)
     if args.show_system_prompt:
@@ -2533,9 +2610,9 @@ def main(argv: list[str] | None = None) -> int:
         notify_on_done(True)
 
     if args.list_providers:
-        return cmd_list_providers(cfg, as_json=args.json)
+        return cmd_list_providers(cfg, as_json=args.json, output=args.output)
     if args.list_agents:
-        return cmd_list_agents(cfg, as_json=args.json)
+        return cmd_list_agents(cfg, as_json=args.json, output=args.output)
     if args.models is not None:
         pname = None if args.models == "__default__" else args.models
         return cmd_list_models(cfg, pname, as_json=args.json, output=args.output)

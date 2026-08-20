@@ -5272,6 +5272,49 @@ def test_smoke_timeout(tmp_path: Path, monkeypatch):
     assert "timed out" in data["error"]
 
 
+# --- list-* output + import markdown ---
+def test_list_tools_output(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from termux_agent import cli
+
+    out_file = tmp_path / "tools.json"
+    out = __import__("io").StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_list_tools(output=str(out_file)) == 0
+    data = _json.loads(out_file.read_text(encoding="utf-8"))
+    assert any(t["name"] == "read_file" for t in data["tools"])
+
+
+def test_list_providers_output(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from termux_agent import cli
+
+    out_file = tmp_path / "providers.json"
+    out = __import__("io").StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_list_providers(_min_cfg(), output=str(out_file)) == 0
+    data = _json.loads(out_file.read_text(encoding="utf-8"))
+    assert any(p["name"] == "zen" for p in data["providers"])
+
+
+def test_import_markdown(tmp_path: Path, monkeypatch):
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    md = "# Session abc\n\n### user\nhello\n\n### assistant\nhi there\n"
+    md_file = tmp_path / "chat.md"
+    md_file.write_text(md, encoding="utf-8")
+    out = __import__("io").StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_import(str(md_file), markdown=True, dry_run=True) == 0
+    assert "2 message(s)" in out.getvalue()
+    assert len(list(sdir.glob("*.jsonl"))) == 0
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
