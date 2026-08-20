@@ -6603,6 +6603,57 @@ def test_cmd_config_set_unset(tmp_path: Path, monkeypatch):
     assert "c: 7" not in cfg_file.read_text()
 
 
+# --- rerun/summarize --append ---
+def test_cmd_rerun_append(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text(
+        '{"role":"user","content":"hi","provider":"zen","model":"m"}\n{"role":"assistant","content":"old"}\n'
+    )
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda p, on_tool_use=None, on_text_delta=None: "new",
+    ))
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    out = tmp_path / "out.txt"
+    assert cli.cmd_rerun(_min_cfg(), "20260820-000001", "zen", "m", output=str(out)) == 0
+    assert out.read_text().strip() == "new"
+    assert cli.cmd_rerun(_min_cfg(), "20260820-000001", "zen", "m", output=str(out), append=True) == 0
+    assert out.read_text().strip() == "new\nnew"
+
+
+def test_cmd_summarize_append(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text('{"role":"user","content":"hi"}\n{"role":"assistant","content":"old"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda p, on_tool_use=None, on_text_delta=None: "SUMMARY",
+    ))
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    out = tmp_path / "sum.txt"
+    assert cli.cmd_summarize(_min_cfg(), "20260820-000001", "zen", "m", output=str(out), append=True) == 0
+    assert out.read_text().strip() == "SUMMARY"
+
+
 # --- init wizard ---
 def test_cmd_stats_all(tmp_path: Path, monkeypatch):
     import io

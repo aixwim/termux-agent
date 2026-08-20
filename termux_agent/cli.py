@@ -1628,6 +1628,7 @@ def cmd_summarize(
     notify: bool = False,
     redact: bool = False,
     temperature: float | None = None,
+    append: bool = False,
 ) -> int:
     """Have the agent summarize a session transcript (default: latest)."""
     import json as _json
@@ -1668,7 +1669,8 @@ def cmd_summarize(
         render_error(f"Summarize failed: {e}")
         return 1
     if output:
-        Path(output).write_text(summary + "\n", encoding="utf-8")
+        with open(Path(output).expanduser(), "a" if append else "w", encoding="utf-8") as f:
+            f.write(summary + "\n")
         render_info(f"Summary written to {output}")
     if notify:
         from termux_agent.notify import notify as _notify
@@ -1824,6 +1826,7 @@ def cmd_rerun(
     notify: bool = False,
     redact: bool = False,
     temperature: float | None = None,
+    append: bool = False,
 ) -> int:
     """Re-run the last user prompt of a session with the current model (fresh run)."""
     import json as _json
@@ -1865,7 +1868,8 @@ def cmd_rerun(
         render_error(f"Rerun failed: {e}")
         return 1
     if output:
-        Path(output).write_text(answer + "\n", encoding="utf-8")
+        with open(Path(output).expanduser(), "a" if append else "w", encoding="utf-8") as f:
+            f.write(answer + "\n")
         render_info(f"Answer written to {output}")
     if notify:
         from termux_agent.notify import notify as _notify
@@ -2655,7 +2659,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diff", action="store_true", help="With --watch: only print/notify when the answer changes; with --rerun: show the diff vs the previous answer")
     parser.add_argument("--exit-on-change", action="store_true", help="With --watch: stop as soon as the answer differs from the previous round")
     parser.add_argument("--exit-on-contains", metavar="TEXT", help="With --watch: stop as soon as the answer contains TEXT (case-insensitive)")
-    parser.add_argument("--append", action="store_true", help="With --watch --output: append each answer instead of overwriting")
+    parser.add_argument("--append", action="store_true", help="With --output: append the answer instead of overwriting (works for --watch, --rerun, and --summarize)")
     parser.add_argument("--batch", metavar="FILE", help="Run one one-shot per line of the file (blank lines skipped; '-' reads stdin); --output writes results as JSON")
     parser.add_argument("--retries", type=int, metavar="N", help="Override transient retry count for network hiccups")
     parser.add_argument("--no-fallback", action="store_true", help="Disable fallback models on 429/errors (use only the selected model)")
@@ -2863,6 +2867,7 @@ def main(argv: list[str] | None = None) -> int:
             notify=args.notify,
             redact=args.redact,
             temperature=args.temperature,
+            append=args.append,
         )
     if args.rerun:
         return cmd_rerun(
