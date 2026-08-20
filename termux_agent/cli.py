@@ -482,7 +482,7 @@ def _run_guarded(agent: Agent, prompt: str, on_tool_use, timeout: int | None, on
     return result["answer"]
 
 
-def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as_json: bool = False) -> int:
+def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as_json: bool = False, output: str | None = None) -> int:
     """Time one tiny prompt against each model of a provider (best-effort)."""
     import time
 
@@ -504,17 +504,28 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
             results.append((m, dt, len(answer), True))
         except Exception:  # noqa: BLE001
             results.append((m, time.monotonic() - start, 0, False))
-    if as_json:
+    if as_json or output:
         import json as _json
 
-        print(_json.dumps(
-            {"provider": provider_name, "models": [
+        payload = {
+            "provider": provider_name,
+            "models": [
                 {"model": m, "seconds": round(dt, 2), "chars": ch, "ok": ok}
                 for m, dt, ch, ok in results
-            ]},
-            ensure_ascii=False,
-        ))
-        return 0
+            ],
+        }
+        if output:
+            try:
+                Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                render_info(f"Benchmark written to {output}")
+            except OSError as e:
+                render_error(f"Cannot write output file {output}: {e}")
+                return 1
+        if as_json:
+            print(_json.dumps(payload, ensure_ascii=False))
+            return 0
+        if output and not as_json:
+            return 0
     from rich.table import Table
 
     from termux_agent.ui.renderer import console
@@ -1681,14 +1692,16 @@ def cmd_serve_stop(pidfile: str | None = None) -> int:
     return 0
 
 
-def cmd_cron(schedule: str, prompt: str, command: str | None = None, as_json: bool = False) -> int:
+def cmd_cron(schedule: str, prompt: str, command: str | None = None, as_json: bool = False, notify: bool = False) -> int:
     """Print a ready-to-add cron line running termux-agent one-shot."""
     import json as _json
 
     command = command or f"termux-agent --no-save --quiet {prompt!r}"
+    if notify:
+        command = command.replace("termux-agent ", "termux-agent --notify ", 1)
     line = f"{schedule} cd {Path.cwd()} && {command} >> ~/.termux-agent/cron.log 2>&1"
     if as_json:
-        print(_json.dumps({"schedule": schedule, "command": command, "line": line}, ensure_ascii=False))
+        print(_json.dumps({"schedule": schedule, "command": command, "line": line, "notify": notify}, ensure_ascii=False))
         return 0
     print(line)
     return 0
@@ -2049,7 +2062,7 @@ def _latest_pypi_version() -> str | None:
         return None
 
 
-def cmd_smoke(cfg: dict, provider: str | None, model: str | None, as_json: bool = False) -> int:
+def cmd_smoke(cfg: dict, provider: str | None, model: str | None, as_json: bool = False, output: str | None = None) -> int:
     """End-to-end smoke test: send a tiny prompt and verify the whole pipeline."""
     import json as _json
     import time
@@ -2081,20 +2094,23 @@ def cmd_smoke(cfg: dict, provider: str | None, model: str | None, as_json: bool 
     usage = agent.usage
     ok = bool(answer.strip())
     _maybe_notify(cfg, "Smoke test " + ("OK" if ok else "FAILED"), answer)
+    result = {
+        "ok": ok,
+        "provider": agent.provider.name,
+        "model": agent.provider.model,
+        "elapsed": round(elapsed, 2),
+        "usage": usage,
+        "answer": answer[:200],
+    }
+    if output:
+        try:
+            Path(output).expanduser().write_text(_json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            render_info(f"Smoke result written to {output}")
+        except OSError as e:
+            render_error(f"Cannot write output file {output}: {e}")
+            return 1
     if as_json:
-        print(
-            _json.dumps(
-                {
-                    "ok": ok,
-                    "provider": agent.provider.name,
-                    "model": agent.provider.model,
-                    "elapsed": round(elapsed, 2),
-                    "usage": usage,
-                    "answer": answer[:200],
-                },
-                ensure_ascii=False,
-            )
-        )
+        print(_json.dumps(result, ensure_ascii=False))
     else:
         render_info(
             f"Done in {elapsed:.1f}s | tokens: prompt {usage.get('prompt_tokens', 0)} / "
@@ -2132,7 +2148,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wakelock", action="store_true", help="Hold a Termux wake lock while a one-shot task runs (needs termux-api)")
     parser.add_argument("--speak", action="store_true", help="Read the answer aloud with termux-tts-speak (needs termux-api)")
     parser.add_argument("--timeout", type=int, metavar="SECONDS", help="Abort a one-shot task if it takes longer than this")
-    parser.add_argument("--output", metavar="FILE", help="Also write the answer to this file (plain text)")
+    parser.add_argument("--output", metavar="FILE", help="Also write the answer to this file (plain text); with --bench/--smoke writes the structured result (JSON)")
     parser.add_argument("--clip", action="store_true", help="Use the clipboard as the prompt (needs termux-api)")
     parser.add_argument("--attach", metavar="FILE", action="append", help="Read a file's contents into the prompt (repeatable)")
     parser.add_argument("--screenshot", action="store_true", help="Attach a screenshot of the screen to the prompt (needs termux-api + screen share)")
@@ -2167,7 +2183,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--restore", metavar="DIR", help="Restore config, memory, and sessions from a bundle directory ('-' reads a gzipped tar from stdin; --dry-run previews)")
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors (same as NO_COLOR=1)")
     parser.add_argument("--allow-dir", action="append", metavar="DIR", help="Grant the agent file access to an extra directory (repeatable)")
-    parser.add_argument("--cron", metavar="SCHEDULE", help="Print a ready-to-add cron line, e.g. '*/10 * * * *'")
+    parser.add_argument("--cron", metavar="SCHEDULE", help="Print a ready-to-add cron line, e.g. '*/10 * * * *' (--notify sends a notification)")
     parser.add_argument("--only-tools", metavar="LIST", help="Restrict the agent to exactly these comma-separated tool names, e.g. read_file,grep,glob")
     parser.add_argument("--log", metavar="FILE", help="Append a timestamped JSONL run log (tool calls, errors, result) for one-shot runs")
     parser.add_argument("--workers", type=int, default=1, metavar="N", help="Run --batch prompts in parallel with N workers")
@@ -2314,7 +2330,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.init:
         return cmd_init(args.provider, args.model, force=args.force)
     if args.bench:
-        return cmd_bench(cfg, args.bench, args.timeout or 60, as_json=args.json)
+        return cmd_bench(cfg, args.bench, args.timeout or 60, as_json=args.json, output=args.output)
     if args.export:
         return cmd_export(args.export, as_markdown=args.markdown, redact=args.redact)
     if args.export_all:
@@ -2359,7 +2375,7 @@ def main(argv: list[str] | None = None) -> int:
         if not prompt:
             render_error("--cron requires a one-shot prompt.")
             return 2
-        return cmd_cron(args.cron, prompt, as_json=args.json)
+        return cmd_cron(args.cron, prompt, as_json=args.json, notify=args.notify)
     if args.cleanup:
         return cmd_cleanup()
     if args.prune is not None:
@@ -2402,7 +2418,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.doctor or args.doctor_network:
         return cmd_doctor(cfg, network=args.doctor_network, as_json=args.json, termux=args.doctor_termux, update=args.doctor_update)
     if args.smoke:
-        return cmd_smoke(cfg, args.provider, args.model, as_json=args.json)
+        return cmd_smoke(cfg, args.provider, args.model, as_json=args.json, output=args.output)
     if args.serve_stop:
         return cmd_serve_stop(args.serve_pidfile)
     if args.serve:

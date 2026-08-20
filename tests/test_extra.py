@@ -5072,6 +5072,65 @@ def test_bundle_json_and_restore_dryrun(tmp_path: Path, monkeypatch):
     assert not (target / "config.yaml").exists()
 
 
+# --- bench/smoke output + cron notify ---
+def test_bench_output(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    cfg = _min_cfg()
+    cfg["providers"]["zen"]["models"] = ["m1", "m2"]
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+    ))
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    out_file = tmp_path / "bench.json"
+    assert cli.cmd_bench(cfg, "zen", as_json=True, output=str(out_file)) == 0
+    data = _json.loads(out_file.read_text(encoding="utf-8"))
+    assert data["provider"] == "zen"
+    assert len(data["models"]) == 2
+
+
+def test_smoke_output(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={"prompt_tokens": 5},
+        run=lambda p, on_tool_use=None, on_text_delta=None: "OK",
+    ))
+    monkeypatch.setattr(cli, "_maybe_notify", lambda *a, **k: None)
+    out_file = tmp_path / "smoke.json"
+    assert cli.cmd_smoke(_min_cfg(), "zen", "m", as_json=True, output=str(out_file)) == 0
+    data = _json.loads(out_file.read_text(encoding="utf-8"))
+    assert data["ok"] is True
+    assert data["provider"] == "zen"
+
+
+def test_cron_notify(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from termux_agent import cli
+
+    monkeypatch.chdir(tmp_path)
+    out = __import__("io").StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_cron("0 * * * *", "hello", as_json=True, notify=True) == 0
+    data = _json.loads(out.getvalue())
+    assert "--notify" in data["command"]
+    assert data["notify"] is True
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
