@@ -3175,7 +3175,8 @@ def test_cmd_completion(monkeypatch):
     monkeypatch.setattr(cli.sys, "stdout", out)
     assert cli.main(["--completion", "bash"]) == 0
     assert "_termux_agent" in out.getvalue()
-    assert cli.main(["--completion", "fish"]) == 1
+    assert cli.main(["--completion", "fish"]) == 0
+    assert cli.main(["--completion", "tcsh"]) == 1
 
 
 def test_watch_diff_skips_unchanged(monkeypatch):
@@ -5861,6 +5862,81 @@ def test_watch_attach(tmp_path: Path, monkeypatch):
     code = cli.cmd_watch(_min_cfg(), "read this", "zen", None, interval=1, max_rounds=1, attach=[str(notes)])
     assert code == 0
     assert "payload" in seen["p"]
+
+
+# --- fish completion / tokens dir / repl provider shorthand ---
+def test_completion_fish(tmp_path: Path, monkeypatch):
+    from termux_agent import cli
+    from termux_agent.completion import FISH_SCRIPT, install
+
+    out = __import__("io").StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    monkeypatch.setattr(cli.sys, "argv", ["termux-agent", "--completion", "fish"])
+    assert cli.main() == 0
+    assert "complete -c termux-agent" in out.getvalue()
+
+    home = tmp_path / "home"
+    monkeypatch.setattr("os.path.expanduser", lambda p: str(home) if p == "~" else p)
+    rc = install("fish")
+    assert rc.endswith(".config/fish/completions/termux-agent.fish")
+    assert FISH_SCRIPT in open(rc, encoding="utf-8").read()
+
+
+def test_tokens_dir(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    d = tmp_path / "tree"
+    (d / "sub").mkdir(parents=True)
+    (d / "a.txt").write_text("hello world", encoding="utf-8")
+    (d / "sub" / "b.txt").write_text("another file here", encoding="utf-8")
+    (d / "skip.bin").write_bytes(b"\x00\x01\x02")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_tokens(str(d), as_json=True) == 0
+    data = _json.loads(out.getvalue())
+    assert data["ok"] is True
+    assert data["files"] == 2
+    assert data["chars"] == len("hello world") + len("another file here")
+
+
+def test_repl_provider_shorthand(monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent.session import Session
+    from termux_agent.ui.repl import Repl
+
+    seen = {}
+
+    class P:
+        name = "zen"
+        model = "model-x"
+
+        def __init__(self, name, cfg, model):
+            seen["model"] = model
+
+    def fake_create(name, cfg, model):
+        return P(name, cfg, model)
+
+    monkeypatch.setattr("termux_agent.providers.create_provider", fake_create)
+    monkeypatch.setattr("termux_agent.config.load_config", lambda *a, **k: {})
+    monkeypatch.setattr("termux_agent.ui.repl.Session", lambda **k: Session())
+    agent = SimpleNamespace(
+        provider=P("zen", {}, None),
+        ctx=SimpleNamespace(working_dir="/tmp"),
+        system_prompt="SYS",
+        messages=[{"role": "system", "content": "SYS"}],
+    )
+    repl = Repl(agent, provider_name="zen", model="m")
+    out = io.StringIO()
+    monkeypatch.setattr("termux_agent.ui.repl.sys.stdout", out)
+    assert repl._handle_command("/provider zen:model-x", None) is False
+    assert seen["model"] == "model-x"
+    assert repl.provider_name == "zen"
+    assert repl.model == "model-x"
 
 
 # --- init wizard ---

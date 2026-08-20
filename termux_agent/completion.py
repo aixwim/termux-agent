@@ -1,4 +1,4 @@
-"""Auto-completion installation for termux-agent (bash/zsh)."""
+"""Auto-completion installation for termux-agent (bash/zsh/fish)."""
 from __future__ import annotations
 
 import os
@@ -60,6 +60,33 @@ compdef _termux_agent termux-agent
 '''
 
 
+FISH_SCRIPT = '''\
+function __termux_agent_flags
+    termux-agent --help 2>/dev/null | grep -oE '\\-\\-[a-z0-9-]+' | sort -u
+end
+
+complete -c termux-agent -f
+complete -c termux-agent -a '(__termux_agent_flags)'
+complete -c termux-agent -l agent -a '(termux-agent --list-agents 2>/dev/null | awk \'{print $1}\')' -d 'agent role'
+complete -c termux-agent -l provider -a '(termux-agent --list-providers 2>/dev/null | awk \'{print $1}\')' -d 'provider'
+complete -c termux-agent -l models -a '(termux-agent --list-providers 2>/dev/null | awk \'{print $1}\')' -d 'provider'
+complete -c termux-agent -l output -r -d 'output file'
+complete -c termux-agent -l import -r -d 'file to import'
+complete -c termux-agent -l prompt-file -r -d 'prompt file'
+complete -c termux-agent -l cwd -r -d 'working directory'
+complete -c termux-agent -l image -r -d 'image path'
+complete -c termux-agent -l api-key -r -d 'api key'
+complete -c termux-agent -l resume -r -d 'session id'
+complete -c termux-agent -l export -r -d 'session id'
+complete -c termux-agent -l attach -r -d 'file to attach'
+complete -c termux-agent -l token-file -r -d 'token file'
+complete -c termux-agent -l tls-cert -r -d 'TLS certificate'
+complete -c termux-agent -l tls-key -r -d 'TLS private key'
+complete -c termux-agent -l bundle -r -d 'backup directory'
+complete -c termux-agent -l restore -r -d 'bundle directory'
+'''
+
+
 def install(shell: str) -> str:
     shell = shell.lower()
     home = os.path.expanduser("~")
@@ -69,8 +96,14 @@ def install(shell: str) -> str:
     elif shell == "bash":
         rc = os.path.join(home, ".bashrc")
         script = BASH_SCRIPT
+    elif shell == "fish":
+        rc = os.path.join(home, ".config", "fish", "completions", "termux-agent.fish")
+        os.makedirs(os.path.dirname(rc), exist_ok=True)
+        with open(rc, "w", encoding="utf-8") as f:
+            f.write(FISH_SCRIPT)
+        return rc
     else:
-        raise ValueError(f"Unsupported shell: {shell} (use bash or zsh)")
+        raise ValueError(f"Unsupported shell: {shell} (use bash, zsh, or fish)")
     block = f"\n# >>> termux-agent completion (v{__version__}) >>>\n{script}# <<< termux-agent completion <<<\n"
     if os.path.exists(rc):
         with open(rc, encoding="utf-8") as f:

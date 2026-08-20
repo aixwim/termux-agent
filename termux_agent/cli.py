@@ -1057,8 +1057,10 @@ def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None, 
 
 
 def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False, session_ref: str | None = None, output: str | None = None) -> int:
-    """Estimate token usage of a file, inline text, or session transcript."""
+    """Estimate token usage of a file, directory, inline text, or session transcript."""
     import sys as _sys
+
+    extra: dict = {}
 
     if session_ref is not None:
         from termux_agent.session import export_session
@@ -1074,6 +1076,30 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
                 render_error("Session not found.")
             return 1
         chars = sum(len(str(m.get("content", ""))) for m in data.get("messages", []))
+    elif path and Path(path).expanduser().is_dir():
+        import re as _re
+
+        root = Path(path).expanduser()
+        skip = {".git", ".hg", ".svn", "__pycache__", "node_modules", ".venv", "venv", ".tox", "build", "dist", ".termux-agent"}
+        total = 0
+        files = 0
+        for p in root.rglob("*"):
+            if p.is_file():
+                if any(part in skip for part in p.relative_to(root).parts):
+                    continue
+                try:
+                    raw = p.read_bytes()
+                except OSError:
+                    continue
+                if b"\x00" in raw[:4096]:
+                    continue
+                try:
+                    total += len(raw.decode("utf-8", errors="ignore"))
+                    files += 1
+                except Exception:  # noqa: BLE001
+                    continue
+        chars = total
+        extra = {"files": files}
     elif path:
         try:
             text = Path(path).expanduser().read_text(encoding="utf-8")
@@ -1086,16 +1112,19 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
                 render_error(f"Cannot read file: {e}")
             return 1
         chars = len(text)
+        extra = {}
     elif not text:
         text = _sys.stdin.read() if not _sys.stdin.isatty() else ""
         chars = len(text)
+        extra = {}
     else:
         chars = len(text)
+        extra = {}
     estimated = max(1, chars // 4)
     if as_json or output:
         import json as _json
 
-        payload = {"ok": True, "chars": chars, "tokens": estimated}
+        payload = {"ok": True, "chars": chars, "tokens": estimated, **extra}
         if output:
             try:
                 Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2474,14 +2503,14 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         const="bash",
         metavar="SHELL",
-        help="Install auto-completion into .bashrc/.zshrc (default bash)",
+        help="Install auto-completion into .bashrc/.zshrc/fish (default bash)",
     )
     parser.add_argument(
         "--completion",
         nargs="?",
         const="bash",
         metavar="SHELL",
-        help="Print the auto-completion script for bash/zsh to stdout (no install)",
+        help="Print the auto-completion script for bash/zsh/fish to stdout (no install)",
     )
     parser.add_argument(
         "--resume",
@@ -2728,15 +2757,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.completion:
-        from termux_agent.completion import BASH_SCRIPT, ZSH_SCRIPT
+        from termux_agent.completion import BASH_SCRIPT, FISH_SCRIPT, ZSH_SCRIPT
 
         shell = args.completion.lower()
         if shell == "bash":
             script = BASH_SCRIPT
         elif shell == "zsh":
             script = ZSH_SCRIPT
+        elif shell == "fish":
+            script = FISH_SCRIPT
         else:
-            render_error("Unsupported shell (use bash or zsh).")
+            render_error("Unsupported shell (use bash, zsh, or fish).")
             return 1
         if args.output:
             try:

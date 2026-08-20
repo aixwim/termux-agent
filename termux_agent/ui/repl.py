@@ -647,18 +647,24 @@ class Repl:
         from termux_agent.config import load_config
         from termux_agent.providers import create_provider
 
+        pname = name
+        pmodel = None
+        if ":" in name:
+            pname, _, pmodel = name.partition(":")
+            pname = pname.strip()
+            pmodel = pmodel.strip() or None
         try:
             cfg = load_config()
-            provider = create_provider(name, cfg, self.model)
+            provider = create_provider(pname, cfg, pmodel or self.model)
         except Exception as e:  # noqa: BLE001
             render_error(f"Failed to switch provider: {e}")
             return
-        self.provider_name = name
+        self.provider_name = pname
         self.agent.provider = provider
         self.agent.messages = [{"role": "system", "content": self.agent.system_prompt}]
-        self.session = Session(provider_name=name, model=provider.model)
+        self.session = Session(provider_name=pname, model=provider.model)
         self.model = provider.model
-        render_info(f"Provider switched to: {name} / {provider.model}")
+        render_info(f"Provider switched to: {pname} / {provider.model}")
 
     def _run_turn(self, user_input: str) -> None:
         self._last_user_input = user_input
