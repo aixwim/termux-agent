@@ -2270,6 +2270,22 @@ def main(argv: list[str] | None = None) -> int:
             render_error("--image requires a one-shot prompt (or --prompt-file).")
             return 2
         img = args.image
+        if img.startswith(("http://", "https://")):
+            import tempfile
+            import urllib.parse
+            import urllib.request
+
+            try:
+                with urllib.request.urlopen(img, timeout=30) as resp:
+                    data = resp.read()
+                ext = Path(urllib.parse.urlparse(img).path).suffix or ".jpg"
+                tmp_img = Path(tempfile.gettempdir()) / f"termux-agent-img{ext}"
+                tmp_img.write_bytes(data)
+                img = str(tmp_img)
+                render_info(f"Downloaded image to {img} ({len(data)} bytes).")
+            except Exception as e:  # noqa: BLE001
+                render_error(f"Failed to download image: {e}")
+                return 1
         if not Path(img).expanduser().is_file():
             render_error(f"Image not found: {img}")
             return 1

@@ -4287,6 +4287,93 @@ def test_doctor_sessions_check(tmp_path: Path, monkeypatch):
     assert "1 stored" in sess["detail"]
 
 
+# --- image url / init noninteractive / config show yaml ---
+def test_image_url_download(tmp_path: Path, monkeypatch):
+    import io
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    import threading
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    served = {}
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            served["path"] = self.path
+            body = b"fakepng"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv_http = HTTPServer(("127.0.0.1", 0), H)
+    port = srv_http.server_address[1]
+    t = threading.Thread(target=srv_http.serve_forever, daemon=True)
+    t.start()
+    try:
+        import yaml
+
+        cf = tmp_path / "config.yaml"
+        cf.write_text(yaml.safe_dump({"provider": "zen", "model": "m", "providers": {"zen": {"type": "openai", "models": ["m"]}}}))
+        monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        ))
+        monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+        url = f"http://127.0.0.1:{port}/photo.jpg"
+        out = io.StringIO()
+        monkeypatch.setattr(cli.sys, "stdout", out)
+        assert cli.main(["--config", str(cf), "--image", url, "--provider", "zen", "describe"]) == 0
+        assert served.get("path") == "/photo.jpg"
+        assert "Downloaded image" in out.getvalue()
+    finally:
+        srv_http.shutdown()
+        srv_http.server_close()
+
+
+def test_init_noninteractive(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, config
+
+    cdir = tmp_path / "cfg"
+    cdir.mkdir()
+    monkeypatch.setattr(cli, "CONFIG_DIR", cdir)
+    monkeypatch.setattr(cli, "CONFIG_FILE", cdir / "config.yaml")
+    monkeypatch.setattr(config, "DEFAULTS", {
+        "provider": "zen",
+        "model": "m-default",
+        "providers": {"zen": {"type": "openai", "models": ["m-default", "m2"]}},
+    })
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_init(provider="zen", model="m2") == 0
+    import yaml
+
+    cfg = yaml.safe_load((cdir / "config.yaml").read_text())
+    assert cfg["provider"] == "zen"
+    assert cfg["model"] == "m2"
+
+
+def test_config_show_yaml(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_config_show(_min_cfg()) == 0
+    assert "provider: zen" in out.getvalue()
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

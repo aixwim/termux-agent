@@ -38,7 +38,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Undo file changes**: `/undo` in interactive mode restores the most recent file write/edit (the agent keeps a snapshot of every changed file).
 - **JSON output**: `termux-agent --json "prompt"` prints a machine-readable result `{ok, answer, tool_calls, usage, provider, model}`.
 - **Web search without an API key**: `web_search` uses DuckDuckGo, with a Wikipedia fallback when the network blocks/rejects certificates.
-- **Image / vision input**: `--image photo.jpg` or the inline marker `[image: path]` in a prompt attach a picture (e.g. a screenshot) for vision-capable models.
+- **Image / vision input**: `--image photo.jpg` or the inline marker `[image: path]` in a prompt attach a picture (e.g. a screenshot) for vision-capable models; `--image https://...` downloads a remote image first.
 - **Auto-completion**: `--install-completion bash|zsh` adds Tab-completion to your shell (providers, agents, and CLI options).
 - **Diagnostics**: `--doctor` checks the Termux environment, config, PATH, free disk space, session storage, and API key; `--doctor-network` also tests provider connectivity; `--smoke` sends a tiny real prompt end-to-end to verify the whole pipeline (`--smoke --json` returns a structured result).
 - **Project rules**: `AGENTS.md`, `CLAUDE.md`, or `.termux-agent/rules.md` in the working directory (and parents up to `$HOME`) are auto-loaded into the agent's instructions — like opencode.
