@@ -106,11 +106,37 @@ class _AgentHandler(BaseHTTPRequestHandler):
     model: str | None = None
     auto_accept: bool = False
     token: str | None = None
+    log_path: str | None = None
 
     def log_message(self, fmt: str, *args: Any) -> None:
         pass
 
+    def _log_request(self, status: int, ms: float) -> None:
+        if not self.log_path:
+            return
+        import datetime
+        from pathlib import Path
+
+        line = json.dumps(
+            {
+                "ts": datetime.datetime.now().isoformat(timespec="seconds"),
+                "method": self.command,
+                "path": self.path.split("?", 1)[0],
+                "status": status,
+                "ms": round(ms, 1),
+            },
+            ensure_ascii=False,
+        )
+        try:
+            with open(Path(self.log_path).expanduser(), "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+
     def _send(self, code: int, payload: dict[str, Any]) -> None:
+        import time as _time
+
+        t0 = _time.monotonic()
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -119,6 +145,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.end_headers()
         self.wfile.write(body)
+        self._log_request(code, (_time.monotonic() - t0) * 1000)
 
     def do_OPTIONS(self) -> None:
         self.send_response(204)
@@ -263,6 +290,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                     self.send_header("Content-Length", str(len(_session_to_markdown(data).encode("utf-8"))))
                     self.end_headers()
                     self.wfile.write(_session_to_markdown(data).encode("utf-8"))
+                    self._log_request(200, 0)
                 else:
                     self._send(200, data)
             except FileNotFoundError:
@@ -413,7 +441,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
         self._send(200, {"ok": True, "deleted": removed.stem})
 
 
-def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | None = None, model: str | None = None, auto_accept: bool = False, token: str | None = None) -> int:
+def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | None = None, model: str | None = None, auto_accept: bool = False, token: str | None = None, log_file: str | None = None) -> int:
     from termux_agent.cli import build_agent as _build
 
     handler = _AgentHandler
@@ -423,6 +451,7 @@ def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | 
     handler.model = model
     handler.auto_accept = auto_accept
     handler.token = token
+    handler.log_path = log_file
     httpd = ThreadingHTTPServer((host, port), handler)
     import sys
 

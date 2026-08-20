@@ -4223,6 +4223,70 @@ def test_bench_json(tmp_path: Path, monkeypatch):
     assert all(m["ok"] for m in data["models"])
 
 
+# --- server request log / doctor sessions ---
+def test_server_request_log(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    log_file = tmp_path / "server.jsonl"
+    handler = srv._AgentHandler
+    handler.log_path = str(log_file)
+    try:
+        httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=10) as r:
+                r.read()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+    finally:
+        handler.log_path = None
+    lines = [l for l in log_file.read_text().strip().splitlines() if l]
+    assert len(lines) == 1
+    rec = _json.loads(lines[0])
+    assert rec["method"] == "GET"
+    assert rec["path"] == "/health"
+    assert rec["status"] == 200
+
+
+def test_doctor_sessions_check(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "x"}], "zen", "m")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cli.sys, "stdout", out)
+        assert cli.cmd_doctor(_min_cfg(), as_json=True) == 0
+    checks = _json.loads(out.getvalue())["checks"]
+    sess = next((c for c in checks if c["label"] == "sessions"), None)
+    assert sess is not None
+    assert "1 stored" in sess["detail"]
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

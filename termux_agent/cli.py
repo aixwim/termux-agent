@@ -1460,6 +1460,7 @@ def cmd_serve(
     token: str | None,
     background: bool = False,
     pidfile: str | None = None,
+    log_file: str | None = None,
 ) -> int:
     """Run the HTTP API server, optionally detached in the background."""
     if background:
@@ -1480,6 +1481,8 @@ def cmd_serve(
             cmd += ["--yes"]
         if token:
             cmd += ["--token", token]
+        if log_file:
+            cmd += ["--log", log_file]
         with open(log_path, "a", encoding="utf-8") as logf:
             proc = subprocess.Popen(
                 cmd,
@@ -1497,7 +1500,7 @@ def cmd_serve(
         return 0
     from termux_agent.server import serve
 
-    return serve(cfg, host=host, port=port, provider=provider, model=model, auto_accept=auto_accept, token=token)
+    return serve(cfg, host=host, port=port, provider=provider, model=model, auto_accept=auto_accept, token=token, log_file=log_file)
 
 
 def cmd_serve_stop(pidfile: str | None = None) -> int:
@@ -1769,6 +1772,14 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
         add("free disk (/)", True, f"{free_gb:.1f} GiB free of {du.total / (1024 ** 3):.1f} GiB")
     except OSError as e:
         add("free disk (/)", False, str(e))
+    try:
+        from termux_agent.session import SESSIONS_DIR, list_sessions
+
+        sess = list_sessions()
+        total = sum(s.stat().st_size for s in sess)
+        add("sessions", True, f"{len(sess)} stored, {total / 1024:.1f} KiB total")
+    except OSError as e:
+        add("sessions", False, str(e))
     pname = cfg.get("provider", "zen")
     pc = cfg.get("providers", {}).get(pname, {})
     add("active provider", True, f"{pname} ({pc.get('type')})")
@@ -2181,6 +2192,7 @@ def main(argv: list[str] | None = None) -> int:
             token=token,
             background=args.serve_background,
             pidfile=args.serve_pidfile,
+            log_file=args.log,
         )
 
     if args.verbose:
