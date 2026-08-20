@@ -59,6 +59,7 @@ Special commands (start with /):
   /plan           toggle plan-first mode (propose, approve, then execute)
   /system         show the effective system prompt
   /usage          show token usage for this session
+  /bench          run a quick latency benchmark of the provider's models
   /context        attach/refresh device context (battery/wifi/time) in the system prompt
   /image PATH     attach an image to the next turn
   /attach FILE    read a file's contents into the next turn (URLs are fetched too; repeatable)
@@ -397,6 +398,12 @@ class Repl:
             if self.agent.messages and self.agent.messages[0].get("role") == "system":
                 self.agent.messages[0]["content"] = self.agent.system_prompt
             render_info(f"Device context {'attached' if ctx else 'unavailable'}.")
+        elif c == "/bench":
+            from termux_agent.cli import cmd_bench
+            from termux_agent.config import load_config
+
+            render_info("Benchmarking models (one tiny request each)...")
+            cmd_bench(load_config(), self.provider_name)
         else:
             render_error(f"Unknown command: {c}")
         return False

@@ -5406,6 +5406,86 @@ def test_completion_output(tmp_path: Path, monkeypatch):
     assert "_termux_agent" in out_file.read_text(encoding="utf-8")
 
 
+# --- summarize/rerun redact + repl bench ---
+def test_summarize_redact(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}], "zen", "m", session_id="sum-red")
+    seen = {}
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            run=lambda p, on_tool_use=None, on_text_delta=None: seen.__setitem__("p", p) or "summary",
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_summarize(_min_cfg(), "sum-red", "zen", "m", as_json=True, redact=True) == 0
+    assert _json.loads(out.getvalue())["summary"] == "summary"
+
+
+def test_rerun_redact(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "ask"}, {"role": "assistant", "content": "old"}], "zen", "m", session_id="rr-red")
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda p, on_tool_use=None, on_text_delta=None: "new",
+    ))
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_rerun(_min_cfg(), "rr-red", "zen", "m", as_json=True, redact=True) == 0
+    assert _json.loads(out.getvalue())["ok"] is True
+
+
+def test_repl_bench(tmp_path: Path, monkeypatch):
+    import io
+
+    from types import SimpleNamespace
+
+    from termux_agent.session import Session
+    from termux_agent.ui.repl import Repl
+
+    agent = SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path, undo=lambda: "noop"),
+        system_prompt="BASE",
+        messages=[{"role": "system", "content": "BASE"}],
+        allowed_tools=set(),
+        temperature=0.7,
+        max_tool_rounds=20,
+        run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+    )
+    monkeypatch.setattr("termux_agent.ui.repl.Session", lambda **k: Session())
+    monkeypatch.setattr("termux_agent.cli.cmd_bench", lambda *a, **k: 0)
+    repl = Repl(agent, provider_name="zen", model="m")
+    assert repl._handle_command("/bench", None) is False
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

@@ -1416,6 +1416,7 @@ def cmd_summarize(
     as_json: bool = False,
     timeout: int | None = None,
     notify: bool = False,
+    redact: bool = False,
 ) -> int:
     """Have the agent summarize a session transcript (default: latest)."""
     import json as _json
@@ -1428,6 +1429,8 @@ def cmd_summarize(
     except FileNotFoundError:
         render_error("Session not found.")
         return 1
+    if redact:
+        data = _redact_cfg(data)
     sid = data.get("id", "?")
     transcript = []
     for m in data.get("messages", []):
@@ -1600,6 +1603,7 @@ def cmd_rerun(
     attach: list[str] | None = None,
     diff: bool = False,
     notify: bool = False,
+    redact: bool = False,
 ) -> int:
     """Re-run the last user prompt of a session with the current model (fresh run)."""
     import json as _json
@@ -1612,6 +1616,8 @@ def cmd_rerun(
     except FileNotFoundError:
         render_error("Session not found.")
         return 1
+    if redact:
+        data = _redact_cfg(data)
     last_user = next(
         (str(m.get("content", "")) for m in reversed(data.get("messages", [])) if m.get("role") == "user"),
         "",
@@ -2531,6 +2537,7 @@ def main(argv: list[str] | None = None) -> int:
             as_json=args.json,
             timeout=args.timeout,
             notify=args.notify,
+            redact=args.redact,
         )
     if args.rerun:
         return cmd_rerun(
@@ -2544,6 +2551,7 @@ def main(argv: list[str] | None = None) -> int:
             attach=args.attach,
             diff=args.diff,
             notify=args.notify,
+            redact=args.redact,
         )
     if args.tokens is not None or args.session is not None:
         return cmd_tokens(args.tokens, as_json=args.json, session_ref=args.session, output=args.output)
