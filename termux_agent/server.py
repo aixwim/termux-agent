@@ -11,6 +11,8 @@ Endpoints:
   POST /batch    -> {prompts: [...]} runs each prompt (optional provider/model)
   GET  /sessions -> list saved sessions (first 50)
   GET  /sessions/<id> -> full session transcript
+  GET  /sessions/<id>?markdown=1 -> transcript as markdown
+  DELETE /sessions/<id> -> delete a session
   POST /chat     -> {"prompt": ..., "history": [...], "agent": ..., "auto_accept": ...}
 """
 from __future__ import annotations
@@ -227,15 +229,25 @@ class _AgentHandler(BaseHTTPRequestHandler):
                         }
                     )
                 self._send(200, {"sessions": sessions})
-        elif self.path.startswith("/sessions/"):
+        elif self.path.split("?", 1)[0].startswith("/sessions/"):
             if not _authorized(self):
                 _send_unauthorized(self)
                 return
-            sid = self.path.rsplit("/", 1)[-1]
+            sid = self.path.split("?", 1)[0].rsplit("/", 1)[-1]
             try:
                 from termux_agent.session import export_session
 
-                self._send(200, export_session(sid))
+                data = export_session(sid)
+                if "?" in self.path and "markdown=1" in self.path:
+                    from termux_agent.cli import _session_to_markdown
+
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/markdown; charset=utf-8")
+                    self.send_header("Content-Length", str(len(_session_to_markdown(data).encode("utf-8"))))
+                    self.end_headers()
+                    self.wfile.write(_session_to_markdown(data).encode("utf-8"))
+                else:
+                    self._send(200, data)
             except FileNotFoundError:
                 self._send(404, {"ok": False, "error": "session not found"})
         else:
@@ -347,6 +359,26 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 "usage": usage,
             },
         )
+
+    def do_DELETE(self) -> None:
+        if not _authorized(self):
+            _send_unauthorized(self)
+            return
+        path = self.path.split("?", 1)[0]
+        if not path.startswith("/sessions/"):
+            self._send(404, {"ok": False, "error": "not found"})
+            return
+        sid = path.rsplit("/", 1)[-1]
+        if not sid:
+            self._send(404, {"ok": False, "error": "not found"})
+            return
+        from termux_agent.session import delete_session
+
+        removed = delete_session(sid)
+        if removed is None:
+            self._send(404, {"ok": False, "error": "session not found"})
+            return
+        self._send(200, {"ok": True, "deleted": removed.stem})
 
 
 def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | None = None, model: str | None = None, auto_accept: bool = False, token: str | None = None) -> int:

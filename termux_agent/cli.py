@@ -1041,24 +1041,35 @@ def cmd_config_show(cfg: dict, as_json: bool = False) -> int:
     return 0
 
 
-def cmd_prune_days(days: int, as_json: bool = False, dry_run: bool = False) -> int:
+def cmd_prune_days(days: int, as_json: bool = False, dry_run: bool = False, keep: int = 0) -> int:
     import json as _json
     import time
 
     from termux_agent.session import list_sessions, prune_days
 
-    if dry_run:
+    if keep > 0:
+        by_mtime = sorted(list_sessions(), key=lambda s: s.stat().st_mtime, reverse=True)
+        cut = by_mtime[keep:]
+        if dry_run:
+            removed = sum(1 for s in cut if s.stat().st_mtime < time.time() - max(1, days) * 86400)
+        else:
+            removed = 0
+            for s in cut:
+                if s.stat().st_mtime < time.time() - max(1, days) * 86400:
+                    s.unlink(missing_ok=True)
+                    removed += 1
+    elif dry_run:
         cutoff = time.time() - max(1, days) * 86400
         removed = sum(1 for s in list_sessions() if s.stat().st_mtime < cutoff)
     else:
         removed = prune_days(max(1, days))
     if as_json:
-        print(_json.dumps({"removed": removed, "days": days, "dry_run": dry_run}, ensure_ascii=False))
+        print(_json.dumps({"removed": removed, "days": days, "dry_run": dry_run, "keep": keep}, ensure_ascii=False))
         return 0
     if dry_run:
-        render_info(f"Would remove {removed} session(s) older than {days} day(s). (dry run)")
+        render_info(f"Would remove {removed} session(s) older than {days} day(s), keeping the {keep} newest." if keep else f"Would remove {removed} session(s) older than {days} day(s). (dry run)")
     else:
-        render_info(f"Removed {removed} session(s) older than {days} day(s).")
+        render_info(f"Removed {removed} session(s) older than {days} day(s), keeping the {keep} newest." if keep else f"Removed {removed} session(s) older than {days} day(s).")
     return 0
 
 
@@ -1893,6 +1904,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--import", dest="import_path", metavar="FILE", help="Import a portable session JSON file ('-' reads stdin; --dry-run validates only)")
     parser.add_argument("--prune", type=int, metavar="N", help="Delete all sessions except the newest N (--dry-run previews)")
     parser.add_argument("--prune-days", type=int, metavar="DAYS", help="Delete sessions older than this many days (--dry-run previews)")
+    parser.add_argument("--keep", type=int, default=0, metavar="N", help="With --prune-days: keep the N newest sessions")
     parser.add_argument("--dry-run", action="store_true", help="With --prune/--prune-days: show what would be deleted without deleting")
     parser.add_argument("--config-show", action="store_true", help="Print the effective merged configuration as YAML")
     parser.add_argument("--list-tools", action="store_true", help="List all registered tools")
@@ -2027,7 +2039,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.prune is not None:
         return cmd_prune(args.prune, as_json=args.json, dry_run=args.dry_run)
     if args.prune_days is not None:
-        return cmd_prune_days(args.prune_days, as_json=args.json, dry_run=args.dry_run)
+        return cmd_prune_days(args.prune_days, as_json=args.json, dry_run=args.dry_run, keep=args.keep)
     if args.config_show:
         return cmd_config_show(cfg, as_json=args.json)
     if args.list_tools:

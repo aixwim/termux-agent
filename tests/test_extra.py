@@ -3806,6 +3806,108 @@ def test_bundle_stdout(tmp_path: Path, monkeypatch):
     assert "config.json" in names
 
 
+# --- server DELETE session / markdown / prune keep ---
+def test_server_delete_session(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    sid = session.record_messages([{"role": "user", "content": "hi"}], "zen", "m")
+    assert (sdir / f"{sid}.jsonl").exists()
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/sessions/{sid}", method="DELETE")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["deleted"] == sid
+        assert not (sdir / f"{sid}.jsonl").exists()
+        try:
+            urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{port}/sessions/{sid}", method="DELETE"), timeout=10)
+            assert False
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_server_session_markdown(tmp_path: Path, monkeypatch):
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    sid = session.record_messages([{"role": "user", "content": "hi"}], "zen", "m")
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/sessions/{sid}?markdown=1", timeout=10) as r:
+            body = r.read().decode()
+        assert "hi" in body
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_prune_days_keep(tmp_path: Path, monkeypatch):
+    import io
+    import time
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    old = session.record_messages([{"role": "user", "content": "old"}], "zen", "m", session_id="old-sess")
+    new = session.record_messages([{"role": "user", "content": "new"}], "zen", "m", session_id="new-sess")
+    past = time.time() - 10 * 86400
+    import os
+
+    os.utime(sdir / f"{old}.jsonl", (past, past))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_prune_days(days=7, keep=1) == 0
+    assert not (sdir / f"{old}.jsonl").exists()
+    assert (sdir / f"{new}.jsonl").exists()
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
