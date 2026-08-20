@@ -5040,7 +5040,7 @@ def test_doctor_update_check(monkeypatch):
 def test_version_is_100():
     import termux_agent
 
-    assert termux_agent.__version__ == "1.0.0"
+    assert termux_agent.__version__ == "1.1.0"
 
 
 # --- repl maxrounds / server mct+cors / serve cors ---

@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented here.
 
+## [1.1.0] - 2026-08-20
+
+### Optimization for Termux
+
+- **Much faster startup** — lazy-loaded heavy imports (`prompt_toolkit`, `httpx`, `rich`, `yaml`, `urllib`). `--version` went from ~3.8s to ~0.8s on-device.
+- **Narrow-terminal aware rendering** — automatically switches to plain output on dumb/small terminals (phone screens, piped automation) instead of slow ANSI/markdown rendering.
+- **Fast session listing** — `--sessions` reads only the metadata lines of each session file instead of decoding every record.
+- **Mobile-friendly default** — `retries` bumped to 2 for flaky cellular networks.
+- **Storage detection in `--doctor`** — suggests enabling `allow_storage` when Android storage is detected.
+
 ## [1.0.0] - 2026-08-20
 
 Initial public release.
