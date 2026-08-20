@@ -1343,7 +1343,7 @@ def cmd_list_tools(as_json: bool = False, output: str | None = None) -> int:
     return 0
 
 
-def cmd_forget(ref: str | None = None, as_json: bool = False) -> int:
+def cmd_forget(ref: str | None = None, as_json: bool = False, output: str | None = None) -> int:
     import json as _json
 
     from termux_agent.session import delete_session
@@ -1355,6 +1355,14 @@ def cmd_forget(ref: str | None = None, as_json: bool = False) -> int:
         else:
             render_error("Session not found.")
         return 1
+    if output:
+        try:
+            Path(output).expanduser().write_text(_json.dumps({"ok": True, "deleted": removed.stem}, ensure_ascii=False, indent=2), encoding="utf-8")
+            render_info(f"Deletion report written to {output}")
+        except OSError as e:
+            render_error(f"Cannot write output file {output}: {e}")
+            return 1
+        return 0
     if as_json:
         print(_json.dumps({"ok": True, "deleted": removed.stem}, ensure_ascii=False))
     else:
@@ -1798,7 +1806,7 @@ def cmd_serve_stop(pidfile: str | None = None) -> int:
     return 0
 
 
-def cmd_cron(schedule: str, prompt: str, command: str | None = None, as_json: bool = False, notify: bool = False) -> int:
+def cmd_cron(schedule: str, prompt: str, command: str | None = None, as_json: bool = False, notify: bool = False, output: str | None = None) -> int:
     """Print a ready-to-add cron line running termux-agent one-shot."""
     import json as _json
 
@@ -1806,6 +1814,14 @@ def cmd_cron(schedule: str, prompt: str, command: str | None = None, as_json: bo
     if notify:
         command = command.replace("termux-agent ", "termux-agent --notify ", 1)
     line = f"{schedule} cd {Path.cwd()} && {command} >> ~/.termux-agent/cron.log 2>&1"
+    if output:
+        try:
+            Path(output).expanduser().write_text(line + "\n", encoding="utf-8")
+            render_info(f"Cron line written to {output}")
+        except OSError as e:
+            render_error(f"Cannot write output file {output}: {e}")
+            return 1
+        return 0
     if as_json:
         print(_json.dumps({"schedule": schedule, "command": command, "line": line, "notify": notify}, ensure_ascii=False))
         return 0
@@ -2500,7 +2516,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.export_all:
         return cmd_export_all(args.export_all, as_markdown=args.markdown, as_json=args.json, redact=args.redact)
     if args.forget:
-        return cmd_forget(args.forget, as_json=args.json)
+        return cmd_forget(args.forget, as_json=args.json, output=args.output)
     if args.import_path:
         return cmd_import(args.import_path, dry_run=args.dry_run, as_json=args.json, markdown=args.markdown)
     if args.show:
@@ -2539,7 +2555,7 @@ def main(argv: list[str] | None = None) -> int:
         if not prompt:
             render_error("--cron requires a one-shot prompt.")
             return 2
-        return cmd_cron(args.cron, prompt, as_json=args.json, notify=args.notify)
+        return cmd_cron(args.cron, prompt, as_json=args.json, notify=args.notify, output=args.output)
     if args.cleanup:
         return cmd_cleanup()
     if args.prune is not None:
@@ -2655,12 +2671,21 @@ def main(argv: list[str] | None = None) -> int:
 
         shell = args.completion.lower()
         if shell == "bash":
-            print(BASH_SCRIPT, end="")
+            script = BASH_SCRIPT
         elif shell == "zsh":
-            print(ZSH_SCRIPT, end="")
+            script = ZSH_SCRIPT
         else:
             render_error("Unsupported shell (use bash or zsh).")
             return 1
+        if args.output:
+            try:
+                Path(args.output).expanduser().write_text(script, encoding="utf-8")
+                render_info(f"Completion script written to {args.output}")
+            except OSError as e:
+                render_error(f"Cannot write output file {args.output}: {e}")
+                return 1
+            return 0
+        print(script, end="")
         return 0
 
     prompt = " ".join(args.prompt).strip()

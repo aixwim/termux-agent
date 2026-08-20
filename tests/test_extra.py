@@ -5365,6 +5365,47 @@ def test_tokens_output(tmp_path: Path, monkeypatch):
     assert data["chars"] == 40
 
 
+# --- forget/cron/completion output ---
+def test_forget_output(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "hi"}], "zen", "m", session_id="fg-out")
+    out_file = tmp_path / "forget.json"
+    out = __import__("io").StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_forget("fg-out", output=str(out_file)) == 0
+    data = _json.loads(out_file.read_text(encoding="utf-8"))
+    assert data["deleted"] == "fg-out"
+    assert len(list(sdir.glob("*.jsonl"))) == 0
+
+
+def test_cron_output(tmp_path: Path, monkeypatch):
+    from termux_agent import cli
+
+    monkeypatch.chdir(tmp_path)
+    out_file = tmp_path / "cron.txt"
+    out = __import__("io").StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_cron("0 * * * *", "hello", output=str(out_file)) == 0
+    assert "termux-agent --no-save" in out_file.read_text(encoding="utf-8")
+
+
+def test_completion_output(tmp_path: Path, monkeypatch):
+    from termux_agent import cli
+
+    out_file = tmp_path / "comp.bash"
+    out = __import__("io").StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    monkeypatch.setattr(cli.sys, "argv", ["termux-agent", "--completion", "bash", "--output", str(out_file)])
+    assert cli.main() == 0
+    assert "_termux_agent" in out_file.read_text(encoding="utf-8")
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
