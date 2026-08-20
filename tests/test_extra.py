@@ -1547,7 +1547,7 @@ def test_parser_all_flags_present():
         "--clip --screenshot --export --import --prune --output --timeout --speak --wakelock --notify "
         "--chat --json --quiet --resume --serve --models --smoke --plan --copy --stats --doctor "
         "--install-completion --list-providers --list-agents --image --prompt-file --api-key --search "
-        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains --stats-all --config-unset --bench-prompt --tokens-exclude --since-days --merge --doctor-fix --health --search-sessions --notes-only"
+        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains --stats-all --config-unset --bench-prompt --tokens-exclude --since-days --merge --doctor-fix --health --search-sessions --notes-only --last"
     ).split():
         assert flag in help_txt, f"missing {flag}"
 
@@ -7183,6 +7183,57 @@ def test_server_summarize_and_rerun(tmp_path: Path, monkeypatch):
         assert out["old"] == ""
     finally:
         httpd.shutdown()
+
+
+# --- show --last / repl /redo ---
+def test_cmd_show_last(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    monkeypatch.setattr(session, "SESSIONS_DIR", tmp_path / "sessions")
+    session.record_messages(
+        [{"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}, {"role": "user", "content": "q2"}, {"role": "assistant", "content": "a2"}],
+        "zen",
+        "m",
+        session_id="show-last",
+    )
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_show("show-last", as_json=True, last=2) == 0
+    import json as _json
+
+    payload = _json.loads(out.getvalue())
+    assert [m["role"] for m in payload["messages"]] == ["user", "assistant"]
+    assert payload["messages"][0]["content"] == "q2"
+
+
+def test_repl_redo(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+    from termux_agent.ui.repl import Repl
+
+    calls = []
+
+    class FakeAgent:
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hello"}, {"role": "assistant", "content": "old"}]
+
+        def run(self, prompt, **kw):
+            calls.append(prompt)
+            self.messages.append({"role": "assistant", "content": "new"})
+            return "new"
+
+    agent = FakeAgent()
+    repl = Repl(agent, provider_name="zen", model="m")
+    repl._last_user_input = "hello"
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    repl._handle_command("/redo", None)
+    assert calls == ["hello"]
+    assert agent.messages[-1]["content"] == "new"
+    assert not any(m.get("content") == "old" for m in agent.messages)
 
 
 # --- import dir / doctor fix ---

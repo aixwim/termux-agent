@@ -1242,8 +1242,8 @@ def cmd_note(
     return 0
 
 
-def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None, redact: bool = False) -> int:
-    """Show a full session transcript (default: latest)."""
+def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None, redact: bool = False, last: int | None = None) -> int:
+    """Show a full session transcript (default: latest; --last N shows only the final N messages)."""
     import json as _json
 
     from termux_agent.session import export_session, get_note
@@ -1259,6 +1259,10 @@ def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None, 
     if note:
         data = dict(data)
         data["note"] = note
+    if last is not None:
+        msgs = list(data.get("messages", []))
+        data = dict(data)
+        data["messages"] = msgs[-max(1, last):]
     if output:
         try:
             if as_json:
@@ -3176,6 +3180,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--since-days", type=int, metavar="N", help="With --sessions: only list sessions from the last N days")
     parser.add_argument("--session", metavar="SESSION", help="With --tokens: estimate a session transcript instead of a file")
     parser.add_argument("--limit", type=int, default=20, metavar="N", help="Max sessions to list (with --sessions/--export-all; --all lists every session)")
+    parser.add_argument("--last", type=int, metavar="N", help="With --show: show only the final N messages of the transcript")
     parser.add_argument("--all", action="store_true", help="With --sessions: list every session (ignore --limit); with --rerun/--summarize/--tokens/--forget: operate on every session; with --bench: benchmark every configured provider")
     parser.add_argument("--session-dir", metavar="DIR", help="Use this directory for session files instead of ~/.termux-agent/sessions")
     parser.add_argument("--search", help="Filter --sessions by keyword in the first message")
@@ -3327,7 +3332,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.import_path:
         return cmd_import(args.import_path, dry_run=args.dry_run, as_json=args.json, markdown=args.markdown)
     if args.show:
-        return cmd_show(args.show, as_json=args.json, output=args.output, redact=args.redact)
+        return cmd_show(args.show, as_json=args.json, output=args.output, redact=args.redact, last=args.last)
     if args.summarize:
         return cmd_summarize(
             cfg,

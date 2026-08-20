@@ -71,6 +71,7 @@ Special commands (start with /):
   /attach FILE    read a file's contents into the next turn (URLs are fetched too; repeatable)
   /search TERM    find sessions whose transcript contains the term
   /retry          re-run the last turn
+  /redo           re-run the last turn with the current provider/model (rolls back the last answer)
   /quiet          toggle streaming (print the answer only when done)
   /temp [N]       show or set sampling temperature (0.0-2.0)
   /maxrounds [N] show or set max tool rounds (1-200)
@@ -409,6 +410,16 @@ class Repl:
                 return False
             render_info("Re-running the last turn...")
             self._run_turn(self._last_user_input)
+        elif c == "/redo":
+            if not self._last_user_input:
+                render_error("No previous turn to redo.")
+                return False
+            render_info(f"Re-running the last turn with provider={self.provider_name}, model={self.model}...")
+            user_idx = [i for i, m in enumerate(self.agent.messages) if m.get("role") == "user"]
+            if user_idx:
+                self.agent.messages = self.agent.messages[:user_idx[-1]]
+            self._run_turn(self._last_user_input)
+            return False
         elif c == "/quiet":
             self.quiet = not self.quiet
             render_info(f"Streaming {'OFF' if self.quiet else 'ON'} (answers print when done).")
