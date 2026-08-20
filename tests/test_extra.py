@@ -3301,6 +3301,95 @@ def test_batch_notify_on_done(tmp_path: Path, monkeypatch):
     assert "1/1 succeeded" in seen["msg"]
 
 
+# --- /attach /search ---
+def test_repl_attach(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.session import Session
+    from termux_agent.ui.repl import Repl
+
+    note = tmp_path / "note.txt"
+    note.write_text("ATTACHED BODY")
+    seen = {}
+
+    agent = SimpleNamespace(
+        system_prompt="BASE",
+        messages=[{"role": "system", "content": "BASE"}],
+        ctx=SimpleNamespace(working_dir=tmp_path),
+    )
+    agent.run = lambda p, on_tool_use=None, on_text_delta=None: (seen.update(prompt=p) or "ok")
+    monkeypatch.setattr("termux_agent.ui.repl.Session", lambda **k: Session())
+    repl = Repl(agent, provider_name="zen", model="m")
+    repl._handle_command(f"/attach {note}", None)
+    assert "ATTACHED BODY" in seen["prompt"]
+    assert str(note) in seen["prompt"]
+
+
+def test_repl_search(tmp_path: Path, monkeypatch):
+    import io
+
+    from types import SimpleNamespace
+
+    from termux_agent import session
+    from termux_agent.session import Session
+    from termux_agent.ui.repl import Repl
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    (sdir / "20260820-000001.jsonl").write_text(
+        '{"role":"user","content":"tell me about raccoons"}\n{"role":"assistant","content":"raccoons are cute"}\n'
+    )
+    (sdir / "20260820-000002.jsonl").write_text('{"role":"user","content":"weather today"}\n')
+    agent = SimpleNamespace(
+        system_prompt="BASE",
+        messages=[{"role": "system", "content": "BASE"}],
+        ctx=SimpleNamespace(working_dir=tmp_path),
+    )
+    monkeypatch.setattr("termux_agent.ui.repl.Session", lambda **k: Session())
+    out = io.StringIO()
+    monkeypatch.setattr("termux_agent.ui.repl.console", SimpleNamespace(print=lambda *a, **k: out.write(" ".join(map(str, a)) + "\n")))
+    repl = Repl(agent, provider_name="zen", model="m")
+    repl._handle_command("/search raccoons", None)
+    assert "20260820-000001" in out.getvalue()
+    assert "20260820-000002" not in out.getvalue()
+
+
+def test_rerun_attach(tmp_path: Path, monkeypatch):
+    import io
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    sid = "20260820-000001"
+    (sdir / f"{sid}.jsonl").write_text('{"role":"user","content":"read the file"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    note = tmp_path / "extra.txt"
+    note.write_text("EXTRA BODY")
+    seen = {}
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+        )
+        agent.run = lambda p, on_tool_use=None, on_text_delta=None: (seen.update(prompt=p) or "ok")
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_rerun(_min_cfg(), sid, "zen", None, as_json=True, attach=[str(note)])
+    assert code == 0
+    assert "EXTRA BODY" in seen["prompt"]
+    assert str(note) in seen["prompt"]
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

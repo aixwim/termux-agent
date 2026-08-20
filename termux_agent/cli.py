@@ -1172,6 +1172,7 @@ def cmd_rerun(
     output: str | None = None,
     as_json: bool = False,
     timeout: int | None = None,
+    attach: list[str] | None = None,
 ) -> int:
     """Re-run the last user prompt of a session with the current model (fresh run)."""
     import json as _json
@@ -1191,6 +1192,15 @@ def cmd_rerun(
     if not last_user.strip():
         render_error("Session has no user prompt to re-run.")
         return 1
+    if attach:
+        for f in attach:
+            try:
+                content = Path(f).expanduser().read_text(encoding="utf-8")
+            except OSError as e:
+                render_error(f"Cannot read --attach file: {e}")
+                return 1
+            last_user = f"{last_user}\n\n<file name={f}>\n{content}\n</file>"
+        render_info(f"Attached {len(attach)} file(s) to the re-run prompt.")
     try:
         agent = build_agent(cfg, provider, model, auto_accept=True)
         answer = _run_guarded(agent, last_user, lambda *a, **k: None, timeout)
@@ -1832,6 +1842,7 @@ def main(argv: list[str] | None = None) -> int:
             output=args.output,
             as_json=args.json,
             timeout=args.timeout,
+            attach=args.attach,
         )
     if args.tokens is not None:
         return cmd_tokens(args.tokens)

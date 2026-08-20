@@ -46,6 +46,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Session instructions**: `/prompt <text>` adds a persistent instruction for the rest of the session (`/prompt` shows them, `/prompt clear` removes them).
 - **Git integration**: the agent can check status, diff, recent history, and commit (commit requires confirmation).
 - **Session resume**: continue a previous conversation with `--resume` or `/resume`.
+- **Session search**: `/search TERM` in the REPL finds sessions whose transcript contains the term.
 - **Context compacting**: `/compact` summarizes old history to save tokens.
 - **Automation mode**: `--yes` skips all confirmations (good for scripts).
 - **Android storage access**: enable `allow_storage: true` in config to access files in `/storage/emulated/0` (run `termux-setup-storage` first).
@@ -202,6 +203,7 @@ termux-agent --summarize 20260820-000001 --json
 # re-run a session's last question with the current model
 termux-agent --rerun --json
 termux-agent --rerun 20260820-000001 --model nemotron-3-ultra-free
+termux-agent --rerun 20260820-000001 --attach notes.md
 
 # machine-readable introspection
 termux-agent --list-agents --json

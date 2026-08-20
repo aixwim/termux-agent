@@ -60,6 +60,8 @@ Special commands (start with /):
   /system         show the effective system prompt
   /context        attach/refresh device context (battery/wifi/time) in the system prompt
   /image PATH     attach an image to the next turn
+  /attach FILE    read a file's contents into the next turn (repeatable)
+  /search TERM    find sessions whose transcript contains the term
 Type a normal message to ask; Ctrl+C to cancel."""
 
 
@@ -272,6 +274,22 @@ class Repl:
                 render_error(f"Image not found: {img}")
                 return False
             self._run_turn(f"Describe or analyze this image:\n\n[image: {img}]")
+        elif c == "/attach":
+            if not rest:
+                render_error("Usage: /attach FILE [FILE ...]")
+                return False
+            parts: list[str] = []
+            for f in rest.split():
+                p = Path(f).expanduser()
+                try:
+                    content = p.read_text(encoding="utf-8")
+                except OSError as e:
+                    render_error(f"Cannot read {p}: {e}")
+                    return False
+                parts.append(f"<file name={p}>\n{content}\n</file>")
+            self._run_turn("Here is the file content:\n\n" + "\n\n".join(parts))
+        elif c == "/search":
+            self._search(rest.strip())
         elif c == "/plan":
             self.plan_mode = not self.plan_mode
             render_info(f"Plan-first mode {'ON' if self.plan_mode else 'OFF'}.")
@@ -386,6 +404,27 @@ class Repl:
         from termux_agent.config import load_config
 
         cmd_list_models(load_config(), self.provider_name)
+
+    def _search(self, term: str) -> None:
+        from termux_agent.session import list_sessions, session_messages
+
+        if not term:
+            render_error("Usage: /search TERM")
+            return
+        term = term.lower()
+        found = 0
+        for s in list_sessions():
+            for rec in session_messages(s):
+                content = str(rec.get("content", ""))
+                if term in content.lower():
+                    snippet = content.strip().replace("\n", " ")[:120]
+                    console.print(f"[bold]{s.stem}[/bold]  {snippet}")
+                    found += 1
+                    break
+        if not found:
+            render_info(f"No sessions matched '{term}'.")
+        else:
+            render_info(f"{found} session(s) matched. Use /resume <id> to open one.")
 
     def _rebuild_system_prompt(self) -> str:
         p = self._base_prompt
