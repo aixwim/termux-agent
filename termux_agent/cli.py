@@ -234,13 +234,13 @@ def cmd_one_shot(
     from termux_agent.ui.renderer import activity, render_answer, render_tool_use
 
     if attach:
-        for f in attach:
-            try:
-                content = Path(f).expanduser().read_text(encoding="utf-8")
-            except OSError as e:
-                render_error(f"Cannot read --attach file: {e}")
-                return 1
-            prompt = f"{prompt}\n\n<file name={f}>\n{content}\n</file>".strip()
+        from termux_agent.attachments import AttachmentError, append_attachments
+
+        try:
+            prompt = append_attachments(prompt, attach)
+        except AttachmentError as e:
+            render_error(str(e))
+            return 1
         render_info(f"Attached {len(attach)} file(s) to the prompt.")
 
     if clip and not prompt:
@@ -691,7 +691,9 @@ def _batch_run_one(cfg, provider, model, auto_accept, timeout, disabled_groups, 
     try:
         agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools, allow_dirs=allow_dirs, temperature=temperature)
         if attach:
-            p = f"{p}\n\n" + "\n\n".join(f"[file: {f}]\n{Path(f).expanduser().read_text(encoding='utf-8')}" for f in attach)
+            from termux_agent.attachments import append_attachments
+
+            p = append_attachments(p, attach, bracket=True)
         answer = _run_guarded(agent, p, lambda *a, **k: None, timeout)
     except Exception as e:  # noqa: BLE001
         return {"prompt": p, "answer": None, "error": str(e)}
@@ -918,13 +920,13 @@ def cmd_watch(
 
     agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools, allow_dirs=allow_dirs, temperature=temperature)
     if attach:
-        for f in attach:
-            try:
-                content = Path(f).expanduser().read_text(encoding="utf-8")
-            except OSError as e:
-                render_error(f"Cannot read --attach file: {e}")
-                return 1
-            prompt = f"{prompt}\n\n<file name={f}>\n{content}\n</file>".strip()
+        from termux_agent.attachments import AttachmentError, append_attachments
+
+        try:
+            prompt = append_attachments(prompt, attach)
+        except AttachmentError as e:
+            render_error(str(e))
+            return 1
         if not as_json:
             render_info(f"Attached {len(attach)} file(s) to the prompt.")
     if context:
@@ -2240,13 +2242,13 @@ def cmd_rerun(
         render_error("Session has no user prompt to re-run.")
         return 1
     if attach:
-        for f in attach:
-            try:
-                content = Path(f).expanduser().read_text(encoding="utf-8")
-            except OSError as e:
-                render_error(f"Cannot read --attach file: {e}")
-                return 1
-            last_user = f"{last_user}\n\n<file name={f}>\n{content}\n</file>"
+        from termux_agent.attachments import AttachmentError, append_attachments
+
+        try:
+            last_user = append_attachments(last_user, attach)
+        except AttachmentError as e:
+            render_error(str(e))
+            return 1
         render_info(f"Attached {len(attach)} file(s) to the re-run prompt.")
     try:
         agent = build_agent(cfg, provider, model, auto_accept=True, temperature=temperature)
@@ -2688,13 +2690,14 @@ def cmd_resume(
     agent = build_agent(cfg, provider_name, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools=False, retries=None, no_fallback=False, extra_rules=extra_rules or None, system_prompt=None, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, allow_dirs=allow_dirs)
     agent.messages = [{"role": "system", "content": agent.system_prompt}] + history
     if prompt:
-        for f in attach or []:
+        if attach:
+            from termux_agent.attachments import AttachmentError, append_attachments
+
             try:
-                content = Path(f).expanduser().read_text(encoding="utf-8")
-            except OSError as e:
-                render_error(f"Cannot read --attach file: {e}")
+                prompt = append_attachments(prompt, attach)
+            except AttachmentError as e:
+                render_error(str(e))
                 return 1
-            prompt = f"{prompt}\n\n<file name={f}>\n{content}\n</file>".strip()
         if attach:
             if not as_json and not quiet:
                 render_info(f"Attached {len(attach)} file(s) to the prompt.")
@@ -3166,7 +3169,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=int, metavar="SECONDS", help="Abort a one-shot task if it takes longer than this")
     parser.add_argument("--output", metavar="FILE", help="Also write the answer to this file (plain text); with --bench/--smoke writes the structured result (JSON)")
     parser.add_argument("--clip", action="store_true", help="Use the clipboard as the prompt (needs termux-api)")
-    parser.add_argument("--attach", metavar="FILE", action="append", help="Read a file's contents into the prompt (one-shot, resume, watch, batch, rerun; repeatable)")
+    parser.add_argument("--attach", metavar="FILE_OR_URL", action="append", help="Attach text from a file or URL (max 2 MiB each / 4 MiB total; repeatable)")
     parser.add_argument("--screenshot", action="store_true", help="Attach a screenshot of the screen to the prompt (needs termux-api + screen share)")
     parser.add_argument("--screenshot-dir", metavar="DIR", help="Save screenshots into this directory instead of the current one")
     parser.add_argument("--cleanup", action="store_true", help="Delete leftover screenshot-*.png files in the current directory")

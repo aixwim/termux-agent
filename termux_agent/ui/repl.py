@@ -111,9 +111,6 @@ Special commands (start with /):
   /maxrounds [N]  show or set max tool rounds (1-200)
 Type a normal message to ask; Ctrl+C to cancel."""
 
-ATTACH_MAX_BYTES = 2 * 1024 * 1024
-
-
 def _slash_commands() -> list[str]:
     """Extract slash commands from HELP so completion and documentation stay in sync."""
     commands: list[str] = []
@@ -552,36 +549,14 @@ class Repl:
             except ValueError as e:
                 render_error(f"Invalid attachment path or quoting: {e}")
                 return False
-            parts: list[str] = []
-            for f in targets:
-                if f.startswith(("http://", "https://")):
-                    import urllib.parse
-                    import urllib.request
+            from termux_agent.attachments import AttachmentError, append_attachments
 
-                    try:
-                        with urllib.request.urlopen(f, timeout=30) as resp:
-                            raw = resp.read(ATTACH_MAX_BYTES + 1)
-                        if len(raw) > ATTACH_MAX_BYTES:
-                            render_error(f"Attachment exceeds 2 MiB limit: {f}")
-                            return False
-                        content = raw.decode("utf-8", errors="replace")
-                        label = f"<file name={Path(urllib.parse.urlparse(f).path).name or 'remote'}>"
-                        parts.append(f"{label}\n{content}\n</file>")
-                        continue
-                    except Exception as e:  # noqa: BLE001
-                        render_error(f"Cannot fetch {f}: {e}")
-                        return False
-                p = Path(f).expanduser()
-                try:
-                    if p.stat().st_size > ATTACH_MAX_BYTES:
-                        render_error(f"Attachment exceeds 2 MiB limit: {p}")
-                        return False
-                    content = p.read_bytes().decode("utf-8", errors="replace")
-                except OSError as e:
-                    render_error(f"Cannot read {p}: {e}")
-                    return False
-                parts.append(f"<file name={p}>\n{content}\n</file>")
-            self._run_turn("Here is the file content:\n\n" + "\n\n".join(parts))
+            try:
+                prompt = append_attachments("Here is the file content:", targets)
+            except AttachmentError as e:
+                render_error(str(e))
+                return False
+            self._run_turn(prompt)
         elif c == "/search":
             self._search(rest.strip())
         elif c == "/retry":

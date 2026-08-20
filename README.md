@@ -155,14 +155,16 @@ termux-agent                          # start the REPL
 | `/note [TXT]` | attach/read a note to the current session |
 | `/notes` | list notes across all sessions |
 | `/tokens` | estimate the current conversation's tokens |
+| `/status` | show the active runtime and last-run dashboard |
+| `/history [N]` / `/clear` | inspect recent messages / clear the viewport |
 | `/session` / `/last` | show session id / re-print the last answer |
 | `/export [PATH]` | export as Markdown (`/export json` for JSON) |
 | `/redo` / `/retry` | re-run the last turn (redo uses the current model) |
 | `/compact` | summarize old history to save context |
 | `/memory` / `/remember` | show/add persistent memory |
 | `/undo` | revert the most recent file write/edit |
-| `/plan`, `/temp`, `/maxrounds`, `/bench`, `/context`, `/image`, `/attach` | tuning & input helpers |
-| `/help` | full command reference |
+| `/plan`, `/temp`, `/maxrounds`, `/bench`, `/context`, `/image`, `/attach` | tuning & input helpers (`/attach` accepts quoted paths and URLs) |
+| `/help [TERM]` | full or filtered command reference |
 | `/exit` | quit |
 
 ### One-shot
@@ -173,6 +175,7 @@ echo "fix the bugs in main.py" | termux-agent     # pipe stdin as the prompt
 termux-agent --json "summarize this repo"         # machine-readable result
 termux-agent --quiet "what files changed?"        # answer only (no banner)
 termux-agent --notify "run the test suite"        # notify when done
+termux-agent --attach notes.txt "summarize it"    # text only; 2 MiB/file, 4 MiB total
 ```
 
 ### Sessions & review

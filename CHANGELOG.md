@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
-- Support quoted attachment paths and enforce a 2 MiB local/remote attachment limit to protect mobile memory.
+- Share quoted-path, URL, safe-decoding, binary rejection, and 2 MiB-per-file/4 MiB-total memory protection across all attachment modes.
 - Add `/history [N]` for a safe compact conversation view and `/clear` for resetting the terminal viewport without losing context.
 - Add searchable `/help [TERM]` output and typo-aware suggestions for unknown REPL commands.
 - Add a live REPL status bar for provider/model, agent, mode, message count, and help discovery.

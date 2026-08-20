@@ -5667,7 +5667,8 @@ def test_repl_attach_supports_quoted_paths(tmp_path: Path, monkeypatch):
 def test_repl_attach_rejects_large_files_before_reading(tmp_path: Path, monkeypatch):
     from types import SimpleNamespace
 
-    from termux_agent.ui.repl import ATTACH_MAX_BYTES, Repl
+    from termux_agent.attachments import ATTACH_MAX_BYTES
+    from termux_agent.ui.repl import Repl
 
     attachment = tmp_path / "large.txt"
     attachment.write_bytes(b"x")
@@ -5679,6 +5680,30 @@ def test_repl_attach_rejects_large_files_before_reading(tmp_path: Path, monkeypa
 
     assert repl._handle_command(f"/attach {attachment}", None) is False
     assert errors == [f"Attachment exceeds 2 MiB limit: {attachment}"]
+
+
+def test_attachment_loader_rejects_binary_content(tmp_path: Path):
+    from termux_agent.attachments import AttachmentError, load_attachment
+
+    binary = tmp_path / "image.bin"
+    binary.write_bytes(b"header\x00payload")
+
+    with pytest.raises(AttachmentError, match="appears to be binary"):
+        load_attachment(str(binary))
+
+
+def test_attachment_loader_enforces_combined_limit(tmp_path: Path, monkeypatch):
+    from termux_agent import attachments
+
+    monkeypatch.setattr(attachments, "ATTACH_MAX_BYTES", 10)
+    monkeypatch.setattr(attachments, "ATTACH_TOTAL_MAX_BYTES", 12)
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("1234567")
+    second.write_text("abcdefg")
+
+    with pytest.raises(attachments.AttachmentError, match="4 MiB combined limit"):
+        attachments.append_attachments("prompt", [str(first), str(second)])
 
 
 def test_plain_banner_is_two_compact_lines(monkeypatch):
