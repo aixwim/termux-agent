@@ -1293,7 +1293,7 @@ def _markdown_to_session(text: str) -> dict:
             while i < len(lines) and not re.match(r"^### (system|user|assistant|tool)", lines[i]):
                 content_lines.append(lines[i])
                 i += 1
-        content = "\n".join(content_lines)
+        content = "\n".join(content_lines).rstrip("\n")
         msg: dict = {"role": role, "content": content}
         if name:
             msg["name"] = name
@@ -1318,7 +1318,10 @@ def cmd_import(path: str, dry_run: bool = False, as_json: bool = False, markdown
         if markdown:
             data = _markdown_to_session(text)
         else:
-            data = _json.loads(text)
+            try:
+                data = _json.loads(text)
+            except _json.JSONDecodeError:
+                data = _markdown_to_session(text)
         sid = None if dry_run else import_session(data)
     except FileNotFoundError:
         if as_json:
@@ -1331,6 +1334,12 @@ def cmd_import(path: str, dry_run: bool = False, as_json: bool = False, markdown
             print(_json.dumps({"ok": False, "error": f"Invalid session file: {e}"}, ensure_ascii=False))
         else:
             render_error(f"Invalid session file: {e}")
+        return 1
+    if not isinstance(data, dict) or "messages" not in data or not data.get("messages"):
+        if as_json:
+            print(_json.dumps({"ok": False, "error": "No messages found in the file."}, ensure_ascii=False))
+        else:
+            render_error("No messages found in the file.")
         return 1
     n = len(data.get("messages", []))
     if as_json:
@@ -1909,8 +1918,62 @@ def cmd_show_system_prompt(
     return 0
 
 
-def cmd_cleanup() -> int:
+def cmd_stats_all(as_json: bool = False, output: str | None = None) -> int:
+    """Aggregate usage stats across all saved sessions."""
+    import json as _json
+    from collections import Counter
+
+    from termux_agent.session import list_sessions, read_session
+
+    sessions = list_sessions()
+    total_chars = 0
+    total_messages = 0
+    by_provider: Counter = Counter()
+    by_day: Counter = Counter()
+    for s in sessions:
+        recs = read_session(s)
+        info = next((r for r in recs if r.get("provider")), {})
+        by_provider[info.get("provider") or "?"] += 1
+        day = s.stem[:8]
+        by_day[day] += 1
+        for r in recs:
+            if r.get("role") in ("user", "assistant"):
+                c = r.get("content")
+                if isinstance(c, str):
+                    total_chars += len(c)
+                    total_messages += 1
+    from termux_agent.session import all_notes
+
+    payload = {
+        "sessions": len(sessions),
+        "messages": total_messages,
+        "chars": total_chars,
+        "tokens": max(1, total_chars // 4),
+        "notes": len(all_notes()),
+        "by_provider": dict(sorted(by_provider.items(), key=lambda kv: -kv[1])),
+        "by_day": dict(sorted(by_day.items(), reverse=True)),
+    }
+    if output:
+        try:
+            Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            render_info(f"Stats written to {output}")
+            return 0
+        except OSError as e:
+            render_error(f"Cannot write output file {output}: {e}")
+            return 1
+    if as_json:
+        print(_json.dumps(payload, ensure_ascii=False))
+        return 0
+    render_info(f"{payload['sessions']} session(s), {payload['messages']} messages, ~{payload['tokens']} tokens.")
+    for prov, n in payload["by_provider"].items():
+        render_info(f"  {prov}: {n} session(s)")
+    return 0
+
+
+def cmd_cleanup(as_json: bool = False, output: str | None = None) -> int:
     """Remove leftover screenshot-*.png files from the current directory."""
+    import json as _json
+
     removed = 0
     for p in Path.cwd().glob("screenshot-*.png"):
         try:
@@ -1918,6 +1981,17 @@ def cmd_cleanup() -> int:
             removed += 1
         except OSError:
             pass
+    if output:
+        try:
+            Path(output).expanduser().write_text(_json.dumps({"removed": removed}, ensure_ascii=False, indent=2), encoding="utf-8")
+            render_info(f"Cleanup report written to {output}")
+            return 0
+        except OSError as e:
+            render_error(f"Cannot write output file {output}: {e}")
+            return 1
+    if as_json:
+        print(_json.dumps({"removed": removed}, ensure_ascii=False))
+        return 0
     render_info(f"Removed {removed} leftover screenshot file(s).")
     return 0
 
@@ -2543,6 +2617,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prompt-file", help="Read the prompt from a file (UTF-8)")
     parser.add_argument("--api-key", help="Set the provider API key for this run (env var override, not saved)")
     parser.add_argument("--stats", action="store_true", help="One-shot mode: print token usage after the answer")
+    parser.add_argument("--stats-all", action="store_true", help="Aggregate usage stats across all saved sessions (--json for structured output)")
     parser.add_argument("--chat", action="store_true", help="Chat mode: disable all tools (plain conversation, no file/command access)")
     parser.add_argument("--notify", action="store_true", help="Send a Termux notification when a one-shot task or --batch finishes, or after each --watch round (needs termux-api)")
     parser.add_argument("--wakelock", action="store_true", help="Hold a Termux wake lock while a one-shot task runs (needs termux-api)")
@@ -2796,8 +2871,10 @@ def main(argv: list[str] | None = None) -> int:
             render_error("--cron requires a one-shot prompt.")
             return 2
         return cmd_cron(args.cron, prompt, as_json=args.json, notify=args.notify, output=args.output)
+    if args.stats_all:
+        return cmd_stats_all(as_json=args.json, output=args.output)
     if args.cleanup:
-        return cmd_cleanup()
+        return cmd_cleanup(as_json=args.json, output=args.output)
     if args.prune is not None:
         return cmd_prune(args.prune, as_json=args.json, dry_run=args.dry_run, output=args.output)
     if args.prune_days is not None:

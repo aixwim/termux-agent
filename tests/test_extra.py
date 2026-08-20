@@ -1516,7 +1516,7 @@ def test_parser_all_flags_present():
         "--clip --screenshot --export --import --prune --output --timeout --speak --wakelock --notify "
         "--chat --json --quiet --resume --serve --models --smoke --plan --copy --stats --doctor "
         "--install-completion --list-providers --list-agents --image --prompt-file --api-key --search "
-        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains"
+        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains --stats-all"
     ).split():
         assert flag in help_txt, f"missing {flag}"
 
@@ -6551,6 +6551,74 @@ def test_cmd_tokens_git_diff(tmp_path: Path, monkeypatch):
     assert cli.cmd_tokens("HEAD~1", as_json=True) == 0
     payload = _json.loads(out.getvalue())
     assert payload["files"] == 2
+
+
+# --- stats-all / cleanup json / import autodetect ---
+def test_cmd_stats_all(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages(
+        [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}], "zen", "m", session_id="20260820-000001"
+    )
+    session.record_messages([{"role": "user", "content": "yo"}], "openai", "gpt", session_id="20260821-000001")
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_stats_all(as_json=True) == 0
+    payload = _json.loads(out.getvalue())
+    assert payload["sessions"] == 2
+    assert payload["messages"] == 3
+    assert payload["chars"] == len("hello") + len("hi") + len("yo")
+    assert payload["by_provider"]["zen"] == 1
+    assert payload["by_provider"]["openai"] == 1
+    assert len(payload["by_day"]) == 2
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_stats_all() == 0
+    assert "2 session(s)" in out.getvalue()
+
+
+def test_cmd_cleanup_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "screenshot-123.png").write_bytes(b"x")
+    (tmp_path / "keep.png").write_bytes(b"x")
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_cleanup(as_json=True) == 0
+    assert _json.loads(out.getvalue())["removed"] == 1
+    assert not (tmp_path / "screenshot-123.png").exists()
+    assert (tmp_path / "keep.png").exists()
+
+
+def test_cmd_import_autodetect(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    md = tmp_path / "chat.md"
+    md.write_text("# Session abc\n\n### user\nhello\n\n### assistant\nhi\n")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_import(str(md)) == 0
+    assert list(sdir.glob("*.jsonl"))
+    recs = session.read_session(list(sdir.glob("*.jsonl"))[0])
+    assert any(r.get("content") == "hello" for r in recs)
 
 
 # --- init wizard ---
