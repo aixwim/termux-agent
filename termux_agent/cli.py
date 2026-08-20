@@ -482,7 +482,7 @@ def _run_guarded(agent: Agent, prompt: str, on_tool_use, timeout: int | None, on
     return result["answer"]
 
 
-def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as_json: bool = False, output: str | None = None) -> int:
+def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as_json: bool = False, output: str | None = None, prompt: str = "Reply with exactly: ok") -> int:
     """Time one tiny prompt against each model of a provider (best-effort)."""
     import time
 
@@ -499,7 +499,7 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
     for m in models:
         start = time.monotonic()
         try:
-            answer = _run_guarded(build_agent(cfg, provider_name, m, auto_accept=True), "Reply with exactly: ok", None, timeout)
+            answer = _run_guarded(build_agent(cfg, provider_name, m, auto_accept=True), prompt, None, timeout)
             dt = time.monotonic() - start
             results.append((m, dt, len(answer), True))
         except Exception:  # noqa: BLE001
@@ -1405,7 +1405,7 @@ def cmd_config_show(cfg: dict, as_json: bool = False, redact: bool = False, outp
     return 0
 
 
-def cmd_config_set(key: str, value: str, as_json: bool = False) -> int:
+def cmd_config_set(key: str, value: str, as_json: bool = False, unset: bool = False) -> int:
     """Set a config key and save it back to the config file. Dot paths navigate nested keys."""
     import json as _json
     import yaml as _yaml
@@ -1414,6 +1414,34 @@ def cmd_config_set(key: str, value: str, as_json: bool = False) -> int:
         render_error("No config file. Run 'termux-agent --init' first.")
         return 1
     cfg = _yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
+
+    parts = key.split(".")
+    node = cfg
+    for part in parts[:-1]:
+        if not isinstance(node, dict):
+            render_error(f"Config key {key!r} does not exist (intermediate value is not a mapping).")
+            return 1
+        nxt = node.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            node[part] = nxt
+        node = nxt
+    if unset:
+        if isinstance(node, dict) and parts[-1] in node:
+            removed_val = node.pop(parts[-1])
+        else:
+            if as_json:
+                print(_json.dumps({"ok": False, "error": f"Config key {key!r} does not exist."}, ensure_ascii=False))
+            else:
+                render_error(f"Config key {key!r} does not exist.")
+            return 1
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_FILE.write_text(_yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        if as_json:
+            print(_json.dumps({"ok": True, "key": key, "removed": removed_val}, ensure_ascii=False))
+        else:
+            render_info(f"Removed {key}.")
+        return 0
 
     parsed: object
     try:
@@ -1432,17 +1460,6 @@ def cmd_config_set(key: str, value: str, as_json: bool = False) -> int:
                 except ValueError:
                     parsed = value
 
-    parts = key.split(".")
-    node = cfg
-    for part in parts[:-1]:
-        if not isinstance(node, dict):
-            render_error(f"Config key {key!r} does not exist (intermediate value is not a mapping).")
-            return 1
-        nxt = node.get(part)
-        if not isinstance(nxt, dict):
-            nxt = {}
-            node[part] = nxt
-        node = nxt
     node[parts[-1]] = parsed
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -2699,6 +2716,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--redact", action="store_true", help="With --config-show: mask secrets in the output")
     parser.add_argument("--config-show", action="store_true", help="Print the effective merged configuration as YAML (--redact masks secrets)")
     parser.add_argument("--config-set", nargs=2, metavar=("KEY", "VALUE"), help="Set a config key and save it (dot paths supported, e.g. temperature 0.2)")
+    parser.add_argument("--config-unset", metavar="KEY", help="Remove a config key and save (dot paths supported)")
     parser.add_argument("--list-tools", action="store_true", help="List all registered tools")
     parser.add_argument("--forget", nargs="?", const="latest", metavar="SESSION", help="Delete one session (default: latest)")
     parser.add_argument("--note", nargs="?", const="__list__", metavar="SESSION", help="Attach a note to a session (--note SESSION TEXT sets, --note SESSION prints, --note --clear removes, --note --list lists all)")
@@ -2707,6 +2725,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--note-list", action="store_true", help="List all session notes")
     parser.add_argument("--export-all", metavar="DIR", help="Export every session as a JSON file into DIR (--markdown: readable .md transcripts)")
     parser.add_argument("--bench", nargs="?", const="__default__", metavar="PROVIDER", help="Benchmark latency across a provider's models (one tiny request each)")
+    parser.add_argument("--bench-prompt", metavar="TEXT", help="Custom prompt for --bench (default: a tiny 'Reply with exactly: ok')")
     parser.add_argument("--list-providers", action="store_true", help="List provider presets")
     parser.add_argument("--list-agents", action="store_true", help="List available sub-agents")
     parser.add_argument("--models", nargs="?", const="__default__", metavar="PROVIDER", help="List models for a provider (live, or preset fallback)")
@@ -2815,7 +2834,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.init:
         return cmd_init(args.provider, args.model, force=args.force)
     if args.bench:
-        return cmd_bench(cfg, args.bench, args.timeout or 60, as_json=args.json, output=args.output)
+        return cmd_bench(cfg, None if args.bench == "__default__" else args.bench, args.timeout or 60, as_json=args.json, output=args.output, prompt=args.bench_prompt or "Reply with exactly: ok")
     if args.export:
         return cmd_export(args.export, as_markdown=args.markdown, redact=args.redact, output=args.output)
     if args.export_all:
@@ -2886,6 +2905,8 @@ def main(argv: list[str] | None = None) -> int:
             render_error("--config-set requires KEY and VALUE (e.g. --config-set temperature 0.2).")
             return 1
         return cmd_config_set(args.config_set[0], args.config_set[1], as_json=args.json)
+    if args.config_unset:
+        return cmd_config_set(args.config_unset, "", as_json=args.json, unset=True)
     if args.list_tools:
         return cmd_list_tools(as_json=args.json, output=args.output)
     if args.sessions:

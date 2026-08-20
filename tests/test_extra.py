@@ -1516,7 +1516,7 @@ def test_parser_all_flags_present():
         "--clip --screenshot --export --import --prune --output --timeout --speak --wakelock --notify "
         "--chat --json --quiet --resume --serve --models --smoke --plan --copy --stats --doctor "
         "--install-completion --list-providers --list-agents --image --prompt-file --api-key --search "
-        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains --stats-all"
+        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains --stats-all --config-unset --bench-prompt"
     ).split():
         assert flag in help_txt, f"missing {flag}"
 
@@ -6554,6 +6554,56 @@ def test_cmd_tokens_git_diff(tmp_path: Path, monkeypatch):
 
 
 # --- stats-all / cleanup json / import autodetect ---
+def test_cmd_bench_prompt(tmp_path: Path, monkeypatch):
+    import io
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    cfg = _min_cfg()
+    cfg["providers"] = {"zen": {"models": ["m1"]}}
+    seen = {}
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: (seen.update(prompt=p) or agent.run(p)))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_bench(cfg, "zen", prompt="custom bench prompt") == 0
+    assert seen["prompt"] == "custom bench prompt"
+
+
+def test_cmd_config_set_unset(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("provider: zen\nmax_tool_rounds: 20\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cli, "CONFIG_FILE", cfg_file)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_config_set("max_tool_rounds", "30", as_json=True) == 0
+    assert "max_tool_rounds: 30" in cfg_file.read_text()
+    assert cli.cmd_config_set("max_tool_rounds", "", as_json=True, unset=True) == 0
+    assert "max_tool_rounds" not in cfg_file.read_text()
+    assert cli.cmd_config_set("max_tool_rounds", "", as_json=True, unset=True) == 1
+    assert cli.cmd_config_set("a.b.c", "7") == 0
+    assert "c: 7" in cfg_file.read_text()
+    assert cli.cmd_config_set("a.b.c", "", unset=True) == 0
+    assert "c: 7" not in cfg_file.read_text()
+
+
+# --- init wizard ---
 def test_cmd_stats_all(tmp_path: Path, monkeypatch):
     import io
     import json as _json
