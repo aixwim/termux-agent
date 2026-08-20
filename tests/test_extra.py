@@ -4920,6 +4920,62 @@ def test_tls_serve(tmp_path: Path, monkeypatch):
     assert loaded.get("wrapped") is True
 
 
+# --- config-set / repl usage ---
+def test_config_set(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    from termux_agent.config import CONFIG_DIR, CONFIG_FILE
+
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    cfg_file = cfg_dir / "config.yaml"
+    cfg_file.write_text("provider: zen\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "CONFIG_DIR", cfg_dir)
+    monkeypatch.setattr(cli, "CONFIG_FILE", cfg_file)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_config_set("temperature", "0.2", as_json=True) == 0
+    assert _json.loads(out.getvalue())["value"] == 0.2
+    import yaml as _yaml
+
+    saved = _yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
+    assert saved["temperature"] == 0.2
+    assert cli.cmd_config_set("providers.zen.model", "gpt-4o-mini") == 0
+    saved = _yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
+    assert saved["providers"]["zen"]["model"] == "gpt-4o-mini"
+
+
+def test_repl_usage(tmp_path: Path, monkeypatch):
+    import io
+
+    from types import SimpleNamespace
+
+    from termux_agent.session import Session
+    from termux_agent.ui.repl import Repl
+
+    agent = SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path, undo=lambda: "noop"),
+        system_prompt="BASE",
+        messages=[{"role": "system", "content": "BASE"}],
+        allowed_tools=set(),
+        temperature=0.7,
+        max_tool_rounds=20,
+        usage={"prompt_tokens": 100, "completion_tokens": 50},
+        run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+    )
+    monkeypatch.setattr("termux_agent.ui.repl.Session", lambda **k: Session())
+    repl = Repl(agent, provider_name="zen", model="m")
+    out = io.StringIO()
+    monkeypatch.setattr("termux_agent.ui.repl.render_info", lambda s: out.write(str(s)))
+    assert repl._handle_command("/usage", None) is False
+    assert "prompt_tokens: 100" in out.getvalue()
+    assert "total: 150" in out.getvalue()
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

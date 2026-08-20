@@ -58,6 +58,7 @@ Special commands (start with /):
   /cd DIR         change the working directory (and file-access boundary)
   /plan           toggle plan-first mode (propose, approve, then execute)
   /system         show the effective system prompt
+  /usage          show token usage for this session
   /context        attach/refresh device context (battery/wifi/time) in the system prompt
   /image PATH     attach an image to the next turn
   /attach FILE    read a file's contents into the next turn (URLs are fetched too; repeatable)
@@ -377,6 +378,14 @@ class Repl:
             render_info(f"Plan-first mode {'ON' if self.plan_mode else 'OFF'}.")
         elif c == "/system":
             console.print(self.agent.system_prompt)
+        elif c == "/usage":
+            usage = getattr(self.agent, "usage", None) or {}
+            if not usage:
+                render_info("No usage recorded yet.")
+                return False
+            total = sum(int(v) for v in usage.values() if str(v).isdigit())
+            parts = [f"{k}: {v}" for k, v in sorted(usage.items()) if v]
+            render_info("Token usage: " + (", ".join(parts) if parts else "0") + f"  (total: {total})")
         elif c == "/context":
             import re
 

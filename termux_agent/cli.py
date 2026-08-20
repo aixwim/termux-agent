@@ -1094,6 +1094,55 @@ def cmd_config_show(cfg: dict, as_json: bool = False, redact: bool = False) -> i
     return 0
 
 
+def cmd_config_set(key: str, value: str, as_json: bool = False) -> int:
+    """Set a config key and save it back to the config file. Dot paths navigate nested keys."""
+    import json as _json
+    import yaml as _yaml
+
+    if not CONFIG_FILE.exists():
+        render_error("No config file. Run 'termux-agent --init' first.")
+        return 1
+    cfg = _yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
+
+    parsed: object
+    try:
+        parsed = _json.loads(value)
+    except ValueError:
+        if value.lower() in ("true", "false"):
+            parsed = value.lower() == "true"
+        elif value.lower() in ("none", "null"):
+            parsed = None
+        else:
+            try:
+                parsed = int(value)
+            except ValueError:
+                try:
+                    parsed = float(value)
+                except ValueError:
+                    parsed = value
+
+    parts = key.split(".")
+    node = cfg
+    for part in parts[:-1]:
+        if not isinstance(node, dict):
+            render_error(f"Config key {key!r} does not exist (intermediate value is not a mapping).")
+            return 1
+        nxt = node.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            node[part] = nxt
+        node = nxt
+    node[parts[-1]] = parsed
+
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_FILE.write_text(_yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    if as_json:
+        print(_json.dumps({"key": key, "value": parsed}, ensure_ascii=False))
+    else:
+        render_info(f"Set {key} = {parsed!r}")
+    return 0
+
+
 def _redact_cfg(cfg: dict) -> dict:
     """Return a copy of the config with secrets masked for safe display (recursively)."""
     import copy
@@ -2118,6 +2167,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="With --prune/--prune-days: show what would be deleted without deleting")
     parser.add_argument("--redact", action="store_true", help="With --config-show: mask secrets in the output")
     parser.add_argument("--config-show", action="store_true", help="Print the effective merged configuration as YAML (--redact masks secrets)")
+    parser.add_argument("--config-set", nargs=2, metavar=("KEY", "VALUE"), help="Set a config key and save it (dot paths supported, e.g. temperature 0.2)")
     parser.add_argument("--list-tools", action="store_true", help="List all registered tools")
     parser.add_argument("--forget", nargs="?", const="latest", metavar="SESSION", help="Delete one session (default: latest)")
     parser.add_argument("--export-all", metavar="DIR", help="Export every session as a JSON file into DIR (--markdown: readable .md transcripts)")
@@ -2283,6 +2333,11 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_prune_days(args.prune_days, as_json=args.json, dry_run=args.dry_run, keep=args.keep)
     if args.config_show:
         return cmd_config_show(cfg, as_json=args.json, redact=args.redact)
+    if args.config_set:
+        if len(args.config_set) != 2:
+            render_error("--config-set requires KEY and VALUE (e.g. --config-set temperature 0.2).")
+            return 1
+        return cmd_config_set(args.config_set[0], args.config_set[1], as_json=args.json)
     if args.list_tools:
         return cmd_list_tools()
     if args.sessions:
