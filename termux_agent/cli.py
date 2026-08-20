@@ -618,6 +618,7 @@ def cmd_watch(
     agent_name: str | None = None,
     working_dir: str | None = None,
     only_tools: list[str] | None = None,
+    context: bool = False,
 ) -> int:
     """Re-run a one-shot task every N seconds until Ctrl+C. Optionally re-attach a screenshot."""
     import time
@@ -625,6 +626,10 @@ def cmd_watch(
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
     agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools)
+    if context:
+        from termux_agent.notify import device_context
+
+        _attach_agent_context(agent, device_context())
     render_info(f"Watching every {interval}s — press Ctrl+C to stop.")
     round_no = 0
     try:
@@ -1093,7 +1098,16 @@ def cmd_resume(
     return 0
 
 
-def cmd_list_providers(cfg: dict) -> int:
+def cmd_list_providers(cfg: dict, as_json: bool = False) -> int:
+    import json as _json
+
+    if as_json:
+        items = [
+            {"name": n, "type": pc.get("type"), "models": pc.get("models") or []}
+            for n, pc in cfg.get("providers", {}).items()
+        ]
+        print(_json.dumps({"providers": items}, ensure_ascii=False))
+        return 0
     for name, pc in cfg.get("providers", {}).items():
         models = ", ".join(pc.get("models") or [])
         render_info(f"{name:12} {pc.get('type'):16} models: {models}")
@@ -1127,7 +1141,7 @@ def cmd_list_models(cfg: dict, provider_name: str | None = None) -> int:
     return 0
 
 
-def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False) -> int:
+def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: bool = False) -> int:
     """Environment diagnostics: versions, Termux, config, PATH, provider connectivity."""
     import os
     import platform
@@ -1193,6 +1207,20 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False) -> int:
 
     add("saved sessions", True, str(len(list_sessions())))
 
+    termux_start = len(checks)
+    if termux:
+        api_cmds = {
+            "termux-notification": "notifications (--notify)",
+            "termux-battery-status": "device context (--context)",
+            "termux-wifi-connectioninfo": "wifi context (--context)",
+            "termux-clipboard-get": "clipboard (--clip)",
+            "termux-screenshot": "screen capture (--screenshot/--watch)",
+            "termux-tts-speak": "speech (--speak)",
+        }
+        for cmd, purpose in api_cmds.items():
+            found = shutil.which(cmd)
+            add(f"termux-api: {cmd}", bool(found), f"{purpose} - {found or 'not installed (pkg install termux-api)'}")
+
     if as_json:
         import json as _json
 
@@ -1213,8 +1241,12 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False) -> int:
     for c in checks[7:11]:
         (render_info if c["ok"] else render_error)(f"  [{'OK' if c['ok'] else '!!'}]  {c['label']}" + (f": {c['detail']}" if c["detail"] else ""))
     render_info("== provider ==")
-    for c in checks[11:]:
+    for c in checks[11:termux_start]:
         (render_info if c["ok"] else render_error)(f"  [{'OK' if c['ok'] else '!!'}]  {c['label']}" + (f": {c['detail']}" if c["detail"] else ""))
+    if termux:
+        render_info("== termux-api ==")
+        for c in checks[termux_start:]:
+            (render_info if c["ok"] else render_error)(f"  [{'OK' if c['ok'] else '!!'}]  {c['label']}" + (f": {c['detail']}" if c["detail"] else ""))
     render_info("\nIf you see [!!] markers, rerun with TERMUX_AGENT_DEBUG=1 for detailed logs.")
     return 1 if issues else 0
 
@@ -1325,7 +1357,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-providers", action="store_true", help="List provider presets")
     parser.add_argument("--list-agents", action="store_true", help="List available sub-agents")
     parser.add_argument("--models", nargs="?", const="__default__", metavar="PROVIDER", help="List models for a provider (live, or preset fallback)")
-    parser.add_argument("--doctor", action="store_true", help="Diagnose environment & config")
+    parser.add_argument("--doctor", action="store_true", help="Diagnose environment & config; --doctor-termux also checks termux-api commands")
+    parser.add_argument("--doctor-termux", action="store_true", help="With --doctor, check termux-api availability for notifications/clipboard/screenshots etc.")
     parser.add_argument("--doctor-network", action="store_true", help="Also check provider connectivity (needs internet)")
     parser.add_argument("--config", metavar="FILE", help="Use this config file instead of ~/.termux-agent/config.yaml")
     parser.add_argument("--smoke", action="store_true", help="End-to-end smoke test with the real model (sends a tiny prompt)")
@@ -1423,7 +1456,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.doctor or args.doctor_network:
-        return cmd_doctor(cfg, network=args.doctor_network, as_json=args.json)
+        return cmd_doctor(cfg, network=args.doctor_network, as_json=args.json, termux=args.doctor_termux)
     if args.smoke:
         return cmd_smoke(cfg, args.provider, args.model)
     if args.serve:
@@ -1454,7 +1487,7 @@ def main(argv: list[str] | None = None) -> int:
         notify_on_done(True)
 
     if args.list_providers:
-        return cmd_list_providers(cfg)
+        return cmd_list_providers(cfg, as_json=args.json)
     if args.list_agents:
         return cmd_list_agents(cfg)
     if args.models is not None:
@@ -1536,6 +1569,7 @@ def main(argv: list[str] | None = None) -> int:
             agent_name=args.agent,
             working_dir=args.cwd,
             only_tools=_split_tools(args.only_tools),
+            context=args.context,
         )
 
     if args.batch:

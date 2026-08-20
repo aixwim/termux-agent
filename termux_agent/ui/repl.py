@@ -54,6 +54,7 @@ Special commands (start with /):
   /diff           show git working-tree changes & diff summary
   /prompt [TXT]   add a session instruction; /prompt clear removes them; no arg = show
   /remember TXT   store a note in ~/.termux-agent/memory.md (loaded every session)
+  /memory         show the persistent memory; /memory clear wipes it
   /cd DIR         change the working directory (and file-access boundary)
   /plan           toggle plan-first mode (propose, approve, then execute)
   /system         show the effective system prompt
@@ -245,6 +246,21 @@ class Repl:
             self._prompt(rest)
         elif c == "/remember":
             self._remember(rest)
+        elif c == "/memory":
+            from termux_agent.agent import MEMORY_FILE, load_memory
+
+            if rest.strip() == "clear":
+                try:
+                    MEMORY_FILE.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                render_info("Memory cleared.")
+                return False
+            mem = load_memory()
+            if mem:
+                console.print(mem)
+            else:
+                render_info("Memory is empty. Use /remember TXT to add a note.")
         elif c == "/cd":
             self._cd(rest)
         elif c == "/image":

@@ -19,7 +19,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Resilience knobs**: `--retries N` overrides the transient retry count and `--no-fallback` disables fallback models on 429/errors.
 - **Scriptable & extensible**: `--sessions --json`, `--bench --json`, and `--version --json` emit machine-readable output; `--rules FILE` injects extra instructions for one run; `--system-prompt FILE` replaces the whole prompt for a custom persona; `--resume` now supports `--stream`.
 - **Watch mode**: `--watch SECONDS` re-runs a one-shot prompt on an interval until Ctrl+C (combine with `--screenshot` to monitor the screen). In the REPL, `/system` shows the effective system prompt.
-- **Device awareness & introspection**: `--context` injects battery/wifi/time into the system prompt (needs termux-api); `--list-tools` lists registered tools; `--config-show` prints the effective merged config; `--prune --json` reports what was deleted.
+- **Device awareness & introspection**: `--context` injects battery/wifi/time into the system prompt (needs termux-api); `--doctor --doctor-termux` verifies which termux-api commands are installed; `--list-tools` lists registered tools; `--list-providers --json` lists providers; `--config-show` prints the effective merged config; `--prune --json` reports what was deleted. In the REPL, `/memory` shows (or clears) the persistent memory.
 - **Batch & housekeeping**: `--batch FILE` runs one one-shot per line (results to `--output` as JSON); `--sessions --search` now matches across all messages; `--prune-days N` deletes sessions older than N days.
 - **Safety & resource limits**: `--no-shell`, `--no-web`, `--no-git` disable whole tool groups (useful for untrusted/unattended use); `--only-tools LIST` restricts to exact tool names; `--max-output-chars N` and `--command-timeout SECONDS` override config limits. In the REPL, `/context` attaches or refreshes device context and `/image PATH` attaches an image.
 - **Review & scripting**: `--show [SESSION]` prints a full transcript (`--json` for raw); `--summarize [SESSION]` distills a conversation via the agent; `--export --markdown` writes a readable transcript; `--export-all --markdown` dumps every session as `.md`; `--tokens FILE` estimates token usage; `--no-save` keeps one-shot runs out of the session store; `--no-memory` ignores saved notes; `--session-dir DIR` uses an alternate session store; `--git` injects repo state into the system prompt; `--log FILE` writes a timestamped JSONL run log; `--batch --workers N` runs prompts in parallel. The HTTP API accepts a per-request `model` override in `POST /chat`.
@@ -155,7 +155,10 @@ EOF
 termux-agent --system-prompt /tmp/pirate.md "review my code"
 
 # watch mode: re-run a task every 30s, re-attaching a screenshot each round
-termux-agent --watch 30 --screenshot "what changed on my screen?"
+termux-agent --watch 30 --screenshot --context "what changed on my screen?"
+
+# diagnose the environment, including termux-api availability
+termux-agent --doctor --doctor-termux
 
 # give the agent device context (battery/wifi/time, needs termux-api)
 termux-agent --context "if battery is low, keep the answer very short"

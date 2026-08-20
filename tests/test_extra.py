@@ -2569,6 +2569,71 @@ def test_main_session_dir(tmp_path: Path, monkeypatch):
     assert session.SESSIONS_DIR == sdir
 
 
+# --- doctor termux / memory / providers json / watch context ---
+def test_doctor_termux_checks(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    monkeypatch.chdir(tmp_path)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_doctor(_min_cfg(), termux=True)
+    assert code in (0, 1)
+    assert "termux-api:" in out.getvalue()
+
+
+def test_doctor_termux_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    monkeypatch.chdir(tmp_path)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    cli.cmd_doctor(_min_cfg(), termux=True, as_json=True)
+    data = _json.loads(out.getvalue())
+    labels = [c["label"] for c in data["checks"]]
+    assert any("termux-api" in l for l in labels)
+
+
+def test_repl_memory(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+    from termux_agent.ui import repl as replmod
+    from termux_agent.ui.repl import Repl
+
+    mem = tmp_path / "memory.md"
+    mem.write_text("remember pizza")
+    monkeypatch.setattr("termux_agent.agent.MEMORY_FILE", mem)
+    monkeypatch.setattr(replmod, "render_info", lambda *a, **k: None)
+    monkeypatch.setattr(replmod, "render_error", lambda *a, **k: None)
+    agent = SimpleNamespace(
+        system_prompt="S",
+        ctx=SimpleNamespace(working_dir=tmp_path, confirm_commands=True),
+        messages=[],
+        usage={},
+    )
+    r = Repl(agent, "zen", "m")
+    assert r._handle_command("/memory", None) is False
+
+
+def test_list_providers_json(monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_list_providers(_min_cfg(), as_json=True) == 0
+    data = _json.loads(out.getvalue())
+    assert any(p["name"] == "zen" for p in data["providers"])
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
