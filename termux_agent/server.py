@@ -9,9 +9,10 @@ Endpoints:
   GET  /stats    -> session count + storage usage
   GET  /memory   -> persistent notes; POST /memory {content} updates them
   POST /batch    -> {prompts: [...]} runs each prompt (optional provider/model)
-  GET  /sessions -> list saved sessions (first 50)
+  GET  /sessions -> list saved sessions (first 50; ?note=TERM filters by note)
   GET  /sessions/<id> -> full session transcript
   GET  /sessions/<id>?markdown=1 -> transcript as markdown
+  POST /sessions/<id>/note -> {note: "..."} attaches/updates the note
   DELETE /sessions/<id> -> delete a session
   POST /chat     -> {"prompt": ..., "history": [...], "agent": ..., "auto_accept": ...}
 """
@@ -545,9 +546,13 @@ class _AgentHandler(BaseHTTPRequestHandler):
                     limit = max(1, min(int(q.get("limit", ["50"])[0]), 500))
                 except ValueError:
                     limit = 50
+                note_filter = (q.get("note", [""])[0] or "").strip()
                 notes = all_notes()
                 sessions = []
                 for s in list_sessions()[:limit]:
+                    note = notes.get(s.stem, "")
+                    if note_filter and note_filter not in note:
+                        continue
                     recs = read_session(s)
                     info = next((r for r in recs if r.get("provider")), {})
                     first_user = next((r["content"] for r in recs if r.get("role") == "user" and r.get("content")), "")
@@ -558,7 +563,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                             "model": info.get("model") or "",
                             "messages": len(recs),
                             "first": str(first_user)[:100],
-                            "note": notes.get(s.stem, "")[:100],
+                            "note": note[:100],
                         }
                     )
                 self._send(200, {"sessions": sessions})
@@ -647,6 +652,26 @@ class _AgentHandler(BaseHTTPRequestHandler):
 
             results = list(ThreadPoolExecutor(max_workers=4).map(_one, [p.strip() for p in prompts]))
             self._send(200, {"results": results})
+            return
+        if self.path.startswith("/sessions/") and self.path.rstrip("/").endswith("/note"):
+            from termux_agent.session import set_note
+
+            base = self.path.rstrip("/")[: -len("/note")]
+            sid = base.rsplit("/", 1)[-1]
+            note = data.get("note")
+            if not isinstance(note, str):
+                self._send(400, {"ok": False, "error": "missing string 'note'"})
+                return
+            try:
+                from termux_agent.session import list_sessions
+
+                if not any(s.stem == sid for s in list_sessions()):
+                    raise FileNotFoundError
+                set_note(sid, note.strip())
+            except FileNotFoundError:
+                self._send(404, {"ok": False, "error": "session not found"})
+                return
+            self._send(200, {"ok": True, "session": sid, "note": note.strip()})
             return
         if self.path in ("/v1/chat/completions", "/chat/completions"):
             self._openai_chat(data)

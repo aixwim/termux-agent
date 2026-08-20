@@ -6785,6 +6785,108 @@ def test_cmd_rerun_all(tmp_path: Path, monkeypatch):
     assert payload["results"][0]["answer"] == "ANSWER:q1"
 
 
+# --- repl /tokens /notes ---
+def test_repl_tokens_and_notes(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+    from termux_agent.ui.repl import Repl
+
+    monkeypatch.setattr(session, "NOTES_FILE", tmp_path / "notes.json")
+    agent = SimpleNamespace(
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ],
+        ctx=SimpleNamespace(working_dir=tmp_path, undo=lambda: "ok", confirm_commands=False),
+        system_prompt="sys",
+        provider=SimpleNamespace(name="zen", model="m"),
+        temperature=0.7,
+        max_tool_rounds=10,
+        max_context_tokens=0,
+    )
+    repl = Repl(agent, provider_name="zen", model="m")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    repl._handle_command("/tokens", None)
+    assert "~4 tokens" in out.getvalue()
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    repl._handle_command("/notes", None)
+    assert "No notes on any session" in out.getvalue()
+
+    session.set_note("s1", "first note")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    repl._handle_command("/notes", None)
+    assert "s1: first note" in out.getvalue()
+
+
+def test_server_sessions_note_filter_and_post(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+    from termux_agent import session
+    from termux_agent.server import _AgentHandler
+
+    monkeypatch.setattr(session, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(session, "NOTES_FILE", tmp_path / "notes.json")
+    session.record_messages([{"role": "user", "content": "setup"}], "zen", "m", session_id="note-a")
+    session.record_messages([{"role": "user", "content": "other"}], "zen", "m", session_id="note-b")
+    session.set_note("note-a", "important task")
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[{"role": "system", "content": "s"}],
+        )
+        agent.run = lambda prompt: "ANSWER:" + prompt
+        return agent
+
+    _AgentHandler.build_agent = staticmethod(fake_build)
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/sessions?note=important", timeout=10) as r:
+            filtered = _json.loads(r.read())
+        assert [s["id"] for s in filtered["sessions"]] == ["note-a"]
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/sessions/note-b/note",
+            data=_json.dumps({"note": "updated"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            posted = _json.loads(r.read())
+        assert posted["ok"] is True
+        assert session.get_note("note-b") == "updated"
+
+        req404 = urllib.request.Request(
+            f"http://127.0.0.1:{port}/sessions/nope/note",
+            data=_json.dumps({"note": "x"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        import urllib.error
+
+        try:
+            urllib.request.urlopen(req404, timeout=10)
+            raise AssertionError("expected 404")
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
+    finally:
+        httpd.shutdown()
+
+
 # --- import dir / doctor fix ---
 def test_cmd_import_directory(tmp_path: Path, monkeypatch):
     import io

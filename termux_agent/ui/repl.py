@@ -56,6 +56,8 @@ Special commands (start with /):
   /remember TXT   store a note in ~/.termux-agent/memory.md (loaded every session)
   /memory         show the persistent memory; /memory clear wipes it
   /note [TXT]     attach/read a note to this session; /note clear removes it
+  /notes          list the notes attached to all sessions
+  /tokens         estimate the tokens used by this conversation
   /cd DIR         change the working directory (and file-access boundary)
   /plan           toggle plan-first mode (propose, approve, then execute)
   /system         show the effective system prompt
@@ -320,6 +322,20 @@ class Repl:
                 return False
             set_note(sid, rest.strip())
             render_info(f"Note saved for {sid}.")
+            return False
+        elif c == "/notes":
+            from termux_agent.session import all_notes
+
+            notes = all_notes()
+            if not notes:
+                render_info("No notes on any session.")
+                return False
+            for sid, text in notes.items():
+                render_info(f"{sid}: {text}")
+            return False
+        elif c == "/tokens":
+            chars = sum(len(str(m.get("content", ""))) for m in self.agent.messages)
+            render_info(f"{chars} characters, ~{max(1, chars // 4)} tokens in the current conversation (rough heuristic: chars/4).")
             return False
         elif c == "/memory":
             from termux_agent.agent import MEMORY_FILE, load_memory
