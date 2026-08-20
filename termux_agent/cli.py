@@ -726,6 +726,7 @@ def cmd_watch(
     notify: bool = False,
     diff: bool = False,
     as_json: bool = False,
+    output: str | None = None,
 ) -> int:
     """Re-run a one-shot task every N seconds until Ctrl+C. Optionally re-attach a screenshot."""
     import json as _json
@@ -803,6 +804,8 @@ def cmd_watch(
                 if diff and not as_json:
                     render_info(f"\n--- round {round_no} (changed) ---")
                 last_answer = answer
+                if output:
+                    Path(output).write_text(answer + "\n", encoding="utf-8")
                 if as_json:
                     print(_json.dumps({"round": round_no, "answer": answer}, ensure_ascii=False))
                 else:
@@ -966,7 +969,7 @@ def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None) 
     return 0
 
 
-def cmd_tokens(path: str | None, text: str | None = None) -> int:
+def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False) -> int:
     """Estimate token usage of a file or inline text."""
     import sys as _sys
 
@@ -974,12 +977,22 @@ def cmd_tokens(path: str | None, text: str | None = None) -> int:
         try:
             text = Path(path).expanduser().read_text(encoding="utf-8")
         except OSError as e:
-            render_error(f"Cannot read file: {e}")
+            if as_json:
+                import json as _json
+
+                print(_json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+            else:
+                render_error(f"Cannot read file: {e}")
             return 1
     if not text:
         text = _sys.stdin.read() if not _sys.stdin.isatty() else ""
     chars = len(text)
     estimated = max(1, chars // 4)
+    if as_json:
+        import json as _json
+
+        print(_json.dumps({"ok": True, "chars": chars, "tokens": estimated}, ensure_ascii=False))
+        return 0
     render_info(f"{chars} characters, ~{estimated} tokens (rough heuristic: chars/4).")
     return 0
 
@@ -2100,7 +2113,7 @@ def main(argv: list[str] | None = None) -> int:
             notify=args.notify,
         )
     if args.tokens is not None:
-        return cmd_tokens(args.tokens)
+        return cmd_tokens(args.tokens, as_json=args.json)
     if args.bundle:
         return cmd_bundle(args.bundle)
     if args.restore:
@@ -2296,6 +2309,7 @@ def main(argv: list[str] | None = None) -> int:
             notify=args.notify,
             diff=args.diff,
             as_json=args.json,
+            output=args.output,
         )
 
     if args.batch:

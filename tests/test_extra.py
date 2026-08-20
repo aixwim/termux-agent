@@ -4158,6 +4158,71 @@ def test_doctor_disk_check():
     assert disk["ok"] is True
 
 
+# --- watch output / tokens json / bench json ---
+def test_watch_output(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    answers = iter(["B"])
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda p, on_tool_use=None, on_text_delta=None: next(answers),
+    ))
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    out = tmp_path / "last.txt"
+    assert cli.cmd_watch(_min_cfg(), "hi", "zen", None, interval=1, max_rounds=1, output=str(out)) == 0
+    assert out.read_text().strip() == "B"
+
+
+def test_tokens_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    f = tmp_path / "t.txt"
+    f.write_text("hello world this is a test")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_tokens(str(f), as_json=True) == 0
+    data = _json.loads(out.getvalue())
+    assert data["ok"] is True
+    assert data["chars"] == 26
+    assert data["tokens"] == 6
+
+
+def test_bench_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    cfg = _min_cfg()
+    cfg["providers"] = {"zen": {"models": ["m1", "m2"]}}
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+    ))
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_bench(cfg, "zen", as_json=True) == 0
+    data = _json.loads(out.getvalue())
+    assert data["provider"] == "zen"
+    assert len(data["models"]) == 2
+    assert all(m["ok"] for m in data["models"])
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
