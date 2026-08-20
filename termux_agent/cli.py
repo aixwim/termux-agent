@@ -3199,7 +3199,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config-unset", metavar="KEY", help="Remove a config key and save (dot paths supported)")
     parser.add_argument("--list-tools", action="store_true", help="List all registered tools")
     parser.add_argument("--forget", nargs="?", const="latest", metavar="SESSION", help="Delete one session (default: latest)")
-    parser.add_argument("--note", nargs="?", const="__list__", metavar="SESSION", help="Attach a note to a session (--note SESSION TEXT sets, --note SESSION prints, --note --clear removes, --note --list lists all)")
+    parser.add_argument("--note", nargs="?", const="__list__", metavar="SESSION", help="Attach a note to a session (--note SESSION --note-text TEXT sets, --note SESSION prints, --note --note-clear removes, --note --list lists all)")
     parser.add_argument("--note-text", metavar="TEXT", help="Note text for --note (omit to read the current note)")
     parser.add_argument("--note-clear", action="store_true", help="Remove the note on --note SESSION")
     parser.add_argument("--note-list", action="store_true", help="List all session notes")
