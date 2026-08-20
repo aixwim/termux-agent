@@ -5939,6 +5939,112 @@ def test_repl_provider_shorthand(monkeypatch):
     assert repl.model == "model-x"
 
 
+# --- temperature overrides ---
+def test_rerun_temperature(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text(
+        '{"role":"user","content":"hi","provider":"zen","model":"m"}\n{"role":"assistant","content":"old"}\n'
+    )
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    seen = {}
+
+    def fake_build(*a, **k):
+        seen.update(k)
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            run=lambda p, on_tool_use=None, on_text_delta=None: "new",
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_rerun(_min_cfg(), "20260820-000001", "zen", "m", temperature=0.2) == 0
+    assert seen["temperature"] == 0.2
+
+
+def test_summarize_temperature(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text(
+        '{"role":"user","content":"hi"}\n{"role":"assistant","content":"old"}\n'
+    )
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    seen = {}
+
+    def fake_build(*a, **k):
+        seen.update(k)
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            run=lambda p, on_tool_use=None, on_text_delta=None: "SUMMARY",
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_summarize(_min_cfg(), "20260820-000001", "zen", "m", temperature=0.5) == 0
+    assert seen["temperature"] == 0.5
+
+
+def test_watch_temperature(monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    seen = {}
+
+    def fake_build(*a, **k):
+        seen.update(k)
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=None),
+            usage={},
+            run=lambda p, on_tool_use=None, on_text_delta=None: "A",
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_watch(_min_cfg(), "hi", "zen", None, interval=1, max_rounds=1, temperature=0.9) == 0
+    assert seen["temperature"] == 0.9
+
+
+def test_batch_temperature(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    in_path = tmp_path / "in.txt"
+    in_path.write_text("a\nb\n")
+    seen = {}
+
+    def fake_run_one(*a, **k):
+        seen.update(k)
+        return {"prompt": a[-1], "answer": "ok"}
+
+    monkeypatch.setattr(cli, "_batch_run_one", fake_run_one)
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_batch(_min_cfg(), str(in_path), "zen", None, temperature=0.3) == 0
+    assert seen["temperature"] == 0.3
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

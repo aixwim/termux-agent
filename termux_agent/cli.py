@@ -609,10 +609,10 @@ def _allow_dirs_from(args) -> list[str] | None:
     return list(getattr(args, "allow_dir", None) or []) or None
 
 
-def _batch_run_one(cfg, provider, model, auto_accept, timeout, disabled_groups, max_output_chars, command_timeout, agent_name, working_dir, only_tools, allow_dirs, p, attach=None):
+def _batch_run_one(cfg, provider, model, auto_accept, timeout, disabled_groups, max_output_chars, command_timeout, agent_name, working_dir, only_tools, allow_dirs, p, attach=None, temperature=None):
     """Run a single --batch prompt (module-level so tests can replace it)."""
     try:
-        agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools, allow_dirs=allow_dirs)
+        agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools, allow_dirs=allow_dirs, temperature=temperature)
         if attach:
             p = f"{p}\n\n" + "\n\n".join(f"[file: {f}]\n{Path(f).expanduser().read_text(encoding='utf-8')}" for f in attach)
         answer = _run_guarded(agent, p, lambda *a, **k: None, timeout)
@@ -641,6 +641,7 @@ def cmd_batch(
     fail_fast: bool = False,
     notify: bool = False,
     attach: list[str] | None = None,
+    temperature: float | None = None,
 ) -> int:
     """Run one one-shot per line of a prompts file (blank lines skipped; '-' reads stdin)."""
     import json as _json
@@ -678,6 +679,7 @@ def cmd_batch(
             allow_dirs,
             p,
             attach=attach,
+            temperature=temperature,
         )
 
     results: list[dict] = []
@@ -749,6 +751,7 @@ def cmd_watch(
     max_wait: int | None = None,
     append: bool = False,
     attach: list[str] | None = None,
+    temperature: float | None = None,
 ) -> int:
     """Re-run a one-shot task every N seconds until Ctrl+C. Optionally re-attach a screenshot."""
     import json as _json
@@ -756,7 +759,7 @@ def cmd_watch(
 
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
-    agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools, allow_dirs=allow_dirs)
+    agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools, allow_dirs=allow_dirs, temperature=temperature)
     if attach:
         for f in attach:
             try:
@@ -1475,6 +1478,7 @@ def cmd_summarize(
     timeout: int | None = None,
     notify: bool = False,
     redact: bool = False,
+    temperature: float | None = None,
 ) -> int:
     """Have the agent summarize a session transcript (default: latest)."""
     import json as _json
@@ -1509,7 +1513,7 @@ def cmd_summarize(
         + "\n\n".join(transcript)
     )
     try:
-        agent = build_agent(cfg, provider, model, auto_accept=True)
+        agent = build_agent(cfg, provider, model, auto_accept=True, temperature=temperature)
         summary = _run_guarded(agent, prompt, lambda *a, **k: None, timeout)
     except Exception as e:  # noqa: BLE001
         render_error(f"Summarize failed: {e}")
@@ -1664,6 +1668,7 @@ def cmd_rerun(
     diff: bool = False,
     notify: bool = False,
     redact: bool = False,
+    temperature: float | None = None,
 ) -> int:
     """Re-run the last user prompt of a session with the current model (fresh run)."""
     import json as _json
@@ -1699,7 +1704,7 @@ def cmd_rerun(
             last_user = f"{last_user}\n\n<file name={f}>\n{content}\n</file>"
         render_info(f"Attached {len(attach)} file(s) to the re-run prompt.")
     try:
-        agent = build_agent(cfg, provider, model, auto_accept=True)
+        agent = build_agent(cfg, provider, model, auto_accept=True, temperature=temperature)
         answer = _run_guarded(agent, last_user, lambda *a, **k: None, timeout)
     except Exception as e:  # noqa: BLE001
         render_error(f"Rerun failed: {e}")
@@ -2391,7 +2396,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", help="Model name (overrides the config default)")
     parser.add_argument("--agent", help="Sub-agent name (e.g. explore, coder, shell)")
     parser.add_argument("--cwd", help="Working directory (overrides config working_dir)")
-    parser.add_argument("--temperature", type=float, help="Sampling temperature (0.0-2.0)")
+    parser.add_argument("--temperature", type=float, help="Sampling temperature (0.0-2.0; applies to one-shot, resume, plan, rerun, summarize, watch, and batch)")
     parser.add_argument("--max-tool-rounds", type=int, help="Max tool iterations per message")
     parser.add_argument("--max-context-tokens", type=int, help="Auto-compact history when cumulative tokens pass this budget (0=off)")
     parser.add_argument("--verbose", action="store_true", help="Log provider requests/responses (same as TERMUX_AGENT_DEBUG=1)")
@@ -2618,6 +2623,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout=args.timeout,
             notify=args.notify,
             redact=args.redact,
+            temperature=args.temperature,
         )
     if args.rerun:
         return cmd_rerun(
@@ -2632,6 +2638,7 @@ def main(argv: list[str] | None = None) -> int:
             diff=args.diff,
             notify=args.notify,
             redact=args.redact,
+            temperature=args.temperature,
         )
     if args.tokens is not None or args.session is not None:
         return cmd_tokens(args.tokens, as_json=args.json, session_ref=args.session, output=args.output)
@@ -2874,6 +2881,7 @@ def main(argv: list[str] | None = None) -> int:
             max_wait=args.max_wait,
             append=args.append,
             attach=args.attach,
+            temperature=args.temperature,
         )
 
     if args.batch:
@@ -2897,6 +2905,7 @@ def main(argv: list[str] | None = None) -> int:
             fail_fast=args.fail_fast,
             notify=args.notify,
             attach=args.attach,
+            temperature=args.temperature,
         )
 
     if prompt:
