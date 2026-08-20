@@ -2389,6 +2389,53 @@ def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 
     return 0
 
 
+def cmd_search(term: str, as_json: bool = False, limit: int = 20, output: str | None = None) -> int:
+    """Search every session transcript (and notes) for a term and print matching sessions with snippets."""
+    import json as _json
+
+    from termux_agent.session import all_notes, list_sessions, session_messages
+
+    needle = term.lower()
+    notes = all_notes()
+    items = []
+    for s in list_sessions():
+        matched = None
+        for rec in session_messages(s):
+            content = str(rec.get("content", ""))
+            if needle in content.lower():
+                matched = content.strip().replace("\n", " ")[:160]
+                break
+        if matched is None and needle in notes.get(s.stem, "").lower():
+            matched = f"note: {notes[s.stem][:160]}"
+        if matched is None:
+            continue
+        items.append({"id": s.stem, "snippet": matched})
+        if limit > 0 and len(items) >= limit:
+            break
+    items.sort(key=lambda it: it["id"])
+    if as_json or output:
+        payload = {"ok": True, "term": term, "matches": items}
+        if output:
+            try:
+                Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                render_info(f"Search results written to {output}")
+            except OSError as e:
+                render_error(f"Cannot write output file {output}: {e}")
+                return 1
+        if as_json:
+            print(_json.dumps(payload, ensure_ascii=False))
+            return 0 if items else 1
+        if output:
+            return 0 if items else 1
+    if not items:
+        render_info(f"No sessions matched '{term}'.")
+        return 1
+    for it in items:
+        render_info(f"{it['id']}  {it['snippet']}")
+    render_info(f"\n{len(items)} matching session(s).")
+    return 0
+
+
 def find_session(session_ref: str | None) -> "tuple[Path, dict, list[dict]] | None":
     """Find a session file + provider info + message history."""
     from termux_agent.session import latest_session, list_sessions, read_session, session_messages
@@ -2969,6 +3016,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--all", action="store_true", help="With --sessions: list every session (ignore --limit); with --rerun/--tokens: operate on every session")
     parser.add_argument("--session-dir", metavar="DIR", help="Use this directory for session files instead of ~/.termux-agent/sessions")
     parser.add_argument("--search", help="Filter --sessions by keyword in the first message")
+    parser.add_argument("--search-sessions", metavar="TERM", help="Search every session transcript and note for a term and list matches")
     parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest); --markdown for a readable transcript, --redact to mask secrets")
     parser.add_argument("--markdown", action="store_true", help="With --export/--show, print a readable Markdown transcript")
     parser.add_argument("--import", dest="import_path", metavar="FILE", help="Import a portable session JSON file ('-' reads stdin; --dry-run validates only, --markdown imports a Markdown transcript)")
@@ -3179,6 +3227,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_list_tools(as_json=args.json, output=args.output)
     if args.sessions:
         return cmd_sessions(args.search, as_json=args.json, limit=0 if args.all else args.limit, output=args.output, since_days=args.since_days)
+    if args.search_sessions is not None:
+        return cmd_search(args.search_sessions, as_json=args.json, limit=0 if args.all else args.limit, output=args.output)
     if args.show_system_prompt:
         return cmd_show_system_prompt(
             cfg,

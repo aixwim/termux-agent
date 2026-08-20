@@ -1516,7 +1516,7 @@ def test_parser_all_flags_present():
         "--clip --screenshot --export --import --prune --output --timeout --speak --wakelock --notify "
         "--chat --json --quiet --resume --serve --models --smoke --plan --copy --stats --doctor "
         "--install-completion --list-providers --list-agents --image --prompt-file --api-key --search "
-        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains --stats-all --config-unset --bench-prompt --tokens-exclude --since-days --merge --doctor-fix --health"
+        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list --exit-on-contains --stats-all --config-unset --bench-prompt --tokens-exclude --since-days --merge --doctor-fix --health --search-sessions"
     ).split():
         assert flag in help_txt, f"missing {flag}"
 
@@ -6933,6 +6933,71 @@ def test_cmd_health(tmp_path: Path, monkeypatch):
     assert cli.cmd_health({}, as_json=True) == 1
     payload = _json.loads(out.getvalue())
     assert payload["ok"] is False
+
+
+# --- cli search / repl session & last ---
+def test_cmd_search(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    monkeypatch.setattr(session, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(session, "NOTES_FILE", tmp_path / "notes.json")
+    session.record_messages([{"role": "user", "content": "how do I install ssh?"}], "zen", "m", session_id="src-a")
+    session.record_messages([{"role": "user", "content": "unrelated"}], "zen", "m", session_id="src-b")
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_search("ssh", as_json=True) == 0
+    payload = _json.loads(out.getvalue())
+    assert [m["id"] for m in payload["matches"]] == ["src-a"]
+
+    session.set_note("src-b", "mention ssh here")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_search("ssh", as_json=True) == 0
+    payload = _json.loads(out.getvalue())
+    assert [m["id"] for m in payload["matches"]] == ["src-a", "src-b"]
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_search("zzz", as_json=True) == 1
+    assert _json.loads(out.getvalue())["matches"] == []
+
+
+def test_repl_session_and_last(tmp_path: Path):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+    from termux_agent.ui.repl import Repl
+
+    agent = SimpleNamespace(
+        messages=[{"role": "system", "content": "sys"}],
+        ctx=SimpleNamespace(working_dir=tmp_path, undo=lambda: "ok", confirm_commands=False),
+        system_prompt="sys",
+        provider=SimpleNamespace(name="zen", model="m"),
+        temperature=0.7,
+        max_tool_rounds=10,
+        max_context_tokens=0,
+    )
+    repl = Repl(agent, provider_name="zen", model="m")
+    out = io.StringIO()
+    monkeypatch = __import__("pytest").MonkeyPatch()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    repl._handle_command("/session", None)
+    assert repl.session.session_id in out.getvalue()
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    repl._handle_command("/last", None)
+    assert "No answer yet" in out.getvalue()
+    repl._last_answer = "last answer text"
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    repl._handle_command("/last", None)
+    assert "last answer text" in out.getvalue()
 
 
 # --- import dir / doctor fix ---

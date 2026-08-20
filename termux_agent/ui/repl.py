@@ -14,6 +14,7 @@ from termux_agent.session import Session
 from termux_agent.ui.renderer import (
     PlainStreamPrinter,
     console,
+    render_answer,
     render_error,
     render_info,
     render_tool_use,
@@ -58,6 +59,8 @@ Special commands (start with /):
   /note [TXT]     attach/read a note to this session; /note clear removes it
   /notes          list the notes attached to all sessions
   /tokens         estimate the tokens used by this conversation
+  /session        show the current session id
+  /last           show the last answer
   /cd DIR         change the working directory (and file-access boundary)
   /plan           toggle plan-first mode (propose, approve, then execute)
   /system         show the effective system prompt
@@ -419,6 +422,14 @@ class Repl:
             total = sum(int(v) for v in usage.values() if str(v).isdigit())
             parts = [f"{k}: {v}" for k, v in sorted(usage.items()) if v]
             render_info("Token usage: " + (", ".join(parts) if parts else "0") + f"  (total: {total})")
+        elif c == "/session":
+            render_info(f"Session id: {self.session.session_id}  (provider: {self.provider_name}, model: {self.model})")
+        elif c == "/last":
+            if not self._last_answer:
+                render_error("No answer yet in this session.")
+                return False
+            render_answer(self._last_answer)
+            return False
         elif c == "/context":
             import re
 
