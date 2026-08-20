@@ -3683,6 +3683,76 @@ def test_doctor_configured_model_check():
     assert model_check["ok"] is True
 
 
+# --- repl quiet / watch json / import stdin ---
+def test_repl_quiet_toggle(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.session import Session
+    from termux_agent.ui.repl import Repl
+
+    kwargs_seen = []
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            system_prompt="BASE",
+            messages=[{"role": "system", "content": "BASE"}],
+            allowed_tools=set(),
+        )
+
+    agent = fake_build()
+    agent.run = lambda p, on_tool_use=None, on_text_delta=None: (kwargs_seen.append(bool(on_text_delta)) or "ok")
+    monkeypatch.setattr("termux_agent.ui.repl.Session", lambda **k: Session())
+    repl = Repl(agent, provider_name="zen", model="m")
+    repl._run_turn("one")
+    repl._handle_command("/quiet", None)
+    repl._run_turn("two")
+    assert kwargs_seen == [True, False]
+
+
+def test_watch_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    answers = iter(["A", "B"])
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda p, on_tool_use=None, on_text_delta=None: next(answers),
+    ))
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_watch(_min_cfg(), "hi", "zen", None, interval=1, max_rounds=2, as_json=True)
+    assert code == 0
+    lines = [l for l in out.getvalue().strip().splitlines() if l]
+    assert _json.loads(lines[0])["answer"] == "A"
+    assert _json.loads(lines[1])["answer"] == "B"
+
+
+def test_import_stdin(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(_json.dumps({"messages": [{"role": "user", "content": "x"}]})))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_import("-") == 0
+    assert len(list(sdir.glob("*.jsonl"))) == 1
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

@@ -63,6 +63,7 @@ Special commands (start with /):
   /attach FILE    read a file's contents into the next turn (repeatable)
   /search TERM    find sessions whose transcript contains the term
   /retry          re-run the last turn
+  /quiet          toggle streaming (print the answer only when done)
 Type a normal message to ask; Ctrl+C to cancel."""
 
 
@@ -92,6 +93,7 @@ class Repl:
         self._base_prompt = getattr(self.agent, "system_prompt", "")
         self._instructions: list[str] = []
         self.plan_mode = False
+        self.quiet = False
 
     def _confirm(self, command: str) -> bool:
         try:
@@ -298,6 +300,9 @@ class Repl:
                 return False
             render_info("Re-running the last turn...")
             self._run_turn(self._last_user_input)
+        elif c == "/quiet":
+            self.quiet = not self.quiet
+            render_info(f"Streaming {'OFF' if self.quiet else 'ON'} (answers print when done).")
         elif c == "/plan":
             self.plan_mode = not self.plan_mode
             render_info(f"Plan-first mode {'ON' if self.plan_mode else 'OFF'}.")
@@ -578,15 +583,19 @@ class Repl:
             self._run_plan_turn(user_input, printer)
             return
         try:
-            answer = self.agent.run(
-                user_input,
-                on_text_delta=printer.feed,
-                on_tool_use=render_tool_use,
-            )
+            if self.quiet:
+                answer = self.agent.run(user_input, on_tool_use=render_tool_use)
+            else:
+                answer = self.agent.run(
+                    user_input,
+                    on_text_delta=printer.feed,
+                    on_tool_use=render_tool_use,
+                )
         except Exception as e:  # noqa: BLE001
             render_error(f"Error: {e}")
             return
-        printer.flush()
+        if not self.quiet:
+            printer.flush()
         self._last_answer = answer
         self.session.append({"role": "assistant", "content": answer})
 

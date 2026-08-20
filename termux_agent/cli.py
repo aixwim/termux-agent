@@ -725,8 +725,10 @@ def cmd_watch(
     max_rounds: int | None = None,
     notify: bool = False,
     diff: bool = False,
+    as_json: bool = False,
 ) -> int:
     """Re-run a one-shot task every N seconds until Ctrl+C. Optionally re-attach a screenshot."""
+    import json as _json
     import time
 
     from termux_agent.ui.renderer import render_answer, render_tool_use
@@ -737,15 +739,17 @@ def cmd_watch(
 
         _attach_agent_context(agent, device_context())
     if max_rounds:
-        render_info(f"Watching every {interval}s — up to {max_rounds} round(s); press Ctrl+C to stop.")
+        if not as_json:
+            render_info(f"Watching every {interval}s — up to {max_rounds} round(s); press Ctrl+C to stop.")
     else:
-        render_info(f"Watching every {interval}s — press Ctrl+C to stop.")
+        if not as_json:
+            render_info(f"Watching every {interval}s — press Ctrl+C to stop.")
     round_no = 0
     last_answer: str | None = None
     try:
         while max_rounds is None or round_no < max_rounds:
             round_no += 1
-            if not diff:
+            if not diff and not as_json:
                 render_info(f"\n--- round {round_no} ---")
             p = prompt
             if with_screenshot:
@@ -759,15 +763,19 @@ def cmd_watch(
                     img = screenshot()
                 if img:
                     p = f"{prompt}\n\n[image: {img}]"
-                    render_info(f"Attached screenshot: {img}")
-                else:
+                    if not as_json:
+                        render_info(f"Attached screenshot: {img}")
+                elif not as_json:
                     render_error("Screenshot failed this round — continuing without it.")
             try:
                 answer = _run_guarded(agent, p, render_tool_use, timeout)
             except TimeoutError:
-                if diff:
+                if diff and not as_json:
                     render_info(f"\n--- round {round_no} (timed out) ---")
-                render_error(f"Round {round_no} timed out after {timeout}s.")
+                if as_json:
+                    print(_json.dumps({"round": round_no, "error": f"timed out after {timeout}s"}, ensure_ascii=False))
+                else:
+                    render_error(f"Round {round_no} timed out after {timeout}s.")
                 if notify:
                     from termux_agent.notify import notify as _notify
 
@@ -775,23 +783,30 @@ def cmd_watch(
             except KeyboardInterrupt:
                 raise
             except Exception as e:  # noqa: BLE001
-                if diff:
+                if diff and not as_json:
                     render_info(f"\n--- round {round_no} (failed) ---")
-                render_error(f"Round {round_no} failed: {e}")
+                if as_json:
+                    print(_json.dumps({"round": round_no, "error": str(e)}, ensure_ascii=False))
+                else:
+                    render_error(f"Round {round_no} failed: {e}")
                 if notify:
                     from termux_agent.notify import notify as _notify
 
                     _notify(f"Round {round_no} failed: {e}")
             else:
                 if diff and last_answer is not None and answer == last_answer:
-                    render_info(f"round {round_no}: answer unchanged — skipping.")
+                    if not as_json:
+                        render_info(f"round {round_no}: answer unchanged — skipping.")
                     if max_rounds is None or round_no < max_rounds:
                         time.sleep(interval)
                     continue
-                if diff:
+                if diff and not as_json:
                     render_info(f"\n--- round {round_no} (changed) ---")
                 last_answer = answer
-                render_answer(answer)
+                if as_json:
+                    print(_json.dumps({"round": round_no, "answer": answer}, ensure_ascii=False))
+                else:
+                    render_answer(answer)
                 if notify:
                     from termux_agent.notify import notify as _notify
 
@@ -799,7 +814,8 @@ def cmd_watch(
             if max_rounds is None or round_no < max_rounds:
                 time.sleep(interval)
     except KeyboardInterrupt:
-        render_info("\nStopped.")
+        if not as_json:
+            render_info("\nStopped.")
         return 0
     return 0
 
@@ -975,8 +991,13 @@ def cmd_import(path: str, dry_run: bool = False) -> int:
     from termux_agent.session import import_session
 
     try:
-        with open(path, encoding="utf-8") as f:
-            data = _json.load(f)
+        if path == "-":
+            import sys as _sys
+
+            data = _json.load(_sys.stdin)
+        else:
+            with open(path, encoding="utf-8") as f:
+                data = _json.load(f)
         sid = None if dry_run else import_session(data)
     except FileNotFoundError:
         render_error(f"File not found: {path}")
@@ -1845,7 +1866,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--search", help="Filter --sessions by keyword in the first message")
     parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest); --markdown for a readable transcript")
     parser.add_argument("--markdown", action="store_true", help="With --export/--show, print a readable Markdown transcript")
-    parser.add_argument("--import", dest="import_path", metavar="FILE", help="Import a portable session JSON file")
+    parser.add_argument("--import", dest="import_path", metavar="FILE", help="Import a portable session JSON file ('-' reads stdin; --dry-run validates only)")
     parser.add_argument("--prune", type=int, metavar="N", help="Delete all sessions except the newest N (--dry-run previews)")
     parser.add_argument("--prune-days", type=int, metavar="DAYS", help="Delete sessions older than this many days (--dry-run previews)")
     parser.add_argument("--dry-run", action="store_true", help="With --prune/--prune-days: show what would be deleted without deleting")
@@ -2162,6 +2183,7 @@ def main(argv: list[str] | None = None) -> int:
             max_rounds=args.max_rounds,
             notify=args.notify,
             diff=args.diff,
+            as_json=args.json,
         )
 
     if args.batch:

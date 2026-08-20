@@ -25,7 +25,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Review & scripting**: `--show [SESSION]` prints a full transcript (plus a rough token estimate); `--summarize [SESSION]` distills a conversation via the agent; `--rerun [SESSION]` re-runs the session's last question with the current model (`--diff` compares against the old answer); `--export --markdown` writes a readable transcript; `--export-all --markdown` dumps every session as `.md`; `--tokens FILE` estimates token usage; `--no-save` keeps one-shot runs out of the session store; `--no-memory` ignores saved notes; `--session-dir DIR` uses an alternate session store; `--git` injects repo state into the system prompt; `--log FILE` writes a timestamped JSONL run log; `--batch --workers N` runs prompts in parallel (read from stdin with `--batch -`) and `--fail-fast` aborts at the first error; `--forget --json` reports deletions; `--bundle`/`--restore` back up and restore config+memory+sessions; `--cron` prints a ready-to-add cron line; `--no-color` disables ANSI; `--prune`/`--prune-days` accept `--dry-run` to preview deletions; `--watch` can be capped with `--max-rounds`; `--screenshot-dir DIR` stores captures elsewhere and `--cleanup` removes leftover screenshots. The HTTP API can run detached with `--serve-background`/`--serve-stop` (pid file under `~/.termux-agent/`), read its bearer token from `--token-file`, auto-assign a port with `--port 0`, and exposes `GET /tools`, `GET /agents`, `GET /stats`, `GET /memory`, and `GET /sessions/<id>`; `POST /chat` accepts per-request `provider`/`model`/`rules`/`image`/`only_tools` overrides, `POST /memory` updates the persistent notes, and `POST /batch` runs a list of prompts in parallel. `GET /models?provider=X` lists a provider's models. `--provider zen:model` is a shorthand for setting both at once, `--no-stream` forces a non-streaming answer, `--attach FILE` reads file contents into the prompt, `--completion SHELL` prints a completion script, `--rotate` falls back to the next provider model on failure, `--show-system-prompt` prints the effective system prompt, and `--watch --notify` sends a Termux notification each round (`--watch --diff` only shows rounds whose answer changed).
 - **Chat mode**: `--chat` disables all tools for a plain conversation (no file/command access).
 - **Timeouts & saving**: `--timeout SECONDS` aborts a slow one-shot task (exit 124); one-shot tasks are now saved as sessions too, so you can `--resume` them.
-- **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--export-all DIR` backs up every session, `--import FILE` restores one, `--prune N` / `--forget [ID]` delete sessions. `--bench [PROVIDER]` times one tiny request per model to help you pick a fast default.
+- **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--export-all DIR` backs up every session, `--import FILE` restores one (`-` reads stdin), `--prune N` / `--forget [ID]` delete sessions. `--bench [PROVIDER]` times one tiny request per model to help you pick a fast default.
 - **Phone-native input**: `--clip` reads the prompt from the clipboard, `--screenshot` captures the screen with `termux-screenshot` and attaches it as an image (both need termux-api). Auto-completion (`--install-completion`) derives flags from `--help`, so it never goes stale.
 - **Streaming**: `--stream` prints the answer as it is generated; `--prompt-file -` reads the prompt from stdin. In the REPL, `/plan` toggles plan-first mode (read-only plan, then approve before execution).
 - **Config flexibility**: `--config FILE` uses a specific config file (project-level `.termux-agent/config.yaml` files still merge on top, and the home config is never double-loaded); `--init --provider X --model Y` sets up a config without the wizard.
@@ -46,7 +46,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Session instructions**: `/prompt <text>` adds a persistent instruction for the rest of the session (`/prompt` shows them, `/prompt clear` removes them).
 - **Git integration**: the agent can check status, diff, recent history, and commit (commit requires confirmation).
 - **Session resume**: continue a previous conversation with `--resume` or `/resume`.
-- **Session search**: `/search TERM` in the REPL finds sessions whose transcript contains the term. `/retry` re-runs the last turn.
+- **Session search**: `/search TERM` in the REPL finds sessions whose transcript contains the term. `/retry` re-runs the last turn, `/quiet` toggles streaming (answer prints when done).
 - **Context compacting**: `/compact` summarizes old history to save tokens.
 - **Automation mode**: `--yes` skips all confirmations (good for scripts).
 - **Android storage access**: enable `allow_storage: true` in config to access files in `/storage/emulated/0` (run `termux-setup-storage` first).
@@ -225,6 +225,12 @@ termux-agent --batch prompts.txt --fail-fast
 
 # watch a limited number of rounds
 termux-agent --watch 60 --max-rounds 5 "check my inbox"
+
+# watch, printing one JSON line per round (script-friendly)
+termux-agent --watch 60 --json "check my inbox"
+
+# import a session from stdin
+cat backup.json | termux-agent --import -
 
 # provider/model shorthand
 termux-agent --provider zen:nemotron-3-ultra-free "hello"
