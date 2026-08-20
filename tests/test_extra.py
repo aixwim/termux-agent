@@ -5145,10 +5145,10 @@ def test_plain_banner_is_two_compact_lines(monkeypatch):
     assert calls == ["termux-agent  zen / model  [root]", "cwd: /work  ·  /help for commands"]
 
 
-def test_version_is_100():
+def test_version_is_120():
     import termux_agent
 
-    assert termux_agent.__version__ == "1.1.0"
+    assert termux_agent.__version__ == "1.2.0"
 
 
 # --- repl maxrounds / server mct+cors / serve cors ---

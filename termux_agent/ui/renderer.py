@@ -161,26 +161,6 @@ def render_banner(provider: str, model: str, agent: str, cwd: object) -> None:
     console.print(_panel(body, title=_text("termux-agent", style="bold cyan"), border_style="cyan", padding=(0, 1), expand=False))
 
 
-class StreamPrinter:
-    """Print streaming text deltas; render markdown when a sentence completes."""
-
-    def __init__(self) -> None:
-        self._buffer = ""
-
-    def feed(self, delta: str) -> None:
-        self._buffer += delta
-        self.console_print_accumulated()
-
-    def console_print_accumulated(self) -> None:
-        # print the last unrendered chunk as plain text
-        pass
-
-    def flush(self) -> None:
-        if self._buffer.strip():
-            _console().print(_markdown(self._buffer))
-        self._buffer = ""
-
-
 class PlainStreamPrinter:
     """Print streaming deltas as plain text (for narrow / low-footprint terminals)."""
 

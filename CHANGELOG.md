@@ -2,18 +2,25 @@
 
 All notable changes to this project are documented here.
 
+## [1.2.0] - 2026-08-20
+
+### Highlights
+
+- **Faster, lower-memory search** — file traversal, globbing, and session metadata are streamed lazily; generated directories are pruned on large repositories.
+- **Polished mobile output** — compact adaptive banner, clearer doctor sections, concise tool-call lines, and correct multiline streaming on narrow Termux screens.
+- **More reliable model fallback** — empty provider responses are retried and then routed to a fallback model instead of being reported as successful blank answers.
+- **Safer read-only inspection** — `git_log` is available in read-only mode.
+- **Accurate diagnostics** — provider HTTP responses are distinguished from network failures, and unpublished PyPI packages are no longer reported as offline.
+- **Python 3.14 support** — included in package classifiers and the CI test matrix.
+
 ### Fixes
 
-- **Piped REPL commands now work** — piping slash-commands (`printf '/sessions\n' | termux-agent`) used to be swallowed as a one-shot prompt; they now reach the REPL correctly.
-- **Friendly error for unknown providers** — no more raw traceback for `--provider nope`.
-- **`--doctor --fix` works** — the intuitive `--fix` alias is now accepted alongside `--doctor-fix`.
-
-- **`--tokens --all` works** — the `--tokens` flag no longer swallows `--all` as its file argument; whole-store estimation works as documented.
-
-### Fixes
-
-- **REPL shows rate-limit/API errors** — when a model fails (e.g. zen `429 FreeUsageLimitError`) before producing any streamed text, the REPL now prints the error instead of silently returning to the prompt.
-- **Zen fallback models updated** — the fallback list no longer points at the three free models that were rate-limited (`deepseek-v4-flash-free`, `mimo-v2.5-free`, `big-pickle`); it now tries `hy3-free`, `nemotron-3.5-lightning-free`, `laguna-s-2.1-free`, `muse-spark-1.2-contributor-free`.
+- Piped REPL slash-commands now reach the REPL correctly.
+- Unknown providers return a friendly error instead of a traceback.
+- `--doctor --fix` is accepted alongside `--doctor-fix`.
+- `--tokens --all` no longer consumes `--all` as a file argument.
+- Rate-limit and API errors are visible in the REPL.
+- Zen fallback models prefer currently available free models.
 
 ## [1.1.0] - 2026-08-20
 

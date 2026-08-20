@@ -2,10 +2,10 @@
 
 > A CLI coding agent for **Termux (Android)** — chat with an LLM that can read/write files, search code, and run commands through a full tool-use loop. Multi-provider, scriptable, and works out of the box with a free model.
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue)](#)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue)](#)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](#)
 [![Python](https://img.shields.io/badge/python-3.10%2B-informational)](#)
-[![Tests](https://img.shields.io/badge/tests-346%20passing-brightgreen)](#)
+[![Tests](https://img.shields.io/badge/tests-353%20passing-brightgreen)](#)
 [![CI](https://github.com/aixwim/termux-agent/actions/workflows/ci.yml/badge.svg)](#)
 
 ---
@@ -323,7 +323,7 @@ termux_agent/
 └── ui/             # renderer (rich) + REPL (prompt_toolkit)
 ```
 
-CI runs the full test suite on Python 3.10–3.13 via GitHub Actions.
+CI runs the full test suite on Python 3.10–3.14 via GitHub Actions.
 
 ---
 
