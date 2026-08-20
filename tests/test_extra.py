@@ -6413,6 +6413,50 @@ def test_server_sessions_includes_note(tmp_path: Path, monkeypatch):
         httpd.server_close()
 
 
+# --- git diff tokens ---
+def test_cmd_tokens_git_diff(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+    import os
+    import subprocess
+
+    from termux_agent import cli
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(tmp_path), *args], capture_output=True, text=True, check=True
+        )
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    (tmp_path / "a.txt").write_text("hello world\n")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    (tmp_path / "a.txt").write_text("hello world\nchanged line\n")
+    (tmp_path / "b.txt").write_text("brand new file\n")
+    git("add", "-A")
+    git("commit", "-qm", "second")
+    (tmp_path / "a.txt").write_text("hello world\nchanged line\neven more\n")
+
+    monkeypatch.setattr(cli.os, "getcwd", lambda: str(tmp_path))
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_tokens("HEAD", as_json=True) == 0
+    payload = _json.loads(out.getvalue())
+    assert payload["ok"] is True
+    assert payload["chars"] > 0
+    assert payload["files"] == 1
+    assert payload["git"] == "HEAD"
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_tokens("HEAD~1", as_json=True) == 0
+    payload = _json.loads(out.getvalue())
+    assert payload["files"] == 2
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

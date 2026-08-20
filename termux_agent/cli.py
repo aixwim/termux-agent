@@ -1151,12 +1151,39 @@ def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None, 
 
 
 def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False, session_ref: str | None = None, output: str | None = None) -> int:
-    """Estimate token usage of a file, directory, inline text, or session transcript."""
+    """Estimate token usage of a file, directory, inline text, session transcript, or git diff (--tokens HEAD)."""
     import sys as _sys
 
     extra: dict = {}
 
-    if session_ref is not None:
+    if path and (path == "HEAD" or path.startswith("HEAD~") or ".." in path or "..." in path):
+        import os as _os
+        import subprocess
+
+        args = ["git", "diff", "--no-color", path] if path != "HEAD" else ["git", "diff", "--no-color"]
+        try:
+            proc = subprocess.run(args, capture_output=True, text=True, timeout=60, cwd=_os.getcwd())
+        except (OSError, subprocess.SubprocessError) as e:
+            if as_json:
+                import json as _json
+
+                print(_json.dumps({"ok": False, "error": f"Cannot run git diff: {e}"}, ensure_ascii=False))
+            else:
+                render_error(f"Cannot run git diff: {e}")
+            return 1
+        body = proc.stdout or ""
+        if proc.returncode != 0 or not body.strip():
+            if as_json:
+                import json as _json
+
+                print(_json.dumps({"ok": True, "tokens": 0, "chars": 0, "files": 0, "empty": True}, ensure_ascii=False))
+            else:
+                render_info("No matching git diff to estimate.")
+            return 0
+        chars = len(body)
+        files = len({ln[6:].strip() for ln in body.splitlines() if ln.startswith("diff --git ")})
+        extra = {"files": files, "git": path}
+    elif session_ref is not None:
         from termux_agent.session import export_session
 
         try:
@@ -2552,7 +2579,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-memory", action="store_true", help="Run without the persistent memory file (~/.termux-agent/memory.md)")
     parser.add_argument("--git", action="store_true", dest="git_context", help="Inject the repo state (status/diff/log) into the system prompt")
     parser.add_argument("--show", metavar="SESSION", help="Show a full session transcript (default: latest); use --json for raw output")
-    parser.add_argument("--tokens", metavar="FILE", help="Estimate the token count of a file (omit to read stdin; --session for a session transcript)")
+    parser.add_argument("--tokens", metavar="FILE", help="Estimate the token count of a file or directory (omit to read stdin; --session for a session transcript; HEAD/HEAD~N estimates the git diff)")
     parser.add_argument("--summarize", nargs="?", const="latest", metavar="SESSION", help="Have the agent summarize a session transcript (default: latest); --output saves it")
     parser.add_argument("--rerun", nargs="?", const="latest", metavar="SESSION", help="Re-run the last user prompt of a session as a fresh one-shot (default: latest); --output saves it")
     parser.add_argument("--bundle", metavar="DIR", help="Back up config, memory, and all sessions into a portable directory ('-' streams a gzipped tar to stdout; --no-sessions excludes sessions)")
