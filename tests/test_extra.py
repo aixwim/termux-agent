@@ -3585,6 +3585,104 @@ def test_import_dry_run(tmp_path: Path, monkeypatch):
     assert len(list(sdir.glob("*.jsonl"))) == 0
 
 
+# --- server only_tools / models query / doctor model check ---
+def test_server_chat_only_tools(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+
+    seen = {}
+
+    def fake_build(*a, **k):
+        seen["only_tools"] = k.get("only_tools")
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/chat",
+            data=_json.dumps({"prompt": "hi", "only_tools": ["read_file"]}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["ok"] is True
+        assert seen["only_tools"] == ["read_file"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_server_models_provider_query(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+
+    class FakeProv:
+        name = "zen"
+        model = "m"
+
+        def list_models(self):
+            return ["m1", "m2"]
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=FakeProv(),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/models?provider=zen", timeout=10) as r:
+            data = _json.loads(r.read())
+        assert data["provider"] == "zen"
+        assert data["models"] == ["m1", "m2"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_doctor_configured_model_check():
+    import io
+
+    from termux_agent import cli
+
+    cfg = _min_cfg()
+    cfg["model"] = "m"
+    out = io.StringIO()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cli.sys, "stdout", out)
+        assert cli.cmd_doctor(cfg, as_json=True) == 0
+    import json as _json
+
+    checks = _json.loads(out.getvalue())["checks"]
+    model_check = next((c for c in checks if c["label"] == "configured model"), None)
+    assert model_check is not None
+    assert model_check["ok"] is True
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

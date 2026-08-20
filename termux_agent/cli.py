@@ -1652,6 +1652,16 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
     pname = cfg.get("provider", "zen")
     pc = cfg.get("providers", {}).get(pname, {})
     add("active provider", True, f"{pname} ({pc.get('type')})")
+    configured_model = cfg.get("model", "")
+    if configured_model and pc.get("models"):
+        if configured_model in pc["models"]:
+            add("configured model", True, f"{configured_model} in provider's list")
+        else:
+            add(
+                "configured model",
+                False,
+                f"{configured_model} NOT in {pname} models: {', '.join(map(str, pc['models'])) or 'none'}",
+            )
     if pc.get("api_key_env"):
         key = os.environ.get(pc["api_key_env"])
         model = cfg.get("model", "")

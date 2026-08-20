@@ -144,7 +144,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if self.path == "/health":
             self._send(200, {"ok": True, "version": __version__})
-        elif self.path in ("/models", "/sessions", "/config", "/tools", "/agents", "/stats", "/memory"):
+        elif self.path.split("?", 1)[0] in ("/models", "/sessions", "/config", "/tools", "/agents", "/stats", "/memory"):
             if not _authorized(self):
                 _send_unauthorized(self)
                 return
@@ -181,12 +181,16 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 from termux_agent.tools.base import tool_specs
 
                 self._send(200, {"tools": [{"name": s.name, "description": s.description} for s in tool_specs()]})
-            elif self.path == "/models":
+            elif self.path.split("?", 1)[0] == "/models":
+                import urllib.parse
+
+                q = urllib.parse.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+                prov = (q.get("provider") or [None])[0] or self.provider
                 try:
-                    provider = self.build_agent(self.cfg, self.provider, self.model, auto_accept=True)
+                    provider = self.build_agent(self.cfg, prov, self.model, auto_accept=True)
                     live = provider.provider.list_models()
-                    models = live or [m for m in (self.cfg.get("providers", {}).get(self.provider or self.cfg.get("provider", "zen"), {}).get("models") or [])]
-                    self._send(200, {"models": models})
+                    models = live or [m for m in (self.cfg.get("providers", {}).get(prov or self.cfg.get("provider", "zen"), {}).get("models") or [])]
+                    self._send(200, {"provider": prov, "models": models})
                 except Exception as e:  # noqa: BLE001
                     self._send(500, {"ok": False, "error": str(e)})
             elif self.path == "/config":
@@ -260,11 +264,12 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 return
             provider = str(data.get("provider") or self.provider or self.cfg.get("provider", "zen"))
             model = str(data.get("model") or self.model or "")
+            only_tools = [t for t in data.get("only_tools") if isinstance(t, str)] if isinstance(data.get("only_tools"), list) else None
             from concurrent.futures import ThreadPoolExecutor
 
             def _one(p: str) -> dict:
                 try:
-                    agent = self.build_agent(self.cfg, provider, model, auto_accept=True)
+                    agent = self.build_agent(self.cfg, provider, model, auto_accept=True, only_tools=only_tools)
                     answer = agent.run(p)
                     return {"prompt": p, "answer": answer}
                 except Exception as e:  # noqa: BLE001
@@ -298,6 +303,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 agent_name=data.get("agent"),
                 working_dir=data.get("cwd"),
                 extra_rules=data.get("rules"),
+                only_tools=[t for t in data.get("only_tools") if isinstance(t, str)] if isinstance(data.get("only_tools"), list) else None,
             )
         except Exception as e:  # noqa: BLE001
             self._send(500, {"ok": False, "error": str(e)})
