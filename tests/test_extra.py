@@ -3979,6 +3979,101 @@ def test_repl_log(tmp_path: Path, monkeypatch):
     assert rec["assistant"] == "answer"
 
 
+# --- restore stdin / smoke json / health ---
+def test_restore_stdin(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+    import tarfile
+
+    from termux_agent import cli, session
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "manifest.json").write_text(_json.dumps({"app": "termux-agent", "version": "0.4.0", "sessions": 1}))
+    (src / "config.yaml").write_text("provider: zen\n")
+    ses_dir = src / "sessions"
+    ses_dir.mkdir()
+    (ses_dir / "abc.jsonl").write_text('{"role": "user", "content": "hi"}\n')
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        tf.add(src / "manifest.json", arcname="manifest.json")
+        tf.add(src / "config.yaml", arcname="config.yaml")
+        tf.add(ses_dir / "abc.jsonl", arcname="sessions/abc.jsonl")
+
+    cdir = tmp_path / "cfg"
+    sdir = tmp_path / "sessions"
+    cdir.mkdir()
+    sdir.mkdir()
+    monkeypatch.setattr(cli, "CONFIG_DIR", cdir)
+    monkeypatch.setattr(cli, "CONFIG_FILE", cdir / "config.yaml")
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+
+    fake_stdin = io.TextIOWrapper(io.BytesIO(buf.getvalue()))
+    monkeypatch.setattr(cli.sys, "stdin", fake_stdin)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_restore("-") == 0
+    assert (cdir / "config.yaml").is_file()
+    assert (sdir / "abc.jsonl").is_file()
+
+
+def test_smoke_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={"prompt_tokens": 5, "completion_tokens": 2},
+        run=lambda p, on_tool_use=None, on_text_delta=None: "OK",
+    ))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_smoke(_min_cfg(), "zen", "m", as_json=True) == 0
+    data = _json.loads(out.getvalue())
+    assert data["ok"] is True
+    assert data["provider"] == "zen"
+    assert data["model"] == "m"
+
+
+def test_health_version_pid(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=10) as r:
+            data = _json.loads(r.read())
+        assert data["ok"] is True
+        assert data["pid"] > 0
+        assert data["uptime"] >= 0
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

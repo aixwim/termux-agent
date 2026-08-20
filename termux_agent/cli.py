@@ -1239,14 +1239,37 @@ def cmd_bundle(target_dir: str) -> int:
 
 
 def cmd_restore(bundle_dir: str) -> int:
-    """Restore config, memory, and sessions from a bundle directory."""
+    """Restore config, memory, and sessions from a bundle directory (or a gzipped tar on stdin with '-')."""
     import json as _json
     import shutil
 
     from termux_agent.agent import MEMORY_FILE
     from termux_agent.session import SESSIONS_DIR
 
-    src = Path(bundle_dir)
+    if bundle_dir == "-":
+        import io
+        import tarfile
+        import sys as _sys
+        import tempfile
+
+        buf = io.BytesIO(_sys.stdin.buffer.read())
+        with tempfile.TemporaryDirectory() as tmp:
+            with tarfile.open(fileobj=buf, mode="r:gz") as tf:
+                tf.extractall(tmp, filter="data")
+            src = Path(tmp)
+            return _restore_from_dir(src)
+
+    return _restore_from_dir(Path(bundle_dir))
+
+
+def _restore_from_dir(src: Path) -> int:
+    """Restore config, memory, and sessions from an extracted bundle directory."""
+    import json as _json
+    import shutil
+
+    from termux_agent.agent import MEMORY_FILE
+    from termux_agent.session import SESSIONS_DIR
+
     if not (src / "manifest.json").is_file():
         render_error(f"No manifest.json found in {src} — not a termux-agent bundle.")
         return 1
@@ -1786,8 +1809,9 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
     return 1 if issues else 0
 
 
-def cmd_smoke(cfg: dict, provider: str | None, model: str | None) -> int:
+def cmd_smoke(cfg: dict, provider: str | None, model: str | None, as_json: bool = False) -> int:
     """End-to-end smoke test: send a tiny prompt and verify the whole pipeline."""
+    import json as _json
     import time
 
     from termux_agent.ui.renderer import render_tool_use
@@ -1795,25 +1819,47 @@ def cmd_smoke(cfg: dict, provider: str | None, model: str | None) -> int:
     try:
         agent = build_agent(cfg, provider, model, auto_accept=True)
     except (ConfigError, KeyError) as e:
-        render_error(f"Error: {e}")
+        if as_json:
+            print(_json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+        else:
+            render_error(f"Error: {e}")
         return 1
-    render_info(
-        f"Smoke test: provider={agent.provider.name} model={agent.provider.model} cwd={agent.ctx.working_dir}"
-    )
+    if not as_json:
+        render_info(
+            f"Smoke test: provider={agent.provider.name} model={agent.provider.model} cwd={agent.ctx.working_dir}"
+        )
     start = time.monotonic()
     try:
         answer = agent.run("Reply with exactly: OK", on_tool_use=render_tool_use)
     except Exception as e:  # noqa: BLE001
-        render_error(f"Smoke test FAILED: {type(e).__name__}: {e}")
+        if as_json:
+            print(_json.dumps({"ok": False, "provider": agent.provider.name, "model": agent.provider.model, "error": f"{type(e).__name__}: {e}"}, ensure_ascii=False))
+        else:
+            render_error(f"Smoke test FAILED: {type(e).__name__}: {e}")
         return 1
     elapsed = time.monotonic() - start
     usage = agent.usage
     ok = bool(answer.strip())
     _maybe_notify(cfg, "Smoke test " + ("OK" if ok else "FAILED"), answer)
-    render_info(
-        f"Done in {elapsed:.1f}s | tokens: prompt {usage.get('prompt_tokens', 0)} / "
-        f"completion {usage.get('completion_tokens', 0)} | answer: {answer!r}"
-    )
+    if as_json:
+        print(
+            _json.dumps(
+                {
+                    "ok": ok,
+                    "provider": agent.provider.name,
+                    "model": agent.provider.model,
+                    "elapsed": round(elapsed, 2),
+                    "usage": usage,
+                    "answer": answer[:200],
+                },
+                ensure_ascii=False,
+            )
+        )
+    else:
+        render_info(
+            f"Done in {elapsed:.1f}s | tokens: prompt {usage.get('prompt_tokens', 0)} / "
+            f"completion {usage.get('completion_tokens', 0)} | answer: {answer!r}"
+        )
     return 0 if ok else 1
 
 
@@ -1874,8 +1920,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tokens", metavar="FILE", help="Estimate the token count of a file (omit to read stdin)")
     parser.add_argument("--summarize", nargs="?", const="latest", metavar="SESSION", help="Have the agent summarize a session transcript (default: latest); --output saves it")
     parser.add_argument("--rerun", nargs="?", const="latest", metavar="SESSION", help="Re-run the last user prompt of a session as a fresh one-shot (default: latest); --output saves it")
-    parser.add_argument("--bundle", metavar="DIR", help="Back up config, memory, and all sessions into a portable directory")
-    parser.add_argument("--restore", metavar="DIR", help="Restore config, memory, and sessions from a bundle directory")
+    parser.add_argument("--bundle", metavar="DIR", help="Back up config, memory, and all sessions into a portable directory ('-' streams a gzipped tar to stdout)")
+    parser.add_argument("--restore", metavar="DIR", help="Restore config, memory, and sessions from a bundle directory ('-' reads a gzipped tar from stdin)")
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors (same as NO_COLOR=1)")
     parser.add_argument("--allow-dir", action="append", metavar="DIR", help="Grant the agent file access to an extra directory (repeatable)")
     parser.add_argument("--cron", metavar="SCHEDULE", help="Print a ready-to-add cron line, e.g. '*/10 * * * *'")
@@ -2071,7 +2117,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.doctor or args.doctor_network:
         return cmd_doctor(cfg, network=args.doctor_network, as_json=args.json, termux=args.doctor_termux)
     if args.smoke:
-        return cmd_smoke(cfg, args.provider, args.model)
+        return cmd_smoke(cfg, args.provider, args.model, as_json=args.json)
     if args.serve_stop:
         return cmd_serve_stop(args.serve_pidfile)
     if args.serve:

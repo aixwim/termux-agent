@@ -19,10 +19,22 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from termux_agent import __version__
+
+
+class _Uptime:
+    def __init__(self) -> None:
+        self.t0 = time.monotonic()
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self.t0
+
+
+_STARTED = _Uptime()
 
 
 def _read_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -145,7 +157,12 @@ class _AgentHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/health":
-            self._send(200, {"ok": True, "version": __version__})
+            import os
+
+            self._send(
+                200,
+                {"ok": True, "version": __version__, "pid": os.getpid(), "uptime": round(_STARTED.elapsed(), 1)},
+            )
         elif self.path.split("?", 1)[0] in ("/models", "/sessions", "/config", "/tools", "/agents", "/stats", "/memory"):
             if not _authorized(self):
                 _send_unauthorized(self)
