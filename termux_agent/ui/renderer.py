@@ -1,6 +1,7 @@
 """Rendering output with rich: markdown, streaming, tool panels."""
 from __future__ import annotations
 
+import os
 from typing import Any
 
 _console_instance = None
@@ -10,6 +11,24 @@ def __getattr__(name: str) -> Any:
     if name == "console":
         return _console()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def prefer_plain() -> bool:
+    """True on dumb/narrow terminals where rich rendering is slow or useless.
+
+    Termux terminals are often narrow (phone screens) or non-interactive
+    (piped output / automation), where ANSI rendering is wasted work.
+    """
+    term = os.environ.get("TERM", "") or ""
+    if term in ("dumb", "unknown", ""):
+        return True
+    try:
+        cols = int(os.environ.get("COLUMNS", "0") or 0)
+    except ValueError:
+        cols = 0
+    if cols and cols < 60:
+        return True
+    return False
 
 
 def _console() -> Any:
@@ -58,6 +77,9 @@ def render_answer(text: str) -> None:
     if text.strip().startswith("Error:"):
         console.print(_text(text, style="bold red"))
         return
+    if prefer_plain():
+        console.print(text)
+        return
     try:
         console.print(_markdown(text))
     except Exception:  # noqa: BLE001
@@ -66,6 +88,9 @@ def render_answer(text: str) -> None:
 
 def render_tool_use(name: str, args_preview: str) -> None:
     console = _console()
+    if prefer_plain():
+        console.print(f"tool: {name}  {args_preview}")
+        return
     console.print(
         _panel(
             _text(f"{name}  {args_preview}", style="cyan"),
@@ -78,6 +103,9 @@ def render_tool_use(name: str, args_preview: str) -> None:
 
 def render_code(code: str, language: str = "text") -> None:
     console = _console()
+    if prefer_plain():
+        console.print(code)
+        return
     try:
         console.print(_syntax(code, language, "monokai", True))
     except Exception:  # noqa: BLE001

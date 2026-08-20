@@ -104,7 +104,7 @@ def build_agent(
             system_prompt=system_prompt,
             agent_spec=agent_spec,
             max_context_tokens=int(max_context_tokens if max_context_tokens is not None else cfg.get("max_context_tokens", 0)),
-            retries=int(retries if retries is not None else cfg.get("retries", 1)),
+            retries=int(retries if retries is not None else cfg.get("retries", 2)),
             retry_backoff=float(cfg.get("retry_backoff", 1.0)),
             memory=memory,
         )
@@ -2493,7 +2493,7 @@ def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 
     import json as _json
     import time
 
-    from termux_agent.session import list_sessions, read_session, all_notes
+    from termux_agent.session import list_sessions, session_meta, all_notes
 
     sessions = list_sessions()
     notes = all_notes()
@@ -2505,23 +2505,23 @@ def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 
             continue
         if notes_only and not notes.get(s.stem):
             continue
-        recs = read_session(s)
-        first_user = next((r["content"] for r in recs if r.get("role") == "user"), "")
+        count, first_user, info = session_meta(s)
         if needle:
+            from termux_agent.session import session_messages
+
             haystack = " ".join(
                 str(r.get("content", ""))
-                for r in recs
+                for r in session_messages(s)
                 if r.get("role") in ("user", "assistant")
             ).lower()
             if needle not in haystack and needle not in notes.get(s.stem, "").lower():
                 continue
-        info = next((r for r in recs if r.get("provider")), {})
         items.append(
             {
                 "id": s.stem,
                 "provider": info.get("provider") or "",
                 "model": info.get("model") or "",
-                "messages": len(recs),
+                "messages": count,
                 "first": first_user[:100],
                 "note": notes.get(s.stem, "")[:100],
             }
@@ -2828,6 +2828,16 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
 
         roots = detect_storage_roots()
         add("storage roots", True, ", ".join(map(str, roots)) or "none")
+    else:
+        from termux_agent.config import detect_storage_roots
+
+        roots = detect_storage_roots()
+        if roots:
+            add(
+                "storage access",
+                True,
+                f"detected {', '.join(map(str, roots))} - enable in config: allow_storage: true",
+            )
     for name in ("git", "pip", "python"):
         path = shutil.which(name)
         add(name, bool(path), path or "not found in PATH")
