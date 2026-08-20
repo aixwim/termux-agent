@@ -6,8 +6,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 CONFIG_DIR = Path(os.environ.get("TERMUX_AGENT_HOME", "~/.termux-agent")).expanduser()
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 
@@ -190,6 +188,8 @@ def load_config(config_file: str | None = None) -> dict[str, Any]:
 
     When an explicit --config FILE is given, project files are still merged on top.
     """
+    import yaml
+
     file = Path(config_file).expanduser() if config_file else CONFIG_FILE
     cfg = copy.deepcopy(DEFAULTS)
     if file.exists():
@@ -245,5 +245,7 @@ def ensure_config_file() -> Path:
     if example.exists():
         CONFIG_FILE.write_text(example.read_text())
     else:
+        import yaml
+
         CONFIG_FILE.write_text(yaml.safe_dump(DEFAULTS, sort_keys=False, allow_unicode=True))
     return CONFIG_FILE

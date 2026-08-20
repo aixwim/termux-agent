@@ -8,8 +8,6 @@ import sys
 import threading
 from pathlib import Path
 
-import yaml
-
 from termux_agent import __version__
 from termux_agent.agent import Agent
 from termux_agent.config import (
@@ -24,7 +22,6 @@ from termux_agent.config import (
 from termux_agent.providers import create_provider
 from termux_agent.tools.base import ToolContext
 from termux_agent.ui.renderer import render_error, render_info
-from termux_agent.ui.repl import Repl
 
 READONLY_TOOLS = {
     "read_file",
@@ -171,7 +168,9 @@ def _init_wizard() -> int:
     if m:
         cfg["model"] = m
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
+    import yaml as _yaml
+
+    CONFIG_FILE.write_text(_yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
     render_info(f"Configuration created: {CONFIG_FILE}")
     key_env = pc.get("api_key_env")
     if key_env:
@@ -2696,6 +2695,8 @@ def cmd_resume(
     if as_json or quiet:
         render_error("--json/--quiet require a prompt with --resume.")
         return 2
+    from termux_agent.ui.repl import Repl
+
     Repl(agent, provider_name=provider_name, model=agent.provider.model, agent_name=agent_name).run()
     return 0
 
@@ -3711,6 +3712,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.yes:
         render_info("Mode --yes: all confirmations are skipped automatically.")
     try:
+        from termux_agent.ui.repl import Repl
+
         Repl(
             agent,
             provider_name=provider_key,

@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from termux_agent.config import ConfigError, resolve_api_key
-from termux_agent.providers.anthropic import AnthropicProvider
 from termux_agent.providers.base import Provider, ProviderError, StreamEvent, ToolSpec
-from termux_agent.providers.openai_compat import OpenAICompatProvider
 
 
 def create_provider(name: str, cfg: dict, model: str | None = None) -> Provider:
+    from termux_agent.providers.anthropic import AnthropicProvider
+    from termux_agent.providers.openai_compat import OpenAICompatProvider
+
     providers = cfg.get("providers", {})
     if name not in providers:
         raise ConfigError(f"Unknown provider '{name}'. Available: {', '.join(providers)}")
@@ -28,8 +29,6 @@ def create_provider(name: str, cfg: dict, model: str | None = None) -> Provider:
 
 
 __all__ = [
-    "AnthropicProvider",
-    "OpenAICompatProvider",
     "Provider",
     "ProviderError",
     "StreamEvent",

@@ -4,8 +4,6 @@ from __future__ import annotations
 import html
 import json
 import re
-import urllib.parse
-import urllib.request
 
 from termux_agent.tools.base import ToolContext, tool
 
@@ -23,6 +21,9 @@ from termux_agent.tools.base import ToolContext, tool
     },
 )
 def web_fetch(args: dict, ctx: ToolContext) -> str:
+    import urllib.parse
+    import urllib.request
+
     url = str(args["url"])
     max_chars = int(args.get("max_chars", 20000))
     parsed = urllib.parse.urlparse(url)
@@ -44,12 +45,16 @@ def web_fetch(args: dict, ctx: ToolContext) -> str:
 
 
 def _http_json(url: str, max_bytes: int = 200_000) -> dict:
+    import urllib.request
+
     req = urllib.request.Request(url, headers={"User-Agent": "termux-agent/0.2"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read(max_bytes).decode("utf-8", errors="replace"))
 
 
 def _search_ddg(query: str, max_results: int) -> list[str]:
+    import urllib.parse
+
     params = urllib.parse.urlencode(
         {"q": query, "format": "json", "no_html": 1, "skip_disambig": 1}
     )
@@ -69,6 +74,8 @@ def _search_ddg(query: str, max_results: int) -> list[str]:
 
 
 def _search_wikipedia(query: str, max_results: int) -> list[str]:
+    import urllib.parse
+
     params = urllib.parse.urlencode(
         {"action": "query", "list": "search", "srsearch": query, "format": "json", "srlimit": max_results}
     )

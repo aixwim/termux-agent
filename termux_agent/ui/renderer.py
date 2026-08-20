@@ -1,36 +1,74 @@
 """Rendering output with rich: markdown, streaming, tool panels."""
 from __future__ import annotations
 
-from rich.console import Console
-from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.syntax import Syntax
-from rich.text import Text
+from typing import Any
 
-console = Console(highlight=False, soft_wrap=True)
+_console_instance = None
+
+
+def __getattr__(name: str) -> Any:
+    if name == "console":
+        return _console()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _console() -> Any:
+    """Lazily import and return the shared rich Console (keeps CLI startup fast)."""
+    global _console_instance
+    if _console_instance is None:
+        from rich.console import Console
+
+        _console_instance = Console(highlight=False, soft_wrap=True)
+    return _console_instance
+
+
+def _markdown(text: str) -> Any:
+    from rich.markdown import Markdown
+
+    return Markdown(text)
+
+
+def _panel(*args: Any, **kwargs: Any) -> Any:
+    from rich.panel import Panel
+
+    return Panel(*args, **kwargs)
+
+
+def _syntax(code: str, language: str, theme: str, word_wrap: bool) -> Any:
+    from rich.syntax import Syntax
+
+    return Syntax(code, language, theme=theme, word_wrap=word_wrap)
+
+
+def _text(*args: Any, **kwargs: Any) -> Any:
+    from rich.text import Text
+
+    return Text(*args, **kwargs)
 
 
 def disable_color() -> None:
     """Disable ANSI colors on the shared console (--no-color / NO_COLOR)."""
-    console.no_color = True
+    _console().no_color = True
 
 
 def render_answer(text: str) -> None:
     if not text:
         return
+    console = _console()
     if text.strip().startswith("Error:"):
-        console.print(Text(text, style="bold red"))
+        console.print(_text(text, style="bold red"))
         return
     try:
-        console.print(Markdown(text))
+        console.print(_markdown(text))
     except Exception:  # noqa: BLE001
         console.print(text)
 
 
 def render_tool_use(name: str, args_preview: str) -> None:
+    console = _console()
     console.print(
-        Panel(
-            Text(f"{name}  {args_preview}", style="cyan"),
+        _panel(
+            _text(f"{name}  {args_preview}", style="cyan"),
             title="tool",
             border_style="blue",
             expand=False,
@@ -39,18 +77,19 @@ def render_tool_use(name: str, args_preview: str) -> None:
 
 
 def render_code(code: str, language: str = "text") -> None:
+    console = _console()
     try:
-        console.print(Syntax(code, language, theme="monokai", word_wrap=True))
+        console.print(_syntax(code, language, "monokai", True))
     except Exception:  # noqa: BLE001
         console.print(code)
 
 
 def render_info(msg: str) -> None:
-    console.print(Text(msg, style="dim"))
+    _console().print(_text(msg, style="dim"))
 
 
 def render_error(msg: str) -> None:
-    console.print(Text(msg, style="bold red"))
+    _console().print(_text(msg, style="bold red"))
 
 
 class StreamPrinter:
@@ -69,7 +108,7 @@ class StreamPrinter:
 
     def flush(self) -> None:
         if self._buffer.strip():
-            console.print(Markdown(self._buffer))
+            _console().print(_markdown(self._buffer))
         self._buffer = ""
 
 
@@ -81,11 +120,12 @@ class PlainStreamPrinter:
 
     def feed(self, delta: str) -> None:
         self._buf += delta
+        console = _console()
         while "\n" in self._buf:
             line, self._buf = self._buf.split("\n", 1)
             console.print(line, end="", style="bright_white")
 
     def flush(self) -> None:
         if self._buf:
-            console.print(self._buf, style="bright_white")
+            _console().print(self._buf, style="bright_white")
             self._buf = ""

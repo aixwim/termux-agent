@@ -1,3 +1,1 @@
-from termux_agent.ui import repl, renderer  # noqa: F401
-
-__all__ = ["repl", "renderer"]
+"""UI package (renderer + REPL). Submodules are imported on demand to keep CLI startup fast."""

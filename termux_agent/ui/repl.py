@@ -4,10 +4,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.styles import Style
-
 from termux_agent.agent import Agent
 from termux_agent.config import CONFIG_DIR
 from termux_agent.session import Session
@@ -20,7 +16,11 @@ from termux_agent.ui.renderer import (
     render_tool_use,
 )
 
-PROMPT_STYLE = Style.from_dict({"prompt": "bold cyan"})
+
+def _prompt_style() -> object:
+    from prompt_toolkit.styles import Style
+
+    return Style.from_dict({"prompt": "bold cyan"})
 
 def copy_to_clipboard(text: str) -> bool:
     """Copy text using termux-clipboard-set / xclip / pbcopy. Returns True on success."""
@@ -80,10 +80,13 @@ Type a normal message to ask; Ctrl+C to cancel."""
 
 
 def make_prompt_session(history_file: str) -> PromptSession:
+    from prompt_toolkit import PromptSession as _PromptSession
+    from prompt_toolkit.history import FileHistory
+
     (CONFIG_DIR / "history").mkdir(parents=True, exist_ok=True)
-    return PromptSession(
+    return _PromptSession(
         history=FileHistory(str(CONFIG_DIR / "history" / history_file)),
-        style=PROMPT_STYLE,
+        style=_prompt_style(),
     )
 
 
