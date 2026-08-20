@@ -3390,6 +3390,71 @@ def test_rerun_attach(tmp_path: Path, monkeypatch):
     assert str(note) in seen["prompt"]
 
 
+# --- batch stdin / rerun diff / sessions limit ---
+def test_batch_stdin(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    seen = []
+    monkeypatch.setattr(cli, "_batch_run_one", lambda *a, **k: seen.append(a[-1]) or {"prompt": a[-1], "answer": "ok"})
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("one\ntwo\n\nthree\n"))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_batch(_min_cfg(), "-", "zen", None, as_json=True) == 0
+    assert seen == ["one", "two", "three"]
+
+
+def test_rerun_diff(tmp_path: Path, monkeypatch):
+    import io
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    sid = "20260820-000001"
+    (sdir / f"{sid}.jsonl").write_text(
+        '{"role":"user","content":"q"}\n{"role":"assistant","content":"OLD LINE"}\n'
+    )
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+        )
+        agent.run = lambda p, on_tool_use=None, on_text_delta=None: "NEW LINE"
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_rerun(_min_cfg(), sid, "zen", None, diff=True) == 0
+    assert "OLD LINE" in out.getvalue()
+    assert "NEW LINE" in out.getvalue()
+
+
+def test_sessions_limit(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    for i in range(5):
+        (sdir / f"20260820-00000{i}.jsonl").write_text('{"role":"user","content":"x"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_sessions(as_json=True, limit=2) == 0
+    assert len(_json.loads(out.getvalue())["sessions"]) == 2
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

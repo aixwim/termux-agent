@@ -598,19 +598,24 @@ def cmd_batch(
     fail_fast: bool = False,
     notify: bool = False,
 ) -> int:
-    """Run one one-shot per line of a prompts file (blank lines skipped)."""
+    """Run one one-shot per line of a prompts file (blank lines skipped; '-' reads stdin)."""
     import json as _json
 
     from termux_agent.ui.renderer import render_error, render_info
 
-    try:
-        text = Path(prompts_file).expanduser().read_text(encoding="utf-8")
-    except OSError as e:
-        render_error(f"Cannot read --batch file: {e}")
-        return 1
+    if prompts_file == "-":
+        import sys as _sys
+
+        text = _sys.stdin.read()
+    else:
+        try:
+            text = Path(prompts_file).expanduser().read_text(encoding="utf-8")
+        except OSError as e:
+            render_error(f"Cannot read --batch file: {e}")
+            return 1
     prompts = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if not prompts:
-        render_error(f"--batch file is empty: {prompts_file}")
+        render_error(f"--batch {'stdin' if prompts_file == '-' else 'file'} is empty: {prompts_file}")
         return 1
 
     def _run_one(p: str) -> dict:
@@ -1173,6 +1178,7 @@ def cmd_rerun(
     as_json: bool = False,
     timeout: int | None = None,
     attach: list[str] | None = None,
+    diff: bool = False,
 ) -> int:
     """Re-run the last user prompt of a session with the current model (fresh run)."""
     import json as _json
@@ -1187,6 +1193,10 @@ def cmd_rerun(
         return 1
     last_user = next(
         (str(m.get("content", "")) for m in reversed(data.get("messages", [])) if m.get("role") == "user"),
+        "",
+    )
+    old_answer = next(
+        (str(m.get("content", "")) for m in reversed(data.get("messages", [])) if m.get("role") == "assistant"),
         "",
     )
     if not last_user.strip():
@@ -1212,6 +1222,25 @@ def cmd_rerun(
         render_info(f"Answer written to {output}")
     if as_json:
         print(_json.dumps({"ok": True, "session": data.get("id", "?"), "prompt": last_user, "answer": answer}, ensure_ascii=False))
+    elif diff:
+        import difflib
+
+        from termux_agent.ui.renderer import console as _console
+
+        diff_lines = list(
+            difflib.unified_diff(
+                old_answer.splitlines(),
+                answer.splitlines(),
+                fromfile="previous",
+                tofile="new",
+                lineterm="",
+            )
+        )
+        if diff_lines:
+            for line in diff_lines:
+                _console.print(line)
+        else:
+            render_info("No change between the previous and new answer.")
     elif not output:
         render_answer(answer)
     return 0
@@ -1309,7 +1338,7 @@ def cmd_cron(schedule: str, prompt: str, command: str | None = None) -> int:
     return 0
 
 
-def cmd_sessions(search: str | None = None, as_json: bool = False) -> int:
+def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 20) -> int:
     import json as _json
 
     from termux_agent.session import list_sessions, read_session
@@ -1338,7 +1367,7 @@ def cmd_sessions(search: str | None = None, as_json: bool = False) -> int:
                 "first": first_user[:100],
             }
         )
-        if len(items) >= 20:
+        if len(items) >= max(1, limit):
             break
     if as_json:
         print(_json.dumps({"sessions": items}, ensure_ascii=False))
@@ -1681,8 +1710,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-stream", action="store_true", help="Force a non-streaming one-shot/resume even in a TTY")
     parser.add_argument("--watch", type=int, metavar="SECONDS", help="Re-run the one-shot prompt every N seconds until Ctrl+C (combine with --screenshot)")
     parser.add_argument("--max-rounds", type=int, default=None, metavar="N", help="With --watch: stop after this many rounds")
-    parser.add_argument("--diff", action="store_true", help="With --watch: only print/notify when the answer changes between rounds")
-    parser.add_argument("--batch", metavar="FILE", help="Run one one-shot per line of the file (blank lines skipped); --output writes results as JSON")
+    parser.add_argument("--diff", action="store_true", help="With --watch: only print/notify when the answer changes; with --rerun: show the diff vs the previous answer")
+    parser.add_argument("--batch", metavar="FILE", help="Run one one-shot per line of the file (blank lines skipped; '-' reads stdin); --output writes results as JSON")
     parser.add_argument("--retries", type=int, metavar="N", help="Override transient retry count for network hiccups")
     parser.add_argument("--no-fallback", action="store_true", help="Disable fallback models on 429/errors (use only the selected model)")
     parser.add_argument("--rules", metavar="FILE", help="Add extra instructions to the system prompt (like AGENTS.md but per-invocation)")
@@ -1720,6 +1749,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("prompt", nargs="*", help="One-shot prompt (no arguments = interactive mode)")
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
+    parser.add_argument("--limit", type=int, default=20, metavar="N", help="Max sessions to list (with --sessions/--export-all)")
     parser.add_argument("--session-dir", metavar="DIR", help="Use this directory for session files instead of ~/.termux-agent/sessions")
     parser.add_argument("--search", help="Filter --sessions by keyword in the first message")
     parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest); --markdown for a readable transcript")
@@ -1843,6 +1873,7 @@ def main(argv: list[str] | None = None) -> int:
             as_json=args.json,
             timeout=args.timeout,
             attach=args.attach,
+            diff=args.diff,
         )
     if args.tokens is not None:
         return cmd_tokens(args.tokens)
@@ -1866,7 +1897,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_tools:
         return cmd_list_tools()
     if args.sessions:
-        return cmd_sessions(args.search, as_json=args.json)
+        return cmd_sessions(args.search, as_json=args.json, limit=args.limit)
 
     # Auto-create ~/.termux-agent/config.yaml on first run (like opencode).
     if not CONFIG_FILE.exists() and not args.config:
