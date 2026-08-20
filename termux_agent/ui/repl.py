@@ -65,6 +65,8 @@ Special commands (start with /):
   /retry          re-run the last turn
   /quiet          toggle streaming (print the answer only when done)
   /temp [N]       show or set sampling temperature (0.0-2.0)
+  /maxrounds [N] show or set max tool rounds (1-200)
+  /maxrounds [N]  show or set max tool rounds (1-200)
 Type a normal message to ask; Ctrl+C to cancel."""
 
 
@@ -281,6 +283,20 @@ class Repl:
                 return False
             self.agent.temperature = value
             render_info(f"temperature set to {value} (applies from the next turn).")
+        elif c == "/maxrounds":
+            rest = (rest or "").strip()
+            if not rest:
+                render_info(f"max_tool_rounds: {self.agent.max_tool_rounds}  (usage: /maxrounds 20)")
+                return False
+            try:
+                value = int(rest)
+                if value < 1 or value > 200:
+                    raise ValueError
+            except ValueError:
+                render_error("Max tool rounds must be an integer between 1 and 200.")
+                return False
+            self.agent.max_tool_rounds = value
+            render_info(f"max_tool_rounds set to {value} (applies from the next turn).")
         elif c == "/diff":
             self._show_diff()
         elif c == "/prompt":

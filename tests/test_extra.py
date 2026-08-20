@@ -4705,6 +4705,109 @@ def test_version_is_100():
     assert termux_agent.__version__ == "1.0.0"
 
 
+# --- repl maxrounds / server mct+cors / serve cors ---
+def test_repl_maxrounds(tmp_path: Path, monkeypatch):
+    import io
+
+    from types import SimpleNamespace
+
+    from termux_agent.session import Session
+    from termux_agent.ui.repl import Repl
+
+    agent = SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path, undo=lambda: "noop"),
+        system_prompt="BASE",
+        messages=[{"role": "system", "content": "BASE"}],
+        allowed_tools=set(),
+        temperature=0.7,
+        max_tool_rounds=20,
+        run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+    )
+    monkeypatch.setattr("termux_agent.ui.repl.Session", lambda **k: Session())
+    repl = Repl(agent, provider_name="zen", model="m")
+    out = io.StringIO()
+    monkeypatch.setattr("termux_agent.ui.repl.render_info", lambda s: out.write(str(s)))
+    assert repl._handle_command("/maxrounds 5", None) is False
+    assert agent.max_tool_rounds == 5
+    assert repl._handle_command("/maxrounds 9999", None) is False
+    assert agent.max_tool_rounds == 5
+
+
+def test_server_chat_mct_override(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+
+    seen = {}
+
+    def fake_build(*a, **k):
+        seen.update(k)
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/chat",
+            data=_json.dumps({"prompt": "hi", "max_context_tokens": 8000}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["ok"] is True
+        assert seen["max_context_tokens"] == 8000
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_serve_cors_origin(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    handler = srv._AgentHandler
+    handler.cors_origin = "https://example.com"
+    try:
+        httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+        port = httpd.server_address[1]
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=10) as r:
+                assert r.headers.get("Access-Control-Allow-Origin") == "https://example.com"
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+    finally:
+        handler.cors_origin = "*"
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

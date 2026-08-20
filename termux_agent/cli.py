@@ -1500,6 +1500,7 @@ def cmd_serve(
     background: bool = False,
     pidfile: str | None = None,
     log_file: str | None = None,
+    cors_origin: str = "*",
 ) -> int:
     """Run the HTTP API server, optionally detached in the background."""
     if background:
@@ -1522,6 +1523,8 @@ def cmd_serve(
             cmd += ["--token", token]
         if log_file:
             cmd += ["--log", log_file]
+        if cors_origin and cors_origin != "*":
+            cmd += ["--cors-origin", cors_origin]
         with open(log_path, "a", encoding="utf-8") as logf:
             proc = subprocess.Popen(
                 cmd,
@@ -1539,7 +1542,7 @@ def cmd_serve(
         return 0
     from termux_agent.server import serve
 
-    return serve(cfg, host=host, port=port, provider=provider, model=model, auto_accept=auto_accept, token=token, log_file=log_file)
+    return serve(cfg, host=host, port=port, provider=provider, model=model, auto_accept=auto_accept, token=token, log_file=log_file, cors_origin=cors_origin)
 
 
 def cmd_serve_stop(pidfile: str | None = None) -> int:
@@ -2063,6 +2066,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--token-file", metavar="FILE", help="Read the bearer token from a file (with --serve)")
     parser.add_argument("--serve-background", action="store_true", help="Start the server detached in the background (with --serve)")
     parser.add_argument("--serve-pidfile", metavar="FILE", help="Pid file for the background server (default: ~/.termux-agent/server.pid)")
+    parser.add_argument("--cors-origin", default="*", metavar="ORIGIN", help="Allowed CORS origin for the server (default: *)")
     parser.add_argument("--serve-stop", action="store_true", help="Stop a background server started with --serve --serve-background")
     parser.add_argument("prompt", nargs="*", help="One-shot prompt (no arguments = interactive mode)")
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
@@ -2295,6 +2299,7 @@ def main(argv: list[str] | None = None) -> int:
             background=args.serve_background,
             pidfile=args.serve_pidfile,
             log_file=args.log,
+            cors_origin=args.cors_origin,
         )
 
     if args.verbose:

@@ -107,6 +107,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
     auto_accept: bool = False
     token: str | None = None
     log_path: str | None = None
+    cors_origin: str = "*"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         pass
@@ -141,7 +142,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Origin", self.cors_origin)
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.end_headers()
         self.wfile.write(body)
@@ -149,8 +150,8 @@ class _AgentHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self) -> None:
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Origin", self.cors_origin)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -357,6 +358,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
             only_tools = [t for t in data.get("only_tools") if isinstance(t, str)] if isinstance(data.get("only_tools"), list) else None
             temp = data.get("temperature")
             mtr = data.get("max_tool_rounds")
+            mct = data.get("max_context_tokens")
             from concurrent.futures import ThreadPoolExecutor
 
             def _one(p: str) -> dict:
@@ -368,6 +370,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                         auto_accept=True,
                         temperature=float(temp) if isinstance(temp, (int, float)) else None,
                         max_tool_rounds=int(mtr) if isinstance(mtr, int) else None,
+                        max_context_tokens=int(mct) if isinstance(mct, int) else None,
                         only_tools=only_tools,
                     )
                     answer = agent.run(p)
@@ -414,6 +417,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
         try:
             temp = data.get("temperature")
             mtr = data.get("max_tool_rounds")
+            mct = data.get("max_context_tokens")
             agent = self.build_agent(
                 self.cfg,
                 data.get("provider") or self.provider,
@@ -425,6 +429,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 system_prompt=data.get("system_prompt") or None,
                 temperature=float(temp) if isinstance(temp, (int, float)) else None,
                 max_tool_rounds=int(mtr) if isinstance(mtr, int) else None,
+                max_context_tokens=int(mct) if isinstance(mct, int) else None,
                 only_tools=[t for t in data.get("only_tools") if isinstance(t, str)] if isinstance(data.get("only_tools"), list) else None,
             )
         except Exception as e:  # noqa: BLE001
@@ -498,7 +503,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
         self._send(200, {"ok": True, "deleted": removed.stem})
 
 
-def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | None = None, model: str | None = None, auto_accept: bool = False, token: str | None = None, log_file: str | None = None) -> int:
+def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | None = None, model: str | None = None, auto_accept: bool = False, token: str | None = None, log_file: str | None = None, cors_origin: str = "*") -> int:
     from termux_agent.cli import build_agent as _build
 
     handler = _AgentHandler
@@ -509,6 +514,7 @@ def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | 
     handler.auto_accept = auto_accept
     handler.token = token
     handler.log_path = log_file
+    handler.cors_origin = cors_origin
     httpd = ThreadingHTTPServer((host, port), handler)
     import sys
 
