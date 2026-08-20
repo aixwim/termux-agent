@@ -5039,6 +5039,56 @@ def test_doctor_update_check(monkeypatch):
     assert "9.9.9" in upd["detail"]
 
 
+def test_doctor_treats_http_error_as_reachable(monkeypatch):
+    import io
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    from termux_agent import cli
+
+    def raise_http_error(*args, **kwargs):
+        raise urllib.error.HTTPError("https://example.test", 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", raise_http_error)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_doctor(_min_cfg(), network=True, as_json=True) == 0
+    checks = _json.loads(out.getvalue())["checks"]
+    connectivity = next(c for c in checks if c["label"] == "connectivity")
+    assert connectivity["ok"] is True
+    assert "HTTP 404" in connectivity["detail"]
+
+
+def test_doctor_reports_unpublished_pypi_package(monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "_latest_pypi_version", lambda: "")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_doctor(_min_cfg(), update=True, as_json=True) == 0
+    checks = _json.loads(out.getvalue())["checks"]
+    update = next(c for c in checks if c["label"] == "update check")
+    assert update["ok"] is True
+    assert "not published" in update["detail"]
+
+
+def test_latest_pypi_version_maps_404_to_unpublished(monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    from termux_agent import cli
+
+    def raise_not_found(*args, **kwargs):
+        raise urllib.error.HTTPError("https://pypi.org", 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", raise_not_found)
+    assert cli._latest_pypi_version() == ""
+
+
 def test_version_is_100():
     import termux_agent
 

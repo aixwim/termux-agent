@@ -2883,12 +2883,16 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
         else:
             add("api key", False, f"{pc['api_key_env']} empty - set the env var or fill it in the config")
     if network and pc.get("base_url"):
+        import urllib.error
         import urllib.request
 
         try:
             req = urllib.request.Request(pc["base_url"], method="HEAD")
             urllib.request.urlopen(req, timeout=10).close()
             add("connectivity", True, f"{pc['base_url']} reachable")
+        except urllib.error.HTTPError as e:
+            # Any HTTP response proves DNS, TLS, and the remote service are reachable.
+            add("connectivity", True, f"{pc['base_url']} reachable (HTTP {e.code})")
         except Exception as e:  # noqa: BLE001
             add("connectivity", False, f"{pc['base_url']}: {type(e).__name__}")
 
@@ -2914,6 +2918,8 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
         latest = _latest_pypi_version()
         if latest is None:
             add("update check", False, "could not reach PyPI (offline?) - try --doctor-network")
+        elif latest == "":
+            add("update check", True, "package is not published on PyPI; use Git to update")
         elif latest == __version__:
             add("update check", True, f"{__version__} is the latest")
         else:
@@ -3021,14 +3027,19 @@ def cmd_health(cfg: dict, as_json: bool = False, output: str | None = None) -> i
 
 
 def _latest_pypi_version() -> str | None:
-    """Return the latest published version on PyPI, or None if unreachable."""
+    """Return the PyPI version; empty means unpublished, None means unreachable."""
     import json as _json
+    import urllib.error
     import urllib.request
 
     try:
         with urllib.request.urlopen("https://pypi.org/pypi/termux-agent/json", timeout=10) as r:
             data = _json.loads(r.read())
-        return str(data.get("info", {}).get("version"))
+        return str(data.get("info", {}).get("version") or "")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return ""
+        return None
     except Exception:  # noqa: BLE001
         return None
 
