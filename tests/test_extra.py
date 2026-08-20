@@ -4074,6 +4074,90 @@ def test_health_version_pid(tmp_path: Path, monkeypatch):
         httpd.server_close()
 
 
+# --- rerun/summarize notify / import json / doctor disk ---
+def test_rerun_notify(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    sid = session.record_messages([{"role": "user", "content": "hi"}, {"role": "assistant", "content": "old"}], "zen", "m", session_id="rerun-x")
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda p, on_tool_use=None, on_text_delta=None: "new answer",
+    ))
+    seen = {}
+    monkeypatch.setattr("termux_agent.notify.notify", lambda msg: seen.setdefault("msg", msg))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_rerun(_min_cfg(), sid, "zen", "m", as_json=True, notify=True) == 0
+    assert _json.loads(out.getvalue())["answer"] == "new answer"
+    assert "Rerun done" in seen["msg"]
+
+
+def test_summarize_notify(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    sid = session.record_messages([{"role": "user", "content": "a long conversation"}, {"role": "assistant", "content": "b"}], "zen", "m", session_id="sum-x")
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="m"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        run=lambda p, on_tool_use=None, on_text_delta=None: "summary text",
+    ))
+    seen = {}
+    monkeypatch.setattr("termux_agent.notify.notify", lambda msg: seen.setdefault("msg", msg))
+    assert cli.cmd_summarize(_min_cfg(), sid, "zen", "m", notify=True) == 0
+    assert "Summary done" in seen["msg"]
+
+
+def test_import_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    src = tmp_path / "s.json"
+    src.write_text(_json.dumps({"messages": [{"role": "user", "content": "x"}]}))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_import(str(src), as_json=True) == 0
+    data = _json.loads(out.getvalue())
+    assert data["ok"] is True
+    assert data["messages"] == 1
+
+
+def test_doctor_disk_check():
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    out = io.StringIO()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cli.sys, "stdout", out)
+        assert cli.cmd_doctor(_min_cfg(), as_json=True) == 0
+    checks = _json.loads(out.getvalue())["checks"]
+    disk = next((c for c in checks if c["label"] == "free disk (/)"), None)
+    assert disk is not None
+    assert disk["ok"] is True
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

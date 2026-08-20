@@ -984,7 +984,7 @@ def cmd_tokens(path: str | None, text: str | None = None) -> int:
     return 0
 
 
-def cmd_import(path: str, dry_run: bool = False) -> int:
+def cmd_import(path: str, dry_run: bool = False, as_json: bool = False) -> int:
     """Import a portable session JSON file and save it as a session (--dry-run validates only)."""
     import json as _json
 
@@ -1000,15 +1000,25 @@ def cmd_import(path: str, dry_run: bool = False) -> int:
                 data = _json.load(f)
         sid = None if dry_run else import_session(data)
     except FileNotFoundError:
-        render_error(f"File not found: {path}")
+        if as_json:
+            print(_json.dumps({"ok": False, "error": f"File not found: {path}"}, ensure_ascii=False))
+        else:
+            render_error(f"File not found: {path}")
         return 1
     except (ValueError, _json.JSONDecodeError) as e:
-        render_error(f"Invalid session file: {e}")
+        if as_json:
+            print(_json.dumps({"ok": False, "error": f"Invalid session file: {e}"}, ensure_ascii=False))
+        else:
+            render_error(f"Invalid session file: {e}")
         return 1
-    if dry_run:
-        render_info(f"Valid session file: {len(data.get('messages', []))} message(s). Nothing imported.")
+    n = len(data.get("messages", []))
+    if as_json:
+        print(_json.dumps({"ok": True, "dry_run": dry_run, "session": sid, "messages": n}, ensure_ascii=False))
         return 0
-    render_info(f"Imported session {sid} ({len(data.get('messages', []))} messages)")
+    if dry_run:
+        render_info(f"Valid session file: {n} message(s). Nothing imported.")
+        return 0
+    render_info(f"Imported session {sid} ({n} messages)")
     return 0
 
 
@@ -1132,6 +1142,7 @@ def cmd_summarize(
     output: str | None = None,
     as_json: bool = False,
     timeout: int | None = None,
+    notify: bool = False,
 ) -> int:
     """Have the agent summarize a session transcript (default: latest)."""
     import json as _json
@@ -1172,6 +1183,10 @@ def cmd_summarize(
     if output:
         Path(output).write_text(summary + "\n", encoding="utf-8")
         render_info(f"Summary written to {output}")
+    if notify:
+        from termux_agent.notify import notify as _notify
+
+        _notify(f"Summary done: {summary[:120]}")
     if as_json:
         print(_json.dumps({"ok": True, "session": sid, "summary": summary}, ensure_ascii=False))
     elif not output:
@@ -1299,6 +1314,7 @@ def cmd_rerun(
     timeout: int | None = None,
     attach: list[str] | None = None,
     diff: bool = False,
+    notify: bool = False,
 ) -> int:
     """Re-run the last user prompt of a session with the current model (fresh run)."""
     import json as _json
@@ -1340,6 +1356,10 @@ def cmd_rerun(
     if output:
         Path(output).write_text(answer + "\n", encoding="utf-8")
         render_info(f"Answer written to {output}")
+    if notify:
+        from termux_agent.notify import notify as _notify
+
+        _notify(f"Rerun done: {answer[:120]}")
     if as_json:
         print(_json.dumps({"ok": True, "session": data.get("id", "?"), "prompt": last_user, "answer": answer}, ensure_ascii=False))
     elif diff:
@@ -1728,6 +1748,14 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
         path = shutil.which(name)
         add(name, bool(path), path or "not found in PATH")
     add("registered tools", True, str(n_tools))
+    try:
+        import shutil as _sh
+
+        du = _sh.disk_usage("/")
+        free_gb = du.free / (1024 ** 3)
+        add("free disk (/)", True, f"{free_gb:.1f} GiB free of {du.total / (1024 ** 3):.1f} GiB")
+    except OSError as e:
+        add("free disk (/)", False, str(e))
     pname = cfg.get("provider", "zen")
     pc = cfg.get("providers", {}).get(pname, {})
     add("active provider", True, f"{pname} ({pc.get('type')})")
@@ -2044,7 +2072,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.forget:
         return cmd_forget(args.forget, as_json=args.json)
     if args.import_path:
-        return cmd_import(args.import_path, dry_run=args.dry_run)
+        return cmd_import(args.import_path, dry_run=args.dry_run, as_json=args.json)
     if args.show:
         return cmd_show(args.show, as_json=args.json, output=args.output)
     if args.summarize:
@@ -2056,6 +2084,7 @@ def main(argv: list[str] | None = None) -> int:
             output=args.output,
             as_json=args.json,
             timeout=args.timeout,
+            notify=args.notify,
         )
     if args.rerun:
         return cmd_rerun(
@@ -2068,6 +2097,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout=args.timeout,
             attach=args.attach,
             diff=args.diff,
+            notify=args.notify,
         )
     if args.tokens is not None:
         return cmd_tokens(args.tokens)
