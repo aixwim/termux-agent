@@ -2985,6 +2985,66 @@ def test_serve_background_spawn(tmp_path: Path, monkeypatch):
     assert "background" in out.getvalue()
 
 
+# --- prune dry-run / batch fail-fast / watch max-rounds / show tokens ---
+def test_prune_dry_run_no_delete(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    for i in range(3):
+        (sdir / f"20260820-00000{i}.jsonl").write_text('{"role":"user","content":"x"}\n')
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_prune(1, as_json=True, dry_run=True) == 0
+    assert len(list(sdir.glob("*.jsonl"))) == 3
+    import json as _json
+
+    data = _json.loads(out.getvalue())
+    assert data["dry_run"] is True and data["removed"] == 2
+
+
+def test_batch_fail_fast(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    results = {"a": {"answer": "ok"}, "b": {"error": "boom"}}
+
+    def fake_run_one(p):
+        return results[p]
+
+    monkeypatch.setattr(cli, "_batch_run_one", lambda *a, **k: results[a[-1]])
+    in_path = tmp_path / "in.txt"
+    in_path.write_text("a\nb\n")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_batch(_min_cfg(), str(in_path), "zen", None, as_json=True, fail_fast=True)
+    assert code == 1
+    import json as _json
+
+    assert _json.loads(out.getvalue())["fail_fast"] is True
+
+
+def test_cmd_show_estimates_tokens(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text(
+        '{"role":"user","content":"hello world hello world hello world hello world"}\n'
+    )
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_show("20260820-000001") == 0
+    assert "tokens estimated" in out.getvalue()
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

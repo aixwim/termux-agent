@@ -557,6 +557,16 @@ def _allow_dirs_from(args) -> list[str] | None:
     return list(getattr(args, "allow_dir", None) or []) or None
 
 
+def _batch_run_one(cfg, provider, model, auto_accept, timeout, disabled_groups, max_output_chars, command_timeout, agent_name, working_dir, only_tools, allow_dirs, p):
+    """Run a single --batch prompt (module-level so tests can replace it)."""
+    try:
+        agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools, allow_dirs=allow_dirs)
+        answer = _run_guarded(agent, p, lambda *a, **k: None, timeout)
+    except Exception as e:  # noqa: BLE001
+        return {"prompt": p, "answer": None, "error": str(e)}
+    return {"prompt": p, "answer": answer}
+
+
 def cmd_batch(
     cfg: dict,
     prompts_file: str,
@@ -574,6 +584,7 @@ def cmd_batch(
     only_tools: list[str] | None = None,
     workers: int = 1,
     allow_dirs: list[str] | None = None,
+    fail_fast: bool = False,
 ) -> int:
     """Run one one-shot per line of a prompts file (blank lines skipped)."""
     import json as _json
@@ -591,12 +602,21 @@ def cmd_batch(
         return 1
 
     def _run_one(p: str) -> dict:
-        try:
-            agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools, allow_dirs=allow_dirs)
-            answer = _run_guarded(agent, p, lambda *a, **k: None, timeout)
-        except Exception as e:  # noqa: BLE001
-            return {"prompt": p, "answer": None, "error": str(e)}
-        return {"prompt": p, "answer": answer}
+        return _batch_run_one(
+            cfg,
+            provider,
+            model,
+            auto_accept,
+            timeout,
+            disabled_groups,
+            max_output_chars,
+            command_timeout,
+            agent_name,
+            working_dir,
+            only_tools,
+            allow_dirs,
+            p,
+        )
 
     results: list[dict] = []
     if workers > 1:
@@ -606,13 +626,23 @@ def cmd_batch(
             results = list(ex.map(_run_one, prompts))
     else:
         for i, p in enumerate(prompts, start=1):
-            render_info(f"[{i}/{len(prompts)}] {p[:60]}")
+            if not as_json:
+                render_info(f"[{i}/{len(prompts)}] {p[:60]}")
             r = _run_one(p)
             results.append(r)
             if r.get("error"):
-                render_error(f"  -> failed: {r['error']}")
+                if not as_json:
+                    render_error(f"  -> failed: {r['error']}")
+                if fail_fast:
+                    if output:
+                        Path(output).write_text(_json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+                        render_info(f"Partial results written to {output}")
+                    elif as_json:
+                        print(_json.dumps({"results": results, "fail_fast": True}, ensure_ascii=False))
+                    return 1
             else:
-                render_info(f"  -> {r['answer'][:80]}")
+                if not as_json:
+                    render_info(f"  -> {r['answer'][:80]}")
     if output:
         Path(output).write_text(_json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
         render_info(f"Results written to {output}")
@@ -639,6 +669,7 @@ def cmd_watch(
     context: bool = False,
     allow_dirs: list[str] | None = None,
     screenshot_dir: str | None = None,
+    max_rounds: int | None = None,
 ) -> int:
     """Re-run a one-shot task every N seconds until Ctrl+C. Optionally re-attach a screenshot."""
     import time
@@ -650,10 +681,13 @@ def cmd_watch(
         from termux_agent.notify import device_context
 
         _attach_agent_context(agent, device_context())
-    render_info(f"Watching every {interval}s — press Ctrl+C to stop.")
+    if max_rounds:
+        render_info(f"Watching every {interval}s — up to {max_rounds} round(s); press Ctrl+C to stop.")
+    else:
+        render_info(f"Watching every {interval}s — press Ctrl+C to stop.")
     round_no = 0
     try:
-        while True:
+        while max_rounds is None or round_no < max_rounds:
             round_no += 1
             render_info(f"\n--- round {round_no} ---")
             p = prompt
@@ -681,7 +715,8 @@ def cmd_watch(
                 render_error(f"Round {round_no} failed: {e}")
             else:
                 render_answer(answer)
-            time.sleep(interval)
+            if max_rounds is None or round_no < max_rounds:
+                time.sleep(interval)
     except KeyboardInterrupt:
         render_info("\nStopped.")
         return 0
@@ -817,6 +852,8 @@ def cmd_show(ref: str | None, as_json: bool = False) -> int:
         print(_json.dumps(data, ensure_ascii=False, indent=2))
         return 0
     print(_session_to_markdown(data))
+    chars = sum(len(str(m.get("content", ""))) for m in data.get("messages", []))
+    render_info(f"\n~{max(1, chars // 4)} tokens estimated ({chars} message characters, chars/4 heuristic).")
     return 0
 
 
@@ -858,17 +895,21 @@ def cmd_import(path: str) -> int:
     return 0
 
 
-def cmd_prune(keep: int, as_json: bool = False) -> int:
+def cmd_prune(keep: int, as_json: bool = False, dry_run: bool = False) -> int:
     import json as _json
 
     from termux_agent.session import list_sessions, prune_sessions
 
-    kept = len(list_sessions())
-    removed = prune_sessions(max(0, keep))
+    removed = 0 if dry_run else prune_sessions(max(0, keep))
+    if dry_run:
+        removed = max(0, len(list_sessions()) - max(0, keep))
     if as_json:
-        print(_json.dumps({"removed": removed, "kept": max(0, keep)}, ensure_ascii=False))
+        print(_json.dumps({"removed": removed, "kept": max(0, keep), "dry_run": dry_run}, ensure_ascii=False))
         return 0
-    render_info(f"Removed {removed} old session(s), keeping the newest {max(0, keep)}.")
+    if dry_run:
+        render_info(f"Would remove {removed} old session(s), keeping the newest {max(0, keep)}. (dry run)")
+    else:
+        render_info(f"Removed {removed} old session(s), keeping the newest {max(0, keep)}.")
     return 0
 
 
@@ -883,16 +924,24 @@ def cmd_config_show(cfg: dict, as_json: bool = False) -> int:
     return 0
 
 
-def cmd_prune_days(days: int, as_json: bool = False) -> int:
+def cmd_prune_days(days: int, as_json: bool = False, dry_run: bool = False) -> int:
     import json as _json
+    import time
 
-    from termux_agent.session import prune_days
+    from termux_agent.session import list_sessions, prune_days
 
-    removed = prune_days(max(1, days))
+    if dry_run:
+        cutoff = time.time() - max(1, days) * 86400
+        removed = sum(1 for s in list_sessions() if s.stat().st_mtime < cutoff)
+    else:
+        removed = prune_days(max(1, days))
     if as_json:
-        print(_json.dumps({"removed": removed, "days": days}, ensure_ascii=False))
+        print(_json.dumps({"removed": removed, "days": days, "dry_run": dry_run}, ensure_ascii=False))
         return 0
-    render_info(f"Removed {removed} session(s) older than {days} day(s).")
+    if dry_run:
+        render_info(f"Would remove {removed} session(s) older than {days} day(s). (dry run)")
+    else:
+        render_info(f"Removed {removed} session(s) older than {days} day(s).")
     return 0
 
 
@@ -1569,6 +1618,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cleanup", action="store_true", help="Delete leftover screenshot-*.png files in the current directory")
     parser.add_argument("--stream", action="store_true", help="Stream the answer to the terminal as it is generated (typewriter mode)")
     parser.add_argument("--watch", type=int, metavar="SECONDS", help="Re-run the one-shot prompt every N seconds until Ctrl+C (combine with --screenshot)")
+    parser.add_argument("--max-rounds", type=int, default=None, metavar="N", help="With --watch: stop after this many rounds")
     parser.add_argument("--batch", metavar="FILE", help="Run one one-shot per line of the file (blank lines skipped); --output writes results as JSON")
     parser.add_argument("--retries", type=int, metavar="N", help="Override transient retry count for network hiccups")
     parser.add_argument("--no-fallback", action="store_true", help="Disable fallback models on 429/errors (use only the selected model)")
@@ -1593,6 +1643,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--only-tools", metavar="LIST", help="Restrict the agent to exactly these comma-separated tool names, e.g. read_file,grep,glob")
     parser.add_argument("--log", metavar="FILE", help="Append a timestamped JSONL run log (tool calls, errors, result) for one-shot runs")
     parser.add_argument("--workers", type=int, default=1, metavar="N", help="Run --batch prompts in parallel with N workers")
+    parser.add_argument("--fail-fast", action="store_true", help="With --batch: stop at the first failed prompt and exit non-zero")
     parser.add_argument("--max-output-chars", type=int, metavar="N", help="Cap tool output size (default from config, e.g. 60000)")
     parser.add_argument("--command-timeout", type=int, metavar="SECONDS", help="Per-command timeout for run_command (default from config)")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
@@ -1611,8 +1662,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest); --markdown for a readable transcript")
     parser.add_argument("--markdown", action="store_true", help="With --export/--show, print a readable Markdown transcript")
     parser.add_argument("--import", dest="import_path", metavar="FILE", help="Import a portable session JSON file")
-    parser.add_argument("--prune", type=int, metavar="N", help="Delete all sessions except the newest N")
-    parser.add_argument("--prune-days", type=int, metavar="DAYS", help="Delete sessions older than this many days")
+    parser.add_argument("--prune", type=int, metavar="N", help="Delete all sessions except the newest N (--dry-run previews)")
+    parser.add_argument("--prune-days", type=int, metavar="DAYS", help="Delete sessions older than this many days (--dry-run previews)")
+    parser.add_argument("--dry-run", action="store_true", help="With --prune/--prune-days: show what would be deleted without deleting")
     parser.add_argument("--config-show", action="store_true", help="Print the effective merged configuration as YAML")
     parser.add_argument("--list-tools", action="store_true", help="List all registered tools")
     parser.add_argument("--forget", nargs="?", const="latest", metavar="SESSION", help="Delete one session (default: latest)")
@@ -1721,9 +1773,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cleanup:
         return cmd_cleanup()
     if args.prune is not None:
-        return cmd_prune(args.prune, as_json=args.json)
+        return cmd_prune(args.prune, as_json=args.json, dry_run=args.dry_run)
     if args.prune_days is not None:
-        return cmd_prune_days(args.prune_days, as_json=args.json)
+        return cmd_prune_days(args.prune_days, as_json=args.json, dry_run=args.dry_run)
     if args.config_show:
         return cmd_config_show(cfg, as_json=args.json)
     if args.list_tools:
@@ -1880,6 +1932,7 @@ def main(argv: list[str] | None = None) -> int:
             context=args.context,
             allow_dirs=_allow_dirs_from(args),
             screenshot_dir=args.screenshot_dir,
+            max_rounds=args.max_rounds,
         )
 
     if args.batch:
@@ -1900,6 +1953,7 @@ def main(argv: list[str] | None = None) -> int:
             only_tools=_split_tools(args.only_tools),
             workers=args.workers,
             allow_dirs=_allow_dirs_from(args),
+            fail_fast=args.fail_fast,
         )
 
     if prompt:
