@@ -5577,6 +5577,179 @@ def test_sessions_all(tmp_path: Path, monkeypatch):
     assert len(_json.loads(out.getvalue())["sessions"]) == 5
 
 
+# --- OpenAI-compatible endpoints / watch diff / stats json ---
+def test_server_openai_chat_completions(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+    from termux_agent import session
+    from termux_agent.server import _AgentHandler
+
+    sdir = tmp_path / "sessions"
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+
+    class FakeProv:
+        name = "zen"
+        model = "m"
+
+        def list_models(self):
+            return ["m1", "m2"]
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=FakeProv(),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10},
+            messages=[{"role": "system", "content": "s"}],
+        )
+
+        def _run(prompt):
+            agent.messages += [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": "OAI:" + prompt},
+            ]
+            return "OAI:" + prompt
+
+        agent.run = _run
+        return agent
+
+    _AgentHandler.build_agent = staticmethod(fake_build)
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/chat/completions",
+            data=_json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}]}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            chat = _json.loads(r.read())
+        assert chat["object"] == "chat.completion"
+        assert chat["model"] == "m"
+        assert chat["choices"][0]["message"]["content"] == "OAI:hi"
+        assert chat["usage"]["total_tokens"] == 10
+        assert chat["session"]
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=10) as r:
+            models = _json.loads(r.read())
+        assert models["object"] == "list"
+        assert [m["id"] for m in models["data"]] == ["m1", "m2"]
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
+def test_server_openai_stream(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+    from termux_agent import session
+    from termux_agent.server import _AgentHandler
+
+    sdir = tmp_path / "sessions"
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+        )
+
+        def _run(prompt, on_text_delta=None):
+            if on_text_delta:
+                on_text_delta("hel")
+                on_text_delta("lo")
+            return "hello"
+
+        agent.run = _run
+        return agent
+
+    _AgentHandler.build_agent = staticmethod(fake_build)
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/chat/completions",
+            data=_json.dumps({"model": "m", "messages": [{"role": "user", "content": "hi"}], "stream": True}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            body = r.read().decode("utf-8")
+        assert "data: [DONE]" in body
+        assert '"content": "hel"' in body
+        assert '"content": "lo"' in body
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
+def test_watch_diff_shows_diff(monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    answers = iter(["alpha", "alpha", "beta"])
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=None),
+            usage={},
+            run=lambda p, on_tool_use=None, on_text_delta=None: next(answers),
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_watch(_min_cfg(), "hi", "zen", None, interval=1, max_rounds=3, diff=True)
+    assert code == 0
+    rendered = out.getvalue()
+    assert "unchanged" in rendered
+    assert "+beta" in rendered
+    assert "-alpha" in rendered
+
+
+def test_one_shot_stats_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            run=lambda prompt, on_tool_use=None: "ANSWER",
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_one_shot(_min_cfg(), "hi", "zen", None, as_json=True, stats=True)
+    assert code == 0
+    data = _json.loads(out.getvalue())
+    assert data["usage"] == {}
+    assert data["answer"] == "ANSWER"
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

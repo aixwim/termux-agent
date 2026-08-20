@@ -208,6 +208,167 @@ class _AgentHandler(BaseHTTPRequestHandler):
         usage = getattr(agent, "usage", {}) or {}
         _sse(self, "done", {"answer": answer, "session": session_id, "usage": usage})
 
+    def _openai_prompt(self, messages: list) -> tuple[str, list, str | None]:
+        """Convert OpenAI-style messages to (prompt, history, local_image_path)."""
+        history = []
+        image = None
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            role = m.get("role")
+            content = m.get("content")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text_parts = []
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "text":
+                        text_parts.append(str(part.get("text", "")))
+                    elif part.get("type") == "image_url":
+                        url = part.get("image_url")
+                        if isinstance(url, dict):
+                            url = url.get("url")
+                        if isinstance(url, str) and image is None:
+                            image = url
+                text = "\n".join(text_parts)
+            else:
+                continue
+            if role == "system":
+                continue
+            if role in ("user", "assistant") and text:
+                history.append({"role": role, "content": text})
+        prompt = ""
+        if history:
+            last = history[-1]
+            prompt = last["content"]
+            history = history[:-1]
+        if image:
+            import base64
+            import tempfile
+            import urllib.parse
+            import urllib.request
+            from pathlib import Path
+
+            try:
+                if image.startswith(("http://", "https://")):
+                    with urllib.request.urlopen(image, timeout=30) as resp:
+                        raw = resp.read()
+                    ext = Path(urllib.parse.urlparse(image).path).suffix or ".jpg"
+                elif image.startswith("data:"):
+                    header, _, b64 = image.partition(",")
+                    raw = base64.b64decode(b64)
+                    ext = ".png" if "png" in header else ".jpg"
+                else:
+                    raw = None
+                    ext = ""
+                if raw is not None:
+                    tmp_img = Path(tempfile.gettempdir()) / f"termux-agent-oai-img{ext}"
+                    tmp_img.write_bytes(raw)
+                    image = str(tmp_img)
+            except Exception:  # noqa: BLE001
+                image = None
+        return prompt, history, image
+
+    def _openai_chat(self, data: dict[str, Any]) -> None:
+        """OpenAI-compatible POST /v1/chat/completions handler."""
+        import uuid
+
+        messages = data.get("messages")
+        if not isinstance(messages, list) or not messages:
+            self._send(400, {"error": {"message": "missing 'messages' list", "type": "invalid_request_error"}})
+            return
+        model = str(data.get("model") or self.model or "")
+        stream = bool(data.get("stream"))
+        prompt, history, image = self._openai_prompt(messages)
+        if not prompt:
+            self._send(400, {"error": {"message": "no user message found", "type": "invalid_request_error"}})
+            return
+        try:
+            agent = self.build_agent(
+                self.cfg,
+                data.get("provider") or self.provider,
+                model or None,
+                auto_accept=True,
+                temperature=float(data["temperature"]) if isinstance(data.get("temperature"), (int, float)) else None,
+                max_tool_rounds=int(data["max_tool_rounds"]) if isinstance(data.get("max_tool_rounds"), int) else None,
+                max_context_tokens=int(data["max_context_tokens"]) if isinstance(data.get("max_context_tokens"), int) else None,
+                only_tools=[t for t in data.get("only_tools") if isinstance(t, str)] if isinstance(data.get("only_tools"), list) else None,
+            )
+        except Exception as e:  # noqa: BLE001
+            self._send(500, {"error": {"message": str(e), "type": "server_error"}})
+            return
+        if history:
+            agent.messages = [agent.messages[0]] + history
+        if image:
+            prompt += f"\n[image: {image}]"
+        cid = f"chatcmpl-{uuid.uuid4().hex}"
+        if stream:
+            import time as _time
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Access-Control-Allow-Origin", self.cors_origin)
+            self.end_headers()
+
+            def _chunk(delta: dict, finish: str | None = None) -> None:
+                obj = {
+                    "id": cid,
+                    "object": "chat.completion.chunk",
+                    "created": int(_time.time()),
+                    "model": model or agent.provider.model,
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+                }
+                self.wfile.write(b"data: " + json.dumps(obj, ensure_ascii=False).encode("utf-8") + b"\n\n")
+                self.wfile.flush()
+
+            _chunk({"role": "assistant"})
+            try:
+                answer = agent.run(prompt, on_text_delta=lambda d: _chunk({"content": d}))
+            except Exception:  # noqa: BLE001
+                _chunk({}, finish="stop")
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+                return
+            _chunk({}, finish="stop")
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+            return
+        answer = agent.run(prompt)
+        usage = getattr(agent, "usage", {}) or {}
+        session_id = ""
+        try:
+            from termux_agent.session import record_messages
+
+            session_id = record_messages(
+                agent.messages,
+                agent.provider.name,
+                agent.provider.model,
+                session_id=None,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        self._send(
+            200,
+            {
+                "id": cid,
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": model or agent.provider.model,
+                "choices": [
+                    {"index": 0, "message": {"role": "assistant", "content": answer}, "finish_reason": "stop"}
+                ],
+                "usage": {
+                    "prompt_tokens": int(usage.get("prompt_tokens", 0)),
+                    "completion_tokens": int(usage.get("completion_tokens", 0)),
+                    "total_tokens": int(usage.get("total_tokens", 0)),
+                },
+                "session": session_id,
+            },
+        )
+
     def do_GET(self) -> None:
         if self.path in ("/", "/index.html"):
             body = (
@@ -242,7 +403,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 200,
                 {"ok": True, "version": __version__, "pid": os.getpid(), "uptime": round(_STARTED.elapsed(), 1)},
             )
-        elif self.path.split("?", 1)[0] in ("/models", "/sessions", "/config", "/tools", "/agents", "/stats", "/memory"):
+        elif self.path.split("?", 1)[0] in ("/models", "/v1/models", "/sessions", "/config", "/tools", "/agents", "/stats", "/memory"):
             if not _authorized(self):
                 _send_unauthorized(self)
                 return
@@ -279,7 +440,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 from termux_agent.tools.base import tool_specs
 
                 self._send(200, {"tools": [{"name": s.name, "description": s.description} for s in tool_specs()]})
-            elif self.path.split("?", 1)[0] == "/models":
+            elif self.path.split("?", 1)[0] in ("/models", "/v1/models"):
                 import urllib.parse
 
                 q = urllib.parse.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
@@ -288,7 +449,16 @@ class _AgentHandler(BaseHTTPRequestHandler):
                     provider = self.build_agent(self.cfg, prov, self.model, auto_accept=True)
                     live = provider.provider.list_models()
                     models = live or [m for m in (self.cfg.get("providers", {}).get(prov or self.cfg.get("provider", "zen"), {}).get("models") or [])]
-                    self._send(200, {"provider": prov, "models": models})
+                    if self.path.split("?", 1)[0] == "/v1/models":
+                        self._send(
+                            200,
+                            {
+                                "object": "list",
+                                "data": [{"id": m, "object": "model", "owned_by": prov} for m in models],
+                            },
+                        )
+                    else:
+                        self._send(200, {"provider": prov, "models": models})
                 except Exception as e:  # noqa: BLE001
                     self._send(500, {"ok": False, "error": str(e)})
             elif self.path == "/config":
@@ -405,6 +575,9 @@ class _AgentHandler(BaseHTTPRequestHandler):
 
             results = list(ThreadPoolExecutor(max_workers=4).map(_one, [p.strip() for p in prompts]))
             self._send(200, {"results": results})
+            return
+        if self.path in ("/v1/chat/completions", "/chat/completions"):
+            self._openai_chat(data)
             return
         if self.path != "/chat":
             self._send(404, {"ok": False, "error": "not found"})

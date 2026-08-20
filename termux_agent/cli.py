@@ -408,7 +408,7 @@ def cmd_one_shot(
         elif not quiet:
             render_error("Clipboard unavailable. Install termux-api (pkg install termux-api).")
     if as_json:
-        _emit_json({"ok": True, "answer": answer, "tool_calls": tool_log}, agent)
+        _emit_json({"ok": True, "answer": answer, "tool_calls": tool_log}, agent, include_usage=bool(stats))
     elif quiet:
         print(answer)
     elif not streamed:
@@ -422,15 +422,15 @@ def cmd_one_shot(
     return 0
 
 
-def _emit_json(payload: dict, agent: "Agent | None") -> None:
+def _emit_json(payload: dict, agent: "Agent | None", include_usage: bool = False) -> None:
     import json
 
     if agent is not None:
         payload["provider"] = agent.provider.name
         payload["model"] = agent.provider.model
         usage = getattr(agent, "usage", {})
-        if usage:
-            payload["usage"] = usage
+        if usage or include_usage:
+            payload["usage"] = usage or {}
     print(json.dumps(payload, ensure_ascii=False))
 
 
@@ -845,12 +845,30 @@ def cmd_watch(
                     return 0
                 if diff and not as_json:
                     render_info(f"\n--- round {round_no} (changed) ---")
+                prev = last_answer
                 last_answer = answer
                 if output:
                     with open(Path(output).expanduser(), "a" if append else "w", encoding="utf-8") as f:
                         f.write(answer + "\n")
                 if as_json:
                     print(_json.dumps({"round": round_no, "answer": answer}, ensure_ascii=False))
+                elif diff and prev is not None:
+                    import difflib
+
+                    old = (prev or "").splitlines()
+                    new = answer.splitlines()
+                    print(
+                        "\n".join(
+                            difflib.unified_diff(
+                                old,
+                                new,
+                                fromfile=f"round {round_no - 1}",
+                                tofile=f"round {round_no}",
+                                lineterm="",
+                            )
+                        )
+                        or "(no textual change)"
+                    )
                 else:
                     render_answer(answer)
                 if notify:
