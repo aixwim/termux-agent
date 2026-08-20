@@ -1014,6 +1014,9 @@ def _session_to_markdown(data: dict) -> str:
         f"- messages: {len(data.get('messages', []))}",
         "",
     ]
+    note = data.get("note")
+    if note:
+        lines += ["> Note: " + note, ""]
     for m in data.get("messages", []):
         role = m.get("role", "?")
         content = m.get("content", "")
@@ -1026,11 +1029,84 @@ def _session_to_markdown(data: dict) -> str:
     return "\n".join(lines)
 
 
+def cmd_note(
+    ref: str | None = None,
+    text: str | None = None,
+    as_json: bool = False,
+    output: str | None = None,
+    clear: bool = False,
+    list_all: bool = False,
+) -> int:
+    """Attach a note to a session (--note SESSION TEXT, --note SESSION to read, --note --clear to remove)."""
+    import json as _json
+
+    from termux_agent.session import all_notes, clear_note, get_note, resolve_session, set_note
+
+    if list_all:
+        notes = all_notes()
+        if as_json or output:
+            payload = {"notes": [{"session": sid, "note": n} for sid, n in notes.items()]}
+            if output:
+                Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                render_info(f"Note list written to {output}")
+                return 0
+            print(_json.dumps(payload, ensure_ascii=False))
+            return 0
+        for sid, n in notes.items():
+            render_info(f"{sid}  {n[:80]}")
+        render_info(f"\n{len(notes)} note(s).")
+        return 0
+
+    path = resolve_session(ref)
+    if not path:
+        if as_json:
+            print(_json.dumps({"ok": False, "error": "not found"}, ensure_ascii=False))
+        else:
+            render_error("Session not found.")
+        return 1
+    sid = path.stem
+    if clear:
+        removed = clear_note(sid)
+        if as_json or output:
+            payload = {"ok": True, "session": sid, "cleared": removed}
+            if output:
+                Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                render_info(f"Note removal report written to {output}")
+                return 0
+            print(_json.dumps(payload, ensure_ascii=False))
+            return 0
+        render_info(f"Note cleared for {sid}." if removed else f"No note to clear for {sid}.")
+        return 0
+    if text is None:
+        note = get_note(sid)
+        if as_json or output:
+            payload = {"ok": True, "session": sid, "note": note}
+            if output:
+                Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                render_info(f"Note written to {output}")
+                return 0
+            print(_json.dumps(payload, ensure_ascii=False))
+            return 0
+        render_info(f"Note for {sid}: {note}" if note else f"No note for {sid}.")
+        return 0
+    set_note(sid, text)
+    if as_json or output:
+        payload = {"ok": True, "session": sid, "note": text.strip()}
+        if output:
+            Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            render_info(f"Note written to {output}")
+            return 0
+        print(_json.dumps(payload, ensure_ascii=False))
+        return 0
+    render_info(f"Note saved for {sid}.")
+    return 0
+
+
 def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None, redact: bool = False) -> int:
     """Show a full session transcript (default: latest)."""
     import json as _json
 
-    from termux_agent.session import export_session
+    from termux_agent.session import export_session, get_note
 
     try:
         data = export_session(ref)
@@ -1039,6 +1115,10 @@ def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None, 
         return 1
     if redact:
         data = _redact_cfg(data)
+    note = get_note(str(data.get("id", "")))
+    if note:
+        data = dict(data)
+        data["note"] = note
     if output:
         try:
             if as_json:
@@ -1228,11 +1308,13 @@ def cmd_import(path: str, dry_run: bool = False, as_json: bool = False, markdown
 def cmd_prune(keep: int, as_json: bool = False, dry_run: bool = False, output: str | None = None) -> int:
     import json as _json
 
-    from termux_agent.session import list_sessions, prune_sessions
+    from termux_agent.session import list_sessions, prune_sessions, prune_notes
 
     removed = 0 if dry_run else prune_sessions(max(0, keep))
     if dry_run:
         removed = max(0, len(list_sessions()) - max(0, keep))
+    else:
+        prune_notes({p.stem for p in list_sessions()})
     if as_json or output:
         payload = {"removed": removed, "kept": max(0, keep), "dry_run": dry_run}
         if output:
@@ -1351,7 +1433,7 @@ def cmd_prune_days(days: int, as_json: bool = False, dry_run: bool = False, keep
     import json as _json
     import time
 
-    from termux_agent.session import list_sessions, prune_days
+    from termux_agent.session import list_sessions, prune_days, prune_notes
 
     if keep > 0:
         by_mtime = sorted(list_sessions(), key=lambda s: s.stat().st_mtime, reverse=True)
@@ -1369,6 +1451,8 @@ def cmd_prune_days(days: int, as_json: bool = False, dry_run: bool = False, keep
         removed = sum(1 for s in list_sessions() if s.stat().st_mtime < cutoff)
     else:
         removed = prune_days(max(1, days))
+    if not dry_run:
+        prune_notes({p.stem for p in list_sessions()})
     if as_json:
         print(_json.dumps({"removed": removed, "days": days, "dry_run": dry_run, "keep": keep}, ensure_ascii=False))
         return 0
@@ -1407,7 +1491,7 @@ def cmd_list_tools(as_json: bool = False, output: str | None = None) -> int:
 def cmd_forget(ref: str | None = None, as_json: bool = False, output: str | None = None) -> int:
     import json as _json
 
-    from termux_agent.session import delete_session
+    from termux_agent.session import delete_session, clear_note
 
     removed = delete_session(ref)
     if not removed:
@@ -1416,6 +1500,7 @@ def cmd_forget(ref: str | None = None, as_json: bool = False, output: str | None
         else:
             render_error("Session not found.")
         return 1
+    clear_note(removed.stem)
     if output:
         try:
             Path(output).expanduser().write_text(_json.dumps({"ok": True, "deleted": removed.stem}, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1538,7 +1623,7 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
     import shutil
 
     from termux_agent.agent import MEMORY_FILE
-    from termux_agent.session import SESSIONS_DIR, list_sessions
+    from termux_agent.session import NOTES_FILE, SESSIONS_DIR, list_sessions
 
     def _collect() -> list[Path]:
         files = []
@@ -1546,6 +1631,8 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
             files.append(CONFIG_FILE)
         if MEMORY_FILE.is_file():
             files.append(MEMORY_FILE)
+        if NOTES_FILE.is_file():
+            files.append(NOTES_FILE)
         if include_sessions:
             for s in list_sessions():
                 files.append(s)
@@ -1574,6 +1661,9 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
     if MEMORY_FILE.is_file():
         shutil.copy2(MEMORY_FILE, out / MEMORY_FILE.name)
         copied.append(MEMORY_FILE.name)
+    if NOTES_FILE.is_file():
+        shutil.copy2(NOTES_FILE, out / NOTES_FILE.name)
+        copied.append(NOTES_FILE.name)
     ses_dir = out / "sessions"
     if include_sessions:
         ses_dir.mkdir(parents=True, exist_ok=True)
@@ -1586,6 +1676,7 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
         "version": __version__,
         "config": CONFIG_FILE.name if CONFIG_FILE.is_file() else None,
         "memory": MEMORY_FILE.name if MEMORY_FILE.is_file() else None,
+        "notes": NOTES_FILE.name if NOTES_FILE.is_file() else None,
         "sessions": n_sessions,
     }
     (out / "manifest.json").write_text(_json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1626,7 +1717,7 @@ def _restore_from_dir(src: Path, dry_run: bool = False, as_json: bool = False) -
     import shutil
 
     from termux_agent.agent import MEMORY_FILE
-    from termux_agent.session import SESSIONS_DIR
+    from termux_agent.session import NOTES_FILE, SESSIONS_DIR
 
     if not (src / "manifest.json").is_file():
         render_error(f"No manifest.json found in {src} — not a termux-agent bundle.")
@@ -1636,7 +1727,7 @@ def _restore_from_dir(src: Path, dry_run: bool = False, as_json: bool = False) -
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     restored = []
-    for name in ("config.yaml", "memory.md"):
+    for name in ("config.yaml", "memory.md", "notes.json"):
         f = src / name
         if f.is_file():
             if not dry_run:
@@ -1909,9 +2000,10 @@ def cmd_cron(schedule: str, prompt: str, command: str | None = None, as_json: bo
 def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 20, output: str | None = None) -> int:
     import json as _json
 
-    from termux_agent.session import list_sessions, read_session
+    from termux_agent.session import list_sessions, read_session, all_notes
 
     sessions = list_sessions()
+    notes = all_notes()
     needle = search.lower() if search else ""
     items = []
     for s in sessions[:200]:
@@ -1923,7 +2015,7 @@ def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 
                 for r in recs
                 if r.get("role") in ("user", "assistant")
             ).lower()
-            if needle not in haystack:
+            if needle not in haystack and needle not in notes.get(s.stem, "").lower():
                 continue
         info = next((r for r in recs if r.get("provider")), {})
         items.append(
@@ -1933,6 +2025,7 @@ def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 
                 "model": info.get("model") or "",
                 "messages": len(recs),
                 "first": first_user[:100],
+                "note": notes.get(s.stem, "")[:100],
             }
         )
         if limit > 0 and len(items) >= limit:
@@ -1955,7 +2048,10 @@ def cmd_sessions(search: str | None = None, as_json: bool = False, limit: int = 
         render_info("No sessions found." if needle else "No sessions saved yet in ~/.termux-agent/sessions/.")
         return 0
     for it in items:
-        render_info(f"{it['id']}  [{it['messages']} messages]  {it['first'][:60]}")
+        line = f"{it['id']}  [{it['messages']} messages]  {it['first'][:60]}"
+        if it["note"]:
+            line += f"  * {it['note']}"
+        render_info(line)
     if needle:
         render_info(f"\n{len(items)} matching session(s).")
     return 0
@@ -2491,6 +2587,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config-set", nargs=2, metavar=("KEY", "VALUE"), help="Set a config key and save it (dot paths supported, e.g. temperature 0.2)")
     parser.add_argument("--list-tools", action="store_true", help="List all registered tools")
     parser.add_argument("--forget", nargs="?", const="latest", metavar="SESSION", help="Delete one session (default: latest)")
+    parser.add_argument("--note", nargs="?", const="__list__", metavar="SESSION", help="Attach a note to a session (--note SESSION TEXT sets, --note SESSION prints, --note --clear removes, --note --list lists all)")
+    parser.add_argument("--note-text", metavar="TEXT", help="Note text for --note (omit to read the current note)")
+    parser.add_argument("--note-clear", action="store_true", help="Remove the note on --note SESSION")
+    parser.add_argument("--note-list", action="store_true", help="List all session notes")
     parser.add_argument("--export-all", metavar="DIR", help="Export every session as a JSON file into DIR (--markdown: readable .md transcripts)")
     parser.add_argument("--bench", nargs="?", const="__default__", metavar="PROVIDER", help="Benchmark latency across a provider's models (one tiny request each)")
     parser.add_argument("--list-providers", action="store_true", help="List provider presets")
@@ -2608,6 +2708,12 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_export_all(args.export_all, as_markdown=args.markdown, as_json=args.json, redact=args.redact)
     if args.forget:
         return cmd_forget(args.forget, as_json=args.json, output=args.output)
+    if args.note is not None:
+        if args.note == "__list__":
+            return cmd_note(list_all=True, as_json=args.json, output=args.output)
+        if args.note_clear:
+            return cmd_note(args.note, clear=True, as_json=args.json, output=args.output)
+        return cmd_note(args.note, text=args.note_text, as_json=args.json, output=args.output)
     if args.import_path:
         return cmd_import(args.import_path, dry_run=args.dry_run, as_json=args.json, markdown=args.markdown)
     if args.show:

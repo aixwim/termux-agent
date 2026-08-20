@@ -1516,7 +1516,7 @@ def test_parser_all_flags_present():
         "--clip --screenshot --export --import --prune --output --timeout --speak --wakelock --notify "
         "--chat --json --quiet --resume --serve --models --smoke --plan --copy --stats --doctor "
         "--install-completion --list-providers --list-agents --image --prompt-file --api-key --search "
-        "--serve-workers --no-sessions --all"
+        "--serve-workers --no-sessions --all --note --note-text --note-clear --note-list"
     ).split():
         assert flag in help_txt, f"missing {flag}"
 
@@ -5193,6 +5193,7 @@ def test_bundle_json_and_restore_dryrun(tmp_path: Path, monkeypatch):
     sdir = tmp_path / "sessions"
     sdir.mkdir()
     monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(session, "NOTES_FILE", tmp_path / "notes.json")
     session.record_messages([{"role": "user", "content": "hi"}], "zen", "m", session_id="bun-s")
     session.record_messages([{"role": "user", "content": "yo"}], "zen", "m", session_id="bun-s2")
 
@@ -6184,6 +6185,111 @@ def test_batch_temperature(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
     assert cli.cmd_batch(_min_cfg(), str(in_path), "zen", None, temperature=0.3) == 0
     assert seen["temperature"] == 0.3
+
+
+# --- session notes ---
+def test_cmd_note_set_read_clear(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text('{"role":"user","content":"hi"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(session, "NOTES_FILE", tmp_path / "notes.json")
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_note("20260820-000001", "fix login bug later") == 0
+    assert session.get_note("20260820-000001") == "fix login bug later"
+    assert cli.cmd_note("20260820-000001") == 0
+    assert cli.cmd_note("20260820-000001", clear=True) == 0
+    assert session.get_note("20260820-000001") is None
+    assert not (tmp_path / "notes.json").exists() or _json.loads((tmp_path / "notes.json").read_text()) == {}
+
+
+def test_cmd_note_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text('{"role":"user","content":"hi"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(session, "NOTES_FILE", tmp_path / "notes.json")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_note("20260820-000001", "hello note", as_json=True) == 0
+    assert _json.loads(out.getvalue())["note"] == "hello note"
+
+
+def test_cmd_note_show_and_sessions(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text('{"role":"user","content":"hi"}\n{"role":"assistant","content":"hi there"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(session, "NOTES_FILE", tmp_path / "notes.json")
+    cli.cmd_note("20260820-000001", "priority")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_show("20260820-000001") == 0
+    assert "priority" in out.getvalue()
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_sessions() == 0
+    assert "priority" in out.getvalue()
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_sessions(search="priority") == 0
+    assert "20260820-000001" in out.getvalue()
+
+
+def test_forget_clears_note(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text('{"role":"user","content":"hi"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(session, "NOTES_FILE", tmp_path / "notes.json")
+    cli.cmd_note("20260820-000001", "bye")
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_forget("20260820-000001") == 0
+    assert session.get_note("20260820-000001") is None
+
+
+def test_bundle_restore_notes(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text('{"role":"user","content":"hi"}\n')
+    notes = tmp_path / "notes.json"
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(session, "NOTES_FILE", notes)
+    cli.cmd_note("20260820-000001", "bundled note")
+    bundle = tmp_path / "bundle"
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_bundle(str(bundle)) == 0
+    assert (bundle / "notes.json").is_file()
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    monkeypatch.setattr(cli, "CONFIG_DIR", dest)
+    monkeypatch.setattr(session, "NOTES_FILE", dest / "notes.json")
+    monkeypatch.setattr(session, "SESSIONS_DIR", dest / "sessions")
+    assert cli.cmd_restore(str(bundle)) == 0
+    assert (dest / "notes.json").is_file()
+    assert session.get_note("20260820-000001") == "bundled note"
 
 
 # --- init wizard ---

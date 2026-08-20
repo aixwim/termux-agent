@@ -8,6 +8,53 @@ from pathlib import Path
 from termux_agent.config import CONFIG_DIR
 
 SESSIONS_DIR = CONFIG_DIR / "sessions"
+NOTES_FILE = CONFIG_DIR / "notes.json"
+
+
+def all_notes() -> dict[str, str]:
+    """Return a mapping of session id -> note text."""
+    if not NOTES_FILE.is_file():
+        return {}
+    try:
+        data = json.loads(NOTES_FILE.read_text(encoding="utf-8"))
+        return {str(k): str(v) for k, v in data.items() if isinstance(v, str) and v.strip()} if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def get_note(session_id: str) -> str | None:
+    return all_notes().get(session_id)
+
+
+def set_note(session_id: str, text: str) -> None:
+    notes = all_notes()
+    if text.strip():
+        notes[session_id] = text.strip()
+    else:
+        notes.pop(session_id, None)
+    NOTES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    NOTES_FILE.write_text(json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def clear_note(session_id: str) -> bool:
+    notes = all_notes()
+    if session_id not in notes:
+        return False
+    notes.pop(session_id, None)
+    NOTES_FILE.write_text(json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
+
+
+def prune_notes(valid_ids: set[str]) -> int:
+    """Drop notes for sessions that no longer exist. Returns number removed."""
+    notes = all_notes()
+    gone = [sid for sid in notes if sid not in valid_ids]
+    if not gone:
+        return 0
+    for sid in gone:
+        notes.pop(sid, None)
+    NOTES_FILE.write_text(json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8")
+    return len(gone)
 
 
 class Session:
