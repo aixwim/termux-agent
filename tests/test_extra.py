@@ -4976,6 +4976,62 @@ def test_repl_usage(tmp_path: Path, monkeypatch):
     assert "total: 150" in out.getvalue()
 
 
+# --- tokens session / export-all redact / show redact ---
+def test_tokens_session(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages(
+        [{"role": "user", "content": "a" * 40}, {"role": "assistant", "content": "b" * 40}],
+        "zen",
+        "m",
+        session_id="tok-s",
+    )
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_tokens(None, as_json=True, session_ref="tok-s") == 0
+    data = _json.loads(out.getvalue())
+    assert data["chars"] == 80
+    assert data["tokens"] == 20
+
+
+def test_export_all_redact(tmp_path: Path, monkeypatch):
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "hi"}], "zen", "m", session_id="red-all")
+    out_dir = tmp_path / "out"
+    assert cli.cmd_export_all(str(out_dir), redact=True) == 0
+    dumped = _json.loads((out_dir / "red-all.json").read_text(encoding="utf-8"))
+    assert "api_key" not in dumped
+
+
+def test_show_redact(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "hi"}], "zen", "m", session_id="red-show")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_show("red-show", as_json=True, redact=True) == 0
+    data = _json.loads(out.getvalue())
+    assert "api_key" not in data
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

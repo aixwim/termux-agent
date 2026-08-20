@@ -966,7 +966,7 @@ def _session_to_markdown(data: dict) -> str:
     return "\n".join(lines)
 
 
-def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None) -> int:
+def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None, redact: bool = False) -> int:
     """Show a full session transcript (default: latest)."""
     import json as _json
 
@@ -977,6 +977,8 @@ def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None) 
     except FileNotFoundError:
         render_error("Session not found.")
         return 1
+    if redact:
+        data = _redact_cfg(data)
     if output:
         try:
             if as_json:
@@ -997,11 +999,25 @@ def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None) 
     return 0
 
 
-def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False) -> int:
-    """Estimate token usage of a file or inline text."""
+def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False, session_ref: str | None = None) -> int:
+    """Estimate token usage of a file, inline text, or session transcript."""
     import sys as _sys
 
-    if path:
+    if session_ref is not None:
+        from termux_agent.session import export_session
+
+        try:
+            data = export_session(session_ref)
+        except FileNotFoundError:
+            if as_json:
+                import json as _json
+
+                print(_json.dumps({"ok": False, "error": "Session not found."}, ensure_ascii=False))
+            else:
+                render_error("Session not found.")
+            return 1
+        chars = sum(len(str(m.get("content", ""))) for m in data.get("messages", []))
+    elif path:
         try:
             text = Path(path).expanduser().read_text(encoding="utf-8")
         except OSError as e:
@@ -1012,9 +1028,12 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False)
             else:
                 render_error(f"Cannot read file: {e}")
             return 1
-    if not text:
+        chars = len(text)
+    elif not text:
         text = _sys.stdin.read() if not _sys.stdin.isatty() else ""
-    chars = len(text)
+        chars = len(text)
+    else:
+        chars = len(text)
     estimated = max(1, chars // 4)
     if as_json:
         import json as _json
@@ -1226,7 +1245,7 @@ def cmd_forget(ref: str | None = None, as_json: bool = False) -> int:
     return 0
 
 
-def cmd_export_all(target_dir: str, as_markdown: bool = False, as_json: bool = False) -> int:
+def cmd_export_all(target_dir: str, as_markdown: bool = False, as_json: bool = False, redact: bool = False) -> int:
     import json as _json
 
     from termux_agent import __version__
@@ -1236,7 +1255,8 @@ def cmd_export_all(target_dir: str, as_markdown: bool = False, as_json: bool = F
     if as_json:
         sessions = []
         for s in list_sessions():
-            sessions.append(export_session(s.stem))
+            data = export_session(s.stem)
+            sessions.append(_redact_cfg(data) if redact else data)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(
             _json.dumps({"app": "termux-agent", "version": __version__, "sessions": sessions}, ensure_ascii=False, indent=2),
@@ -1251,6 +1271,8 @@ def cmd_export_all(target_dir: str, as_markdown: bool = False, as_json: bool = F
     count = 0
     for s in list_sessions():
         data = export_session(s.stem)
+        if redact:
+            data = _redact_cfg(data)
         if as_markdown:
             (md_dir / f"{s.stem}.md").write_text(_session_to_markdown(data), encoding="utf-8")
         else:
@@ -2126,7 +2148,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-memory", action="store_true", help="Run without the persistent memory file (~/.termux-agent/memory.md)")
     parser.add_argument("--git", action="store_true", dest="git_context", help="Inject the repo state (status/diff/log) into the system prompt")
     parser.add_argument("--show", metavar="SESSION", help="Show a full session transcript (default: latest); use --json for raw output")
-    parser.add_argument("--tokens", metavar="FILE", help="Estimate the token count of a file (omit to read stdin)")
+    parser.add_argument("--tokens", metavar="FILE", help="Estimate the token count of a file (omit to read stdin; --session for a session transcript)")
     parser.add_argument("--summarize", nargs="?", const="latest", metavar="SESSION", help="Have the agent summarize a session transcript (default: latest); --output saves it")
     parser.add_argument("--rerun", nargs="?", const="latest", metavar="SESSION", help="Re-run the last user prompt of a session as a fresh one-shot (default: latest); --output saves it")
     parser.add_argument("--bundle", metavar="DIR", help="Back up config, memory, and all sessions into a portable directory ('-' streams a gzipped tar to stdout)")
@@ -2155,6 +2177,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml (--force to overwrite)")
     parser.add_argument("--force", action="store_true", help="Overwrite existing files (with --init)")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
+    parser.add_argument("--session", metavar="SESSION", help="With --tokens: estimate a session transcript instead of a file")
     parser.add_argument("--limit", type=int, default=20, metavar="N", help="Max sessions to list (with --sessions/--export-all)")
     parser.add_argument("--session-dir", metavar="DIR", help="Use this directory for session files instead of ~/.termux-agent/sessions")
     parser.add_argument("--search", help="Filter --sessions by keyword in the first message")
@@ -2283,13 +2306,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.export:
         return cmd_export(args.export, as_markdown=args.markdown, redact=args.redact)
     if args.export_all:
-        return cmd_export_all(args.export_all, as_markdown=args.markdown, as_json=args.json)
+        return cmd_export_all(args.export_all, as_markdown=args.markdown, as_json=args.json, redact=args.redact)
     if args.forget:
         return cmd_forget(args.forget, as_json=args.json)
     if args.import_path:
         return cmd_import(args.import_path, dry_run=args.dry_run, as_json=args.json)
     if args.show:
-        return cmd_show(args.show, as_json=args.json, output=args.output)
+        return cmd_show(args.show, as_json=args.json, output=args.output, redact=args.redact)
     if args.summarize:
         return cmd_summarize(
             cfg,
@@ -2314,8 +2337,8 @@ def main(argv: list[str] | None = None) -> int:
             diff=args.diff,
             notify=args.notify,
         )
-    if args.tokens is not None:
-        return cmd_tokens(args.tokens, as_json=args.json)
+    if args.tokens is not None or args.session is not None:
+        return cmd_tokens(args.tokens, as_json=args.json, session_ref=args.session)
     if args.bundle:
         return cmd_bundle(args.bundle)
     if args.restore:
