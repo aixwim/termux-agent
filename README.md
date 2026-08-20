@@ -22,7 +22,7 @@ A CLI coding agent for **Termux (Android)**, similar to [opencode](https://openc
 - **Device awareness & introspection**: `--context` injects battery/wifi/time into the system prompt (needs termux-api); `--list-tools` lists registered tools; `--config-show` prints the effective merged config; `--prune --json` reports what was deleted.
 - **Batch & housekeeping**: `--batch FILE` runs one one-shot per line (results to `--output` as JSON); `--sessions --search` now matches across all messages; `--prune-days N` deletes sessions older than N days.
 - **Safety & resource limits**: `--no-shell`, `--no-web`, `--no-git` disable whole tool groups (useful for untrusted/unattended use); `--only-tools LIST` restricts to exact tool names; `--max-output-chars N` and `--command-timeout SECONDS` override config limits. In the REPL, `/context` attaches or refreshes device context and `/image PATH` attaches an image.
-- **Review & scripting**: `--show [SESSION]` prints a full transcript (`--json` for raw); `--export --markdown` writes a readable transcript; `--export-all --markdown` dumps every session as `.md`; `--tokens FILE` estimates token usage; `--no-save` keeps one-shot runs out of the session store; `--no-memory` ignores saved notes; `--git` injects repo state into the system prompt; `--log FILE` writes a timestamped JSONL run log; `--batch --workers N` runs prompts in parallel. The HTTP API accepts a per-request `model` override in `POST /chat`.
+- **Review & scripting**: `--show [SESSION]` prints a full transcript (`--json` for raw); `--summarize [SESSION]` distills a conversation via the agent; `--export --markdown` writes a readable transcript; `--export-all --markdown` dumps every session as `.md`; `--tokens FILE` estimates token usage; `--no-save` keeps one-shot runs out of the session store; `--no-memory` ignores saved notes; `--session-dir DIR` uses an alternate session store; `--git` injects repo state into the system prompt; `--log FILE` writes a timestamped JSONL run log; `--batch --workers N` runs prompts in parallel. The HTTP API accepts a per-request `model` override in `POST /chat`.
 - **Chat mode**: `--chat` disables all tools for a plain conversation (no file/command access).
 - **Timeouts & saving**: `--timeout SECONDS` aborts a slow one-shot task (exit 124); one-shot tasks are now saved as sessions too, so you can `--resume` them.
 - **Session backup**: `--export [ID]` prints a session as portable JSON (redirect to a file), `--export-all DIR` backs up every session, `--import FILE` restores one, `--prune N` / `--forget [ID]` delete sessions. `--bench [PROVIDER]` times one tiny request per model to help you pick a fast default.
@@ -191,6 +191,13 @@ termux-agent --export-all ./archive --markdown
 termux-agent --show            # latest session
 termux-agent --show 20260820-000001
 termux-agent --export --markdown > session.md
+
+# get a distilled summary of a long session
+termux-agent --summarize --output summary.md
+termux-agent --summarize 20260820-000001 --json
+
+# keep separate stores for different projects
+termux-agent --session-dir ./sessions --sessions
 
 # estimate token usage before a big prompt
 termux-agent --tokens main.py

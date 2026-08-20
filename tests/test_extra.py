@@ -2490,6 +2490,85 @@ def test_server_chat_model_override():
     assert chosen == "other-model"
 
 
+# --- summarize / session-dir ---
+def test_cmd_summarize(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    sid = "20260820-000001"
+    (sdir / f"{sid}.jsonl").write_text(
+        '{"role":"system","content":"sys"}\n{"role":"user","content":"fix login bug"}\n{"role":"assistant","content":"done, it was a race condition"}\n'
+    )
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    seen = {}
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+        )
+        agent.run = lambda p, on_tool_use=None, on_text_delta=None: (seen.update(prompt=p) or "SUMMARY")
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    out = tmp_path / "summary.txt"
+    assert cli.cmd_summarize(_min_cfg(), sid, "zen", None, output=str(out)) == 0
+    assert "fix login bug" in seen["prompt"]
+    assert out.read_text().strip() == "SUMMARY"
+
+
+def test_cmd_summarize_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text(
+        '{"role":"user","content":"hello"}\n{"role":"assistant","content":"hi"}\n'
+    )
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+        )
+        agent.run = lambda p, on_tool_use=None, on_text_delta=None: "S"
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_summarize(_min_cfg(), None, "zen", None, as_json=True) == 0
+    data = _json.loads(out.getvalue())
+    assert data["summary"] == "S"
+    assert data["session"] == "20260820-000001"
+
+
+def test_main_session_dir(tmp_path: Path, monkeypatch):
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "alt"
+    monkeypatch.setattr(cli.sys, "stdout", __import__("io").StringIO())
+    monkeypatch.setattr(cli, "cmd_sessions", lambda *a, **k: 0)
+    monkeypatch.setattr(cli, "cmd_init", lambda *a, **k: 0)
+    code = cli.main(["--session-dir", str(sdir), "--sessions"])
+    assert code == 0
+    assert session.SESSIONS_DIR == sdir
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

@@ -909,6 +909,61 @@ def cmd_export_all(target_dir: str, as_markdown: bool = False) -> int:
     return 0
 
 
+def cmd_summarize(
+    cfg: dict,
+    ref: str | None,
+    provider: str | None,
+    model: str | None,
+    output: str | None = None,
+    as_json: bool = False,
+    timeout: int | None = None,
+) -> int:
+    """Have the agent summarize a session transcript (default: latest)."""
+    import json as _json
+
+    from termux_agent.session import export_session
+    from termux_agent.ui.renderer import render_answer, render_error
+
+    try:
+        data = export_session(ref)
+    except FileNotFoundError:
+        render_error("Session not found.")
+        return 1
+    sid = data.get("id", "?")
+    transcript = []
+    for m in data.get("messages", []):
+        role = m.get("role", "?")
+        if role == "system":
+            continue
+        content = str(m.get("content", ""))[:2000]
+        if not content.strip():
+            continue
+        transcript.append(f"{role.upper()}: {content}")
+    if not transcript:
+        render_error("Session has no usable messages to summarize.")
+        return 1
+    prompt = (
+        "Summarize the following conversation in a clear, structured way: "
+        "main topic, decisions, files/commands touched, and open questions. "
+        "Keep it under 200 words.\n\n"
+        + "\n\n".join(transcript)
+    )
+    try:
+        agent = build_agent(cfg, provider, model, auto_accept=True)
+        summary = _run_guarded(agent, prompt, lambda *a, **k: None, timeout)
+    except Exception as e:  # noqa: BLE001
+        render_error(f"Summarize failed: {e}")
+        return 1
+    if output:
+        Path(output).write_text(summary + "\n", encoding="utf-8")
+        render_info(f"Summary written to {output}")
+    if as_json:
+        print(_json.dumps({"ok": True, "session": sid, "summary": summary}, ensure_ascii=False))
+    elif not output:
+        render_answer(summary)
+    return 0
+
+
 def cmd_sessions(search: str | None = None, as_json: bool = False) -> int:
     import json as _json
 
@@ -1241,6 +1296,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-memory", action="store_true", help="Run without the persistent memory file (~/.termux-agent/memory.md)")
     parser.add_argument("--git", action="store_true", dest="git_context", help="Inject the repo state (status/diff/log) into the system prompt")
     parser.add_argument("--show", metavar="SESSION", help="Show a full session transcript (default: latest); use --json for raw output")
+    parser.add_argument("--summarize", nargs="?", const="latest", metavar="SESSION", help="Have the agent summarize a session transcript (default: latest); --output saves it")
     parser.add_argument("--tokens", metavar="FILE", help="Estimate the token count of a file (omit to read stdin)")
     parser.add_argument("--only-tools", metavar="LIST", help="Restrict the agent to exactly these comma-separated tool names, e.g. read_file,grep,glob")
     parser.add_argument("--log", metavar="FILE", help="Append a timestamped JSONL run log (tool calls, errors, result) for one-shot runs")
@@ -1254,6 +1310,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("prompt", nargs="*", help="One-shot prompt (no arguments = interactive mode)")
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
+    parser.add_argument("--session-dir", metavar="DIR", help="Use this directory for session files instead of ~/.termux-agent/sessions")
     parser.add_argument("--search", help="Filter --sessions by keyword in the first message")
     parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest); --markdown for a readable transcript")
     parser.add_argument("--markdown", action="store_true", help="With --export/--show, print a readable Markdown transcript")
@@ -1308,6 +1365,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"termux-agent {__version__}")
         return 0
 
+    if args.session_dir:
+        from termux_agent import session as sessionmod
+
+        sessionmod.SESSIONS_DIR = Path(args.session_dir).expanduser()
+        sessionmod.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
     if args.init:
         return cmd_init(args.provider, args.model)
     if args.bench:
@@ -1322,6 +1385,16 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_import(args.import_path)
     if args.show:
         return cmd_show(args.show, as_json=args.json)
+    if args.summarize:
+        return cmd_summarize(
+            cfg,
+            args.summarize,
+            args.provider,
+            args.model,
+            output=args.output,
+            as_json=args.json,
+            timeout=args.timeout,
+        )
     if args.tokens is not None:
         return cmd_tokens(args.tokens)
     if args.prune is not None:
