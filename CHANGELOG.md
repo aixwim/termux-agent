@@ -8,6 +8,8 @@ All notable changes to this project are documented here.
 - **Friendly error for unknown providers** — no more raw traceback for `--provider nope`.
 - **`--doctor --fix` works** — the intuitive `--fix` alias is now accepted alongside `--doctor-fix`.
 
+- **`--tokens --all` works** — the `--tokens` flag no longer swallows `--all` as its file argument; whole-store estimation works as documented.
+
 ## [1.1.0] - 2026-08-20
 
 ### Optimization for Termux

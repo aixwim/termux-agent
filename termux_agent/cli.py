@@ -3156,7 +3156,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-memory", action="store_true", help="Run without the persistent memory file (~/.termux-agent/memory.md)")
     parser.add_argument("--git", action="store_true", dest="git_context", help="Inject the repo state (status/diff/log) into the system prompt")
     parser.add_argument("--show", metavar="SESSION", help="Show a full session transcript (default: latest); use --json for raw output")
-    parser.add_argument("--tokens", metavar="FILE", help="Estimate the token count of a file or directory (omit to read stdin; --session for a session transcript; HEAD/HEAD~N estimates the git diff)")
+    parser.add_argument("--tokens", nargs="?", const="", metavar="FILE", help="Estimate the token count of a file or directory (omit to read stdin; --session for a session transcript; HEAD/HEAD~N estimates the git diff; --all for the whole store)")
     parser.add_argument("--tokens-exclude", action="append", default=[], metavar="PATTERN", help="With --tokens DIR: skip files whose relative path matches this fnmatch pattern (repeatable)")
     parser.add_argument("--summarize", nargs="?", const="latest", metavar="SESSION", help="Have the agent summarize a session transcript (default: latest); --output saves it")
     parser.add_argument("--rerun", nargs="?", const="latest", metavar="SESSION", help="Re-run the last user prompt of a session as a fresh one-shot (default: latest); --output saves it")
