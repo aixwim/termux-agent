@@ -2365,6 +2365,67 @@ def test_repl_image_command(tmp_path: Path, monkeypatch):
     assert calls and "[image:" in calls[0]
 
 
+# --- export-all markdown / run logger ---
+def test_cmd_export_all_markdown(tmp_path: Path, monkeypatch):
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text(
+        '{"role":"user","content":"hello"}\n{"role":"assistant","content":"hi"}\n'
+    )
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    monkeypatch.setattr(cli.sys, "stdout", __import__("io").StringIO())
+    out_dir = tmp_path / "exp"
+    assert cli.cmd_export_all(str(out_dir), as_markdown=True) == 0
+    assert (out_dir / "markdown" / "20260820-000001.md").is_file()
+    assert "# Session" in (out_dir / "markdown" / "20260820-000001.md").read_text()
+
+
+def test_run_logger(tmp_path: Path):
+    import json as _json
+
+    from termux_agent import cli
+
+    log = tmp_path / "run.jsonl"
+    logger = cli._run_logger(str(log))
+    logger("tool", {"name": "read_file"})
+    logger("done", {"answer": "ok", "tool_calls": 1})
+    lines = log.read_text().splitlines()
+    assert len(lines) == 2
+    first = _json.loads(lines[0])
+    assert first["kind"] == "tool"
+    assert first["name"] == "read_file"
+    assert "ts" in first
+
+
+def test_one_shot_writes_log(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+        )
+        agent.run = lambda p, on_tool_use=None, on_text_delta=None: (on_tool_use("grep", "{}") or "answer")
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None, on_text_delta=None: agent.run(p, on_tool_use=t))
+    log = tmp_path / "run.jsonl"
+    assert cli.cmd_one_shot(_min_cfg(), "hi", "zen", None, log_file=str(log)) == 0
+    kinds = [_json.loads(l)["kind"] for l in log.read_text().splitlines()]
+    assert "tool" in kinds
+    assert "done" in kinds
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

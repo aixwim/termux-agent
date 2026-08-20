@@ -213,6 +213,7 @@ def cmd_one_shot(
     no_save: bool = False,
     git_context: bool = False,
     only_tools: list[str] | None = None,
+    log_file: str | None = None,
 ) -> int:
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
@@ -276,9 +277,12 @@ def cmd_one_shot(
     if auto_accept and not as_json and not quiet:
         render_info("Mode --yes: all confirmations are skipped automatically.")
     tool_log: list[dict] = []
+    logger = _run_logger(log_file) if log_file else None
 
     def _log_tool(name: str, args_str: str) -> None:
         tool_log.append({"name": name, "arguments": args_str})
+        if logger:
+            logger("tool", {"name": name, "arguments": args_str})
         if not as_json and not quiet:
             render_tool_use(name, args_str)
 
@@ -315,6 +319,8 @@ def cmd_one_shot(
             _emit_json({"ok": False, "error": f"timed out after {timeout}s"}, agent)
         else:
             render_error(f"\nTimed out after {timeout}s.")
+        if logger:
+            logger("error", {"type": "timeout"})
         return 124
     if wakelock:
         from termux_agent.notify import wake_unlock
@@ -333,6 +339,8 @@ def cmd_one_shot(
         from termux_agent.session import record_messages
 
         record_messages(agent.messages, agent.provider.name, agent.provider.model)
+    if logger:
+        logger("done", {"answer": answer, "tool_calls": len(tool_log)})
     _maybe_notify(cfg, "Done", answer, as_json)
     if copy:
         from termux_agent.ui.repl import copy_to_clipboard
@@ -465,6 +473,26 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
     return 0
 
 
+def _run_logger(path: str):
+    """Return a callable that appends timestamped JSON lines to the log file."""
+
+    def _write(kind: str, data: dict) -> None:
+        import datetime
+        import json as _json
+
+        line = _json.dumps(
+            {"ts": datetime.datetime.now().isoformat(timespec="seconds"), "kind": kind, **data},
+            ensure_ascii=False,
+        )
+        try:
+            with open(Path(path).expanduser(), "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+
+    return _write
+
+
 def _git_context(cwd: Path) -> str:
     """Best-effort summary of repo state for the agent (empty if not a git repo)."""
     import subprocess
@@ -521,6 +549,9 @@ def cmd_batch(
     disabled_groups: list[str] | None = None,
     max_output_chars: int | None = None,
     command_timeout: int | None = None,
+    agent_name: str | None = None,
+    working_dir: str | None = None,
+    only_tools: list[str] | None = None,
 ) -> int:
     """Run one one-shot per line of a prompts file (blank lines skipped)."""
     import json as _json
@@ -540,7 +571,7 @@ def cmd_batch(
     for i, p in enumerate(prompts, start=1):
         render_info(f"[{i}/{len(prompts)}] {p[:60]}")
         try:
-            agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout)
+            agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools)
             answer = _run_guarded(agent, p, lambda *a, **k: None, timeout)
         except Exception as e:  # noqa: BLE001
             results.append({"prompt": p, "answer": None, "error": str(e)})
@@ -568,13 +599,16 @@ def cmd_watch(
     disabled_groups: list[str] | None = None,
     max_output_chars: int | None = None,
     command_timeout: int | None = None,
+    agent_name: str | None = None,
+    working_dir: str | None = None,
+    only_tools: list[str] | None = None,
 ) -> int:
     """Re-run a one-shot task every N seconds until Ctrl+C. Optionally re-attach a screenshot."""
     import time
 
     from termux_agent.ui.renderer import render_answer, render_tool_use
 
-    agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout)
+    agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools)
     render_info(f"Watching every {interval}s — press Ctrl+C to stop.")
     round_no = 0
     try:
@@ -837,19 +871,25 @@ def cmd_forget(ref: str | None = None) -> int:
     return 0
 
 
-def cmd_export_all(target_dir: str) -> int:
+def cmd_export_all(target_dir: str, as_markdown: bool = False) -> int:
     import json as _json
 
     from termux_agent.session import export_session, list_sessions
 
     out = Path(target_dir)
     out.mkdir(parents=True, exist_ok=True)
+    if as_markdown:
+        md_dir = out / "markdown"
+        md_dir.mkdir(parents=True, exist_ok=True)
     count = 0
     for s in list_sessions():
         data = export_session(s.stem)
-        (out / f"{s.stem}.json").write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if as_markdown:
+            (md_dir / f"{s.stem}.md").write_text(_session_to_markdown(data), encoding="utf-8")
+        else:
+            (out / f"{s.stem}.json").write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         count += 1
-    render_info(f"Exported {count} session(s) to {out}.")
+    render_info(f"Exported {count} session(s) to {out}." + (" (markdown under markdown/)" if as_markdown else ""))
     return 0
 
 
@@ -1186,6 +1226,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--show", metavar="SESSION", help="Show a full session transcript (default: latest); use --json for raw output")
     parser.add_argument("--tokens", metavar="FILE", help="Estimate the token count of a file (omit to read stdin)")
     parser.add_argument("--only-tools", metavar="LIST", help="Restrict the agent to exactly these comma-separated tool names, e.g. read_file,grep,glob")
+    parser.add_argument("--log", metavar="FILE", help="Append a timestamped JSONL run log (tool calls, errors, result) for one-shot runs")
     parser.add_argument("--max-output-chars", type=int, metavar="N", help="Cap tool output size (default from config, e.g. 60000)")
     parser.add_argument("--command-timeout", type=int, metavar="SECONDS", help="Per-command timeout for run_command (default from config)")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
@@ -1204,7 +1245,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config-show", action="store_true", help="Print the effective merged configuration as YAML")
     parser.add_argument("--list-tools", action="store_true", help="List all registered tools")
     parser.add_argument("--forget", nargs="?", const="latest", metavar="SESSION", help="Delete one session (default: latest)")
-    parser.add_argument("--export-all", metavar="DIR", help="Export every session as a JSON file into DIR")
+    parser.add_argument("--export-all", metavar="DIR", help="Export every session as a JSON file into DIR (--markdown: readable .md transcripts)")
     parser.add_argument("--bench", nargs="?", const="__default__", metavar="PROVIDER", help="Benchmark latency across a provider's models (one tiny request each)")
     parser.add_argument("--list-providers", action="store_true", help="List provider presets")
     parser.add_argument("--list-agents", action="store_true", help="List available sub-agents")
@@ -1256,7 +1297,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.export:
         return cmd_export(args.export, as_markdown=args.markdown)
     if args.export_all:
-        return cmd_export_all(args.export_all)
+        return cmd_export_all(args.export_all, as_markdown=args.markdown)
     if args.forget:
         return cmd_forget(args.forget)
     if args.import_path:
@@ -1401,6 +1442,9 @@ def main(argv: list[str] | None = None) -> int:
             disabled_groups=_disabled_groups_from(args),
             max_output_chars=args.max_output_chars,
             command_timeout=args.command_timeout,
+            agent_name=args.agent,
+            working_dir=args.cwd,
+            only_tools=_split_tools(args.only_tools),
         )
 
     if args.batch:
@@ -1416,6 +1460,9 @@ def main(argv: list[str] | None = None) -> int:
             disabled_groups=_disabled_groups_from(args),
             max_output_chars=args.max_output_chars,
             command_timeout=args.command_timeout,
+            agent_name=args.agent,
+            working_dir=args.cwd,
+            only_tools=_split_tools(args.only_tools),
         )
 
     if prompt:
@@ -1455,6 +1502,7 @@ def main(argv: list[str] | None = None) -> int:
             no_save=args.no_save,
             git_context=args.git_context,
             only_tools=_split_tools(args.only_tools),
+            log_file=args.log,
         )
 
     if args.json:
