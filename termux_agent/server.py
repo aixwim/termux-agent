@@ -503,7 +503,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
         self._send(200, {"ok": True, "deleted": removed.stem})
 
 
-def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | None = None, model: str | None = None, auto_accept: bool = False, token: str | None = None, log_file: str | None = None, cors_origin: str = "*") -> int:
+def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | None = None, model: str | None = None, auto_accept: bool = False, token: str | None = None, log_file: str | None = None, cors_origin: str = "*", tls_cert: str | None = None, tls_key: str | None = None) -> int:
     from termux_agent.cli import build_agent as _build
 
     handler = _AgentHandler
@@ -516,9 +516,17 @@ def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | 
     handler.log_path = log_file
     handler.cors_origin = cors_origin
     httpd = ThreadingHTTPServer((host, port), handler)
+    scheme = "http"
+    if tls_cert:
+        import ssl
+
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(tls_cert, tls_key)
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        scheme = "https"
     import sys
 
-    print(f"termux-agent server listening on http://{host}:{httpd.server_address[1]}", file=sys.stderr)
+    print(f"termux-agent server listening on {scheme}://{host}:{httpd.server_address[1]}", file=sys.stderr)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

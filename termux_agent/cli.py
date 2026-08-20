@@ -910,7 +910,7 @@ def cmd_plan(
     return 0
 
 
-def cmd_export(ref: str | None = None, as_markdown: bool = False) -> int:
+def cmd_export(ref: str | None = None, as_markdown: bool = False, redact: bool = False) -> int:
     """Print a session as portable JSON (default: latest)."""
     from termux_agent.session import export_session
 
@@ -919,6 +919,8 @@ def cmd_export(ref: str | None = None, as_markdown: bool = False) -> int:
     except FileNotFoundError:
         render_error("Session not found.")
         return 1
+    if redact:
+        data = _redact_cfg(data)
     if as_markdown:
         print(_session_to_markdown(data))
         return 0
@@ -1078,16 +1080,24 @@ def cmd_config_show(cfg: dict, as_json: bool = False, redact: bool = False) -> i
 
 
 def _redact_cfg(cfg: dict) -> dict:
-    """Return a copy of the config with secrets masked for safe display."""
+    """Return a copy of the config with secrets masked for safe display (recursively)."""
     import copy
 
     out = copy.deepcopy(cfg)
-    providers = out.setdefault("providers", {})
-    for p, pc in providers.items():
-        if isinstance(pc, dict):
-            for key in ("api_key", "api_key_env", "key", "token"):
-                if key in pc and pc[key]:
-                    pc[key] = "***"
+    secret_keys = {"api_key", "api_key_env", "key", "token", "secret", "password", "auth"}
+
+    def walk(node):
+        if isinstance(node, dict):
+            for k, v in list(node.items()):
+                if k in secret_keys and v:
+                    node[k] = "***"
+                else:
+                    walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(out)
     return out
 
 
@@ -1501,6 +1511,8 @@ def cmd_serve(
     pidfile: str | None = None,
     log_file: str | None = None,
     cors_origin: str = "*",
+    tls_cert: str | None = None,
+    tls_key: str | None = None,
 ) -> int:
     """Run the HTTP API server, optionally detached in the background."""
     if background:
@@ -1525,6 +1537,10 @@ def cmd_serve(
             cmd += ["--log", log_file]
         if cors_origin and cors_origin != "*":
             cmd += ["--cors-origin", cors_origin]
+        if tls_cert:
+            cmd += ["--tls-cert", tls_cert]
+        if tls_key:
+            cmd += ["--tls-key", tls_key]
         with open(log_path, "a", encoding="utf-8") as logf:
             proc = subprocess.Popen(
                 cmd,
@@ -1542,7 +1558,7 @@ def cmd_serve(
         return 0
     from termux_agent.server import serve
 
-    return serve(cfg, host=host, port=port, provider=provider, model=model, auto_accept=auto_accept, token=token, log_file=log_file, cors_origin=cors_origin)
+    return serve(cfg, host=host, port=port, provider=provider, model=model, auto_accept=auto_accept, token=token, log_file=log_file, cors_origin=cors_origin, tls_cert=tls_cert, tls_key=tls_key)
 
 
 def cmd_serve_stop(pidfile: str | None = None) -> int:
@@ -2067,6 +2083,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--serve-background", action="store_true", help="Start the server detached in the background (with --serve)")
     parser.add_argument("--serve-pidfile", metavar="FILE", help="Pid file for the background server (default: ~/.termux-agent/server.pid)")
     parser.add_argument("--cors-origin", default="*", metavar="ORIGIN", help="Allowed CORS origin for the server (default: *)")
+    parser.add_argument("--tls-cert", metavar="FILE", help="Serve HTTPS with this certificate (pair with --tls-key)")
+    parser.add_argument("--tls-key", metavar="FILE", help="Private key for --tls-cert")
     parser.add_argument("--serve-stop", action="store_true", help="Stop a background server started with --serve --serve-background")
     parser.add_argument("prompt", nargs="*", help="One-shot prompt (no arguments = interactive mode)")
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
@@ -2074,7 +2092,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=20, metavar="N", help="Max sessions to list (with --sessions/--export-all)")
     parser.add_argument("--session-dir", metavar="DIR", help="Use this directory for session files instead of ~/.termux-agent/sessions")
     parser.add_argument("--search", help="Filter --sessions by keyword in the first message")
-    parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest); --markdown for a readable transcript")
+    parser.add_argument("--export", nargs="?", const="latest", metavar="SESSION", help="Print a session as portable JSON (default: latest); --markdown for a readable transcript, --redact to mask secrets")
     parser.add_argument("--markdown", action="store_true", help="With --export/--show, print a readable Markdown transcript")
     parser.add_argument("--import", dest="import_path", metavar="FILE", help="Import a portable session JSON file ('-' reads stdin; --dry-run validates only)")
     parser.add_argument("--prune", type=int, metavar="N", help="Delete all sessions except the newest N (--dry-run previews)")
@@ -2196,7 +2214,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.bench:
         return cmd_bench(cfg, args.bench, args.timeout or 60, as_json=args.json)
     if args.export:
-        return cmd_export(args.export, as_markdown=args.markdown)
+        return cmd_export(args.export, as_markdown=args.markdown, redact=args.redact)
     if args.export_all:
         return cmd_export_all(args.export_all, as_markdown=args.markdown, as_json=args.json)
     if args.forget:
@@ -2300,6 +2318,8 @@ def main(argv: list[str] | None = None) -> int:
             pidfile=args.serve_pidfile,
             log_file=args.log,
             cors_origin=args.cors_origin,
+            tls_cert=args.tls_cert,
+            tls_key=args.tls_key,
         )
 
     if args.verbose:

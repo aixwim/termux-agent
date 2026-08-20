@@ -4808,6 +4808,70 @@ def test_serve_cors_origin(tmp_path: Path, monkeypatch):
         handler.cors_origin = "*"
 
 
+# --- export redact / tls serve ---
+def test_export_redact(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "hi"}], "zen", "m", session_id="red-x")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_export("red-x", redact=True) == 0
+    data = _json.loads(out.getvalue())
+    assert "api_key" not in data
+    assert data["id"] == "red-x"
+
+
+def test_tls_serve(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+
+    cert = tmp_path / "cert.pem"
+    key = tmp_path / "key.pem"
+    cert.write_text("dummy-cert")
+    key.write_text("dummy-key")
+
+    loaded = {}
+
+    class FakeSSLContext:
+        def __init__(self, proto):
+            loaded["proto"] = proto
+
+        def load_cert_chain(self, c, k):
+            loaded["cert"], loaded["key"] = c, k
+
+        def wrap_socket(self, sock, **kw):
+            loaded["wrapped"] = True
+            return sock
+
+    monkeypatch.setattr("ssl.SSLContext", FakeSSLContext)
+    monkeypatch.setattr("ssl.PROTOCOL_TLS_SERVER", "TLS")
+
+    class FakeServer:
+        def __init__(self, addr, handler):
+            self.server_address = (addr[0], 9999)
+            self.socket = None
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def server_close(self):
+            pass
+
+    monkeypatch.setattr(srv, "ThreadingHTTPServer", FakeServer)
+    code = srv.serve(_min_cfg(), tls_cert=str(cert), tls_key=str(key))
+    assert code == 0
+    assert loaded.get("cert") == str(cert)
+    assert loaded.get("key") == str(key)
+    assert loaded.get("wrapped") is True
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
