@@ -62,6 +62,7 @@ Special commands (start with /):
   /image PATH     attach an image to the next turn
   /attach FILE    read a file's contents into the next turn (repeatable)
   /search TERM    find sessions whose transcript contains the term
+  /retry          re-run the last turn
 Type a normal message to ask; Ctrl+C to cancel."""
 
 
@@ -87,6 +88,7 @@ class Repl:
         self.agent_name = agent_name
         self.session = Session(provider_name=provider_name, model=model)
         self._last_answer = ""
+        self._last_user_input = ""
         self._base_prompt = getattr(self.agent, "system_prompt", "")
         self._instructions: list[str] = []
         self.plan_mode = False
@@ -290,6 +292,12 @@ class Repl:
             self._run_turn("Here is the file content:\n\n" + "\n\n".join(parts))
         elif c == "/search":
             self._search(rest.strip())
+        elif c == "/retry":
+            if not self._last_user_input:
+                render_error("No previous turn to retry.")
+                return False
+            render_info("Re-running the last turn...")
+            self._run_turn(self._last_user_input)
         elif c == "/plan":
             self.plan_mode = not self.plan_mode
             render_info(f"Plan-first mode {'ON' if self.plan_mode else 'OFF'}.")
@@ -563,6 +571,7 @@ class Repl:
         render_info(f"Provider switched to: {name} / {provider.model}")
 
     def _run_turn(self, user_input: str) -> None:
+        self._last_user_input = user_input
         self.session.append({"role": "user", "content": user_input})
         printer = PlainStreamPrinter()
         if self.plan_mode:

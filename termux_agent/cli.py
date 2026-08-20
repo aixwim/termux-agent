@@ -919,7 +919,7 @@ def _session_to_markdown(data: dict) -> str:
     return "\n".join(lines)
 
 
-def cmd_show(ref: str | None, as_json: bool = False) -> int:
+def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None) -> int:
     """Show a full session transcript (default: latest)."""
     import json as _json
 
@@ -930,6 +930,17 @@ def cmd_show(ref: str | None, as_json: bool = False) -> int:
     except FileNotFoundError:
         render_error("Session not found.")
         return 1
+    if output:
+        try:
+            if as_json:
+                Path(output).write_text(_json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            else:
+                Path(output).write_text(_session_to_markdown(data) + "\n", encoding="utf-8")
+        except OSError as e:
+            render_error(f"Cannot write output file {output}: {e}")
+            return 1
+        render_info(f"Transcript written to {output}")
+        return 0
     if as_json:
         print(_json.dumps(data, ensure_ascii=False, indent=2))
         return 0
@@ -957,8 +968,8 @@ def cmd_tokens(path: str | None, text: str | None = None) -> int:
     return 0
 
 
-def cmd_import(path: str) -> int:
-    """Import a portable session JSON file and save it as a session."""
+def cmd_import(path: str, dry_run: bool = False) -> int:
+    """Import a portable session JSON file and save it as a session (--dry-run validates only)."""
     import json as _json
 
     from termux_agent.session import import_session
@@ -966,13 +977,16 @@ def cmd_import(path: str) -> int:
     try:
         with open(path, encoding="utf-8") as f:
             data = _json.load(f)
-        sid = import_session(data)
+        sid = None if dry_run else import_session(data)
     except FileNotFoundError:
         render_error(f"File not found: {path}")
         return 1
     except (ValueError, _json.JSONDecodeError) as e:
         render_error(f"Invalid session file: {e}")
         return 1
+    if dry_run:
+        render_info(f"Valid session file: {len(data.get('messages', []))} message(s). Nothing imported.")
+        return 0
     render_info(f"Imported session {sid} ({len(data.get('messages', []))} messages)")
     return 0
 
@@ -1917,9 +1931,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.forget:
         return cmd_forget(args.forget, as_json=args.json)
     if args.import_path:
-        return cmd_import(args.import_path)
+        return cmd_import(args.import_path, dry_run=args.dry_run)
     if args.show:
-        return cmd_show(args.show, as_json=args.json)
+        return cmd_show(args.show, as_json=args.json, output=args.output)
     if args.summarize:
         return cmd_summarize(
             cfg,

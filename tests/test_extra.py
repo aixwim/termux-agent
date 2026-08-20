@@ -3521,6 +3521,70 @@ def test_show_system_prompt(tmp_path: Path, monkeypatch):
     assert "SYS PROMPT TEXT" in out.getvalue()
 
 
+# --- /retry / show-output / import dry-run ---
+def test_repl_retry(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.session import Session
+    from termux_agent.ui.repl import Repl
+
+    calls = []
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            system_prompt="BASE",
+            messages=[{"role": "system", "content": "BASE"}],
+            allowed_tools=set(),
+        )
+
+    agent = fake_build()
+    agent.run = lambda p, on_tool_use=None, on_text_delta=None: (calls.append(p) or "ok")
+    monkeypatch.setattr("termux_agent.ui.repl.Session", lambda **k: Session())
+    repl = Repl(agent, provider_name="zen", model="m")
+    repl._run_turn("hello")
+    repl._handle_command("/retry", None)
+    assert calls == ["hello", "hello"]
+
+
+def test_show_output(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text('{"role":"user","content":"hi there"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    out_file = tmp_path / "out.md"
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_show("20260820-000001", output=str(out_file)) == 0
+    assert "hi there" in out_file.read_text()
+    assert "Transcript written" in out.getvalue()
+
+
+def test_import_dry_run(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    valid = tmp_path / "valid.json"
+    valid.write_text(_json.dumps({"messages": [{"role": "user", "content": "x"}]}))
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_import(str(valid), dry_run=True) == 0
+    assert cli.cmd_import(str(bad), dry_run=True) == 1
+    assert len(list(sdir.glob("*.jsonl"))) == 0
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
