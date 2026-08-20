@@ -9,6 +9,8 @@ Endpoints:
   GET  /stats    -> session count + storage usage
   GET  /memory   -> persistent notes; POST /memory {content} updates them
   POST /batch    -> {prompts: [...]} runs each prompt (optional provider/model)
+  POST /summarize -> {"session": id} summarizes a stored session via the agent
+  POST /rerun    -> {"session": id} re-runs the session's last question
   GET  /sessions -> list saved sessions (first 50; ?note=TERM filters by note)
   GET  /sessions/<id> -> full session transcript
   GET  /sessions/<id>?markdown=1 -> transcript as markdown
@@ -428,6 +430,78 @@ class _AgentHandler(BaseHTTPRequestHandler):
             },
         )
 
+    def _summarize(self, data: dict[str, Any]) -> None:
+        """POST /summarize {"session": id} -> {summary} using the agent."""
+        from termux_agent.cli import _run_guarded
+        from termux_agent.session import export_session
+
+        sid = str(data.get("session", "")).strip()
+        if not sid:
+            self._send(400, {"ok": False, "error": "missing 'session'"})
+            return
+        try:
+            sdata = export_session(sid)
+        except FileNotFoundError:
+            self._send(404, {"ok": False, "error": "session not found"})
+            return
+        transcript = []
+        for m in sdata.get("messages", []):
+            role = m.get("role", "?")
+            if role == "system":
+                continue
+            content = str(m.get("content", ""))[:2000]
+            if content.strip():
+                transcript.append(f"{role.upper()}: {content}")
+        if not transcript:
+            self._send(400, {"ok": False, "error": "session has no usable messages"})
+            return
+        prompt = (
+            "Summarize the following conversation in a clear, structured way: "
+            "main topic, decisions, files/commands touched, and open questions. "
+            "Keep it under 200 words.\n\n"
+            + "\n\n".join(transcript)
+        )
+        try:
+            agent = self.build_agent(self.cfg, self.provider, self.model, auto_accept=True)
+            summary = _run_guarded(agent, prompt, lambda *a, **k: None, None)
+        except Exception as e:  # noqa: BLE001
+            self._send(500, {"ok": False, "error": str(e)})
+            return
+        self._send(200, {"ok": True, "session": sdata.get("id"), "summary": summary})
+
+    def _rerun(self, data: dict[str, Any]) -> None:
+        """POST /rerun {"session": id} -> {answer} for the session's last question."""
+        from termux_agent.cli import _run_guarded
+        from termux_agent.session import export_session
+
+        sid = str(data.get("session", "")).strip()
+        if not sid:
+            self._send(400, {"ok": False, "error": "missing 'session'"})
+            return
+        try:
+            sdata = export_session(sid)
+        except FileNotFoundError:
+            self._send(404, {"ok": False, "error": "session not found"})
+            return
+        last_user = next(
+            (str(m.get("content", "")) for m in reversed(sdata.get("messages", [])) if m.get("role") == "user"),
+            "",
+        )
+        if not last_user.strip():
+            self._send(400, {"ok": False, "error": "session has no user prompt"})
+            return
+        old_answer = next(
+            (str(m.get("content", "")) for m in reversed(sdata.get("messages", [])) if m.get("role") == "assistant"),
+            "",
+        )
+        try:
+            agent = self.build_agent(self.cfg, self.provider, self.model, auto_accept=True)
+            answer = _run_guarded(agent, last_user, lambda *a, **k: None, None)
+        except Exception as e:  # noqa: BLE001
+            self._send(500, {"ok": False, "error": str(e)})
+            return
+        self._send(200, {"ok": True, "session": sdata.get("id"), "prompt": last_user, "answer": answer, "old": old_answer})
+
     def do_GET(self) -> None:
         if self.path in ("/", "/index.html"):
             body = (
@@ -446,6 +520,8 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 "<li><code>GET /sessions/&lt;id&gt;[?markdown=1]</code> / <code>DELETE</code> – session access</li>"
                 "<li><code>POST /chat</code> – run a prompt (JSON body; <code>stream: true</code> for SSE)</li>"
                 "<li><code>POST /batch</code> – run a list of prompts in parallel</li>"
+                "<li><code>POST /summarize</code> – summarize a stored session</li>"
+                "<li><code>POST /rerun</code> – re-run a stored session's last question</li>"
                 "</ul></body></html>"
             ).encode("utf-8")
             self.send_response(200)
@@ -675,6 +751,12 @@ class _AgentHandler(BaseHTTPRequestHandler):
             return
         if self.path in ("/v1/chat/completions", "/chat/completions"):
             self._openai_chat(data)
+            return
+        if self.path == "/summarize":
+            self._summarize(data)
+            return
+        if self.path == "/rerun":
+            self._rerun(data)
             return
         if self.path != "/chat":
             self._send(404, {"ok": False, "error": "not found"})

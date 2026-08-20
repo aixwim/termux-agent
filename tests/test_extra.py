@@ -7129,6 +7129,62 @@ def test_cmd_forget_all_dryrun(tmp_path: Path, monkeypatch):
     assert session.get_note("fg-a") is None
 
 
+# --- server /summarize & /rerun ---
+def test_server_summarize_and_rerun(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+    from termux_agent import session
+    from termux_agent.server import _AgentHandler
+
+    sdir = tmp_path / "sessions"
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages([{"role": "user", "content": "how do I curl?"}], "zen", "m", session_id="sum-rerun")
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[{"role": "system", "content": "s"}],
+        )
+        agent.run = lambda prompt, **kw: "ANSWER:" + prompt
+        return agent
+
+    monkeypatch.setattr(_AgentHandler, "build_agent", staticmethod(fake_build))
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/summarize",
+            data=_json.dumps({"session": "sum-rerun"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            out = _json.loads(r.read())
+        assert out["ok"] is True
+        assert out["session"] == "sum-rerun"
+        assert "SUMMARY" in out["summary"] or out["summary"].startswith("ANSWER:")
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/rerun",
+            data=_json.dumps({"session": "sum-rerun"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            out = _json.loads(r.read())
+        assert out["ok"] is True
+        assert out["answer"] == "ANSWER:how do I curl?"
+        assert out["old"] == ""
+    finally:
+        httpd.shutdown()
+
+
 # --- import dir / doctor fix ---
 def test_cmd_import_directory(tmp_path: Path, monkeypatch):
     import io
