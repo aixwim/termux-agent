@@ -1121,6 +1121,78 @@ def cmd_cleanup() -> int:
     return 0
 
 
+def cmd_serve(
+    cfg: dict,
+    host: str,
+    port: int,
+    provider: str | None,
+    model: str | None,
+    auto_accept: bool,
+    token: str | None,
+    background: bool = False,
+    pidfile: str | None = None,
+) -> int:
+    """Run the HTTP API server, optionally detached in the background."""
+    if background:
+        import subprocess
+        import sys
+
+        from termux_agent.server import serve as _unused  # noqa: F401 (validate import)
+
+        actual_port = port if port else 8787
+        log_path = CONFIG_DIR / "server.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        cmd = [sys.executable, "-m", "termux_agent", "--serve", "--host", str(host), "--port", str(actual_port)]
+        if provider:
+            cmd += ["--provider", provider]
+        if model:
+            cmd += ["--model", model]
+        if auto_accept:
+            cmd += ["--yes"]
+        if token:
+            cmd += ["--token", token]
+        with open(log_path, "a", encoding="utf-8") as logf:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=logf,
+                stderr=logf,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        pid_file = Path(pidfile) if pidfile else CONFIG_DIR / "server.pid"
+        pid_file.write_text(str(proc.pid), encoding="utf-8")
+        render_info(
+            f"Server started in background (pid {proc.pid}) on http://{host}:{actual_port}. "
+            f"Log: {log_path}. Pid file: {pid_file}. Use 'termux-agent --serve-stop' to stop it."
+        )
+        return 0
+    from termux_agent.server import serve
+
+    return serve(cfg, host=host, port=port, provider=provider, model=model, auto_accept=auto_accept, token=token)
+
+
+def cmd_serve_stop(pidfile: str | None = None) -> int:
+    """Stop a background server started with --serve --background."""
+    import signal
+
+    pid_file = Path(pidfile) if pidfile else CONFIG_DIR / "server.pid"
+    if not pid_file.is_file():
+        render_error(f"No server pid file found at {pid_file}.")
+        return 1
+    try:
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
+    except ValueError:
+        render_error(f"Invalid pid file: {pid_file}")
+        return 1
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        render_info(f"Process {pid} already gone.")
+    pid_file.unlink(missing_ok=True)
+    render_info(f"Stopped server pid {pid}.")
+    return 0
+
+
 def cmd_cron(schedule: str, prompt: str, command: str | None = None) -> int:
     """Print a ready-to-add cron line running termux-agent one-shot."""
     command = command or f"termux-agent --no-save --quiet {prompt!r}"
@@ -1525,8 +1597,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--command-timeout", type=int, metavar="SECONDS", help="Per-command timeout for run_command (default from config)")
     parser.add_argument("--serve", action="store_true", help="Run a tiny HTTP API server (POST /chat, GET /health, GET /models)")
     parser.add_argument("--host", default="127.0.0.1", help="HTTP server bind host (with --serve)")
-    parser.add_argument("--port", type=int, default=8787, help="HTTP server port (with --serve)")
+    parser.add_argument("--port", type=int, default=8787, help="HTTP server port (with --serve; 0 = auto-assign)")
     parser.add_argument("--token", help="Require this bearer token for the HTTP API (with --serve; use a long random string)")
+    parser.add_argument("--token-file", metavar="FILE", help="Read the bearer token from a file (with --serve)")
+    parser.add_argument("--serve-background", action="store_true", help="Start the server detached in the background (with --serve)")
+    parser.add_argument("--serve-pidfile", metavar="FILE", help="Pid file for the background server (default: ~/.termux-agent/server.pid)")
+    parser.add_argument("--serve-stop", action="store_true", help="Stop a background server started with --serve --serve-background")
     parser.add_argument("prompt", nargs="*", help="One-shot prompt (no arguments = interactive mode)")
     parser.add_argument("--init", action="store_true", help="Create config.example -> ~/.termux-agent/config.yaml")
     parser.add_argument("--sessions", action="store_true", help="List saved sessions")
@@ -1673,10 +1749,27 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_doctor(cfg, network=args.doctor_network, as_json=args.json, termux=args.doctor_termux)
     if args.smoke:
         return cmd_smoke(cfg, args.provider, args.model)
+    if args.serve_stop:
+        return cmd_serve_stop(args.serve_pidfile)
     if args.serve:
-        from termux_agent.server import serve
-
-        return serve(cfg, host=args.host, port=args.port, provider=args.provider, model=args.model, auto_accept=args.yes, token=args.token)
+        token = args.token
+        if not token and args.token_file:
+            try:
+                token = Path(args.token_file).expanduser().read_text(encoding="utf-8").strip()
+            except OSError as e:
+                render_error(f"Cannot read --token-file: {e}")
+                return 1
+        return cmd_serve(
+            cfg,
+            host=args.host,
+            port=args.port,
+            provider=args.provider,
+            model=args.model,
+            auto_accept=args.yes,
+            token=token,
+            background=args.serve_background,
+            pidfile=args.serve_pidfile,
+        )
 
     if args.verbose:
         import os

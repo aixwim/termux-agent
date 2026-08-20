@@ -2924,6 +2924,67 @@ def test_cmd_rerun_missing_session(tmp_path: Path, monkeypatch):
     assert cli.cmd_rerun(_min_cfg(), "nope", "zen", None) == 1
 
 
+# --- serve lifecycle / token file ---
+def test_serve_stop_no_pidfile(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_serve_stop() == 1
+
+
+def test_serve_stop_kills(tmp_path: Path, monkeypatch):
+    import io
+    import os
+    import signal
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+    killed = {}
+
+    def fake_kill(pid, sig):
+        killed["pid"] = pid
+        killed["sig"] = sig
+
+    monkeypatch.setattr(os, "kill", fake_kill)
+    (tmp_path / "server.pid").write_text("12345")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_serve_stop() == 0
+    assert killed == {"pid": 12345, "sig": signal.SIGTERM}
+    assert not (tmp_path / "server.pid").exists()
+
+
+def test_serve_background_spawn(tmp_path: Path, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+    seen = {}
+
+    class FakeProc:
+        pid = 999
+
+    def fake_popen(cmd, **kw):
+        seen["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_serve(_min_cfg(), "127.0.0.1", 8787, "zen", "m", True, "tok", background=True)
+    assert code == 0
+    assert (tmp_path / "server.pid").read_text() == "999"
+    assert "--token" in seen["cmd"] and "tok" in seen["cmd"]
+    assert "background" in out.getvalue()
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io
