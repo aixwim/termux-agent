@@ -105,28 +105,26 @@ def session_meta(path: Path) -> tuple[int, str, dict]:
     Parses only enough records to find the first user message and the
     provider/model info, instead of decoding the whole file. Message count
     is just the line count (each record is one line)."""
-    text = path.read_text(encoding="utf-8", errors="replace")
-    count = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
+    count = 0
     first_user = ""
     info: dict = {}
     parsed = 0
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        parsed += 1
-        if parsed > 200:
-            break
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not info and rec.get("provider"):
-            info = {"provider": rec.get("provider", ""), "model": rec.get("model", "")}
-        if not first_user and rec.get("role") == "user":
-            content = rec.get("content")
-            if isinstance(content, str) and content.strip():
-                first_user = content
-                break
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            count += 1
+            if not line.strip() or parsed >= 200:
+                continue
+            parsed += 1
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not info and rec.get("provider"):
+                info = {"provider": rec.get("provider", ""), "model": rec.get("model", "")}
+            if not first_user and rec.get("role") == "user":
+                content = rec.get("content")
+                if isinstance(content, str) and content.strip():
+                    first_user = content
     return count, first_user, info
 
 
