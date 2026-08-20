@@ -3045,6 +3045,94 @@ def test_cmd_show_estimates_tokens(tmp_path: Path, monkeypatch):
     assert "tokens estimated" in out.getvalue()
 
 
+# --- provider:model shorthand / watch notify / stats ---
+def test_provider_colon_shorthand(monkeypatch):
+    from termux_agent import cli
+
+    called = {}
+
+    def fake_cmd_rerun(cfg, ref, provider, model, **kw):
+        called["provider"] = provider
+        called["model"] = model
+        return 0
+
+    monkeypatch.setattr(cli, "cmd_rerun", fake_cmd_rerun)
+    assert cli.main(["--rerun", "x", "--provider", "zen:nemotron-3-ultra-free"]) == 0
+    assert called == {"provider": "zen", "model": "nemotron-3-ultra-free"}
+
+
+def test_watch_notify_round(monkeypatch):
+    import io
+    import os
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    seen = {}
+
+    def fake_build(*a, **k):
+        agent = SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=None),
+            usage={},
+        )
+        agent.run = lambda p, on_tool_use=None, on_text_delta=None: "DONE"
+        return agent
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(cli, "_run_guarded", lambda agent, p, t, to=None: agent.run(p))
+    monkeypatch.setattr("time.sleep", lambda *a, **k: None)
+    os.environ["TERMUX_AGENT_NOTIFY"] = "1"
+
+    def fake_notify(msg):
+        seen["msg"] = msg
+
+    monkeypatch.setattr("termux_agent.notify.notify", fake_notify)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    code = cli.cmd_watch(_min_cfg(), "hi", "zen", None, interval=1, max_rounds=2, notify=True)
+    assert code == 0
+    assert "Round 2 done" in seen["msg"]
+
+
+def test_stats_endpoint(tmp_path: Path, monkeypatch):
+    import json as _json
+    import threading
+    import urllib.request
+
+    from types import SimpleNamespace
+
+    from termux_agent import server as srv
+    from termux_agent import session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    (sdir / "20260820-000001.jsonl").write_text('{"role":"user","content":"x"}\n')
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+
+    def fake_build(*a, **k):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="zen", model="m"),
+            ctx=SimpleNamespace(working_dir=tmp_path),
+            usage={},
+            messages=[],
+            run=lambda p, on_tool_use=None, on_text_delta=None: "ok",
+        )
+
+    httpd = srv.build_server(fake_build, _min_cfg(), "zen", None)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/stats", timeout=10) as r:
+            stats = _json.loads(r.read())
+        assert stats["sessions"] == 1
+        assert stats["sessions_bytes"] > 0
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
 # --- init wizard ---
 def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     import io

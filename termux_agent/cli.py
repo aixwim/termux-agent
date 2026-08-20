@@ -670,6 +670,7 @@ def cmd_watch(
     allow_dirs: list[str] | None = None,
     screenshot_dir: str | None = None,
     max_rounds: int | None = None,
+    notify: bool = False,
 ) -> int:
     """Re-run a one-shot task every N seconds until Ctrl+C. Optionally re-attach a screenshot."""
     import time
@@ -709,17 +710,30 @@ def cmd_watch(
                 answer = _run_guarded(agent, p, render_tool_use, timeout)
             except TimeoutError:
                 render_error(f"Round {round_no} timed out after {timeout}s.")
+                if notify:
+                    from termux_agent.notify import notify as _notify
+
+                    _notify(f"Round {round_no} timed out")
             except KeyboardInterrupt:
                 raise
             except Exception as e:  # noqa: BLE001
                 render_error(f"Round {round_no} failed: {e}")
+                if notify:
+                    from termux_agent.notify import notify as _notify
+
+                    _notify(f"Round {round_no} failed: {e}")
             else:
                 render_answer(answer)
+                if notify:
+                    from termux_agent.notify import notify as _notify
+
+                    _notify(f"Round {round_no} done: {answer[:120]}")
             if max_rounds is None or round_no < max_rounds:
                 time.sleep(interval)
     except KeyboardInterrupt:
         render_info("\nStopped.")
         return 0
+    return 0
 
 
 def cmd_plan(
@@ -1607,7 +1621,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-key", help="Set the provider API key for this run (env var override, not saved)")
     parser.add_argument("--stats", action="store_true", help="One-shot mode: print token usage after the answer")
     parser.add_argument("--chat", action="store_true", help="Chat mode: disable all tools (plain conversation, no file/command access)")
-    parser.add_argument("--notify", action="store_true", help="Send a Termux notification when a one-shot task finishes (needs termux-api)")
+    parser.add_argument("--notify", action="store_true", help="Send a Termux notification when a one-shot task finishes or after each --watch round (needs termux-api)")
     parser.add_argument("--wakelock", action="store_true", help="Hold a Termux wake lock while a one-shot task runs (needs termux-api)")
     parser.add_argument("--speak", action="store_true", help="Read the answer aloud with termux-tts-speak (needs termux-api)")
     parser.add_argument("--timeout", type=int, metavar="SECONDS", help="Abort a one-shot task if it takes longer than this")
@@ -1617,6 +1631,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--screenshot-dir", metavar="DIR", help="Save screenshots into this directory instead of the current one")
     parser.add_argument("--cleanup", action="store_true", help="Delete leftover screenshot-*.png files in the current directory")
     parser.add_argument("--stream", action="store_true", help="Stream the answer to the terminal as it is generated (typewriter mode)")
+    parser.add_argument("--no-stream", action="store_true", help="Force a non-streaming one-shot/resume even in a TTY")
     parser.add_argument("--watch", type=int, metavar="SECONDS", help="Re-run the one-shot prompt every N seconds until Ctrl+C (combine with --screenshot)")
     parser.add_argument("--max-rounds", type=int, default=None, metavar="N", help="With --watch: stop after this many rounds")
     parser.add_argument("--batch", metavar="FILE", help="Run one one-shot per line of the file (blank lines skipped); --output writes results as JSON")
@@ -1705,6 +1720,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    if args.provider and ":" in args.provider and not args.model:
+        args.provider, args.model = args.provider.split(":", 1)
+
     if args.version:
         import json as _json
 
@@ -1719,11 +1737,22 @@ def main(argv: list[str] | None = None) -> int:
 
         renderer.disable_color()
 
+    if args.notify:
+        from termux_agent.notify import notify_on_done
+
+        notify_on_done(True)
+
     if args.session_dir:
         from termux_agent import session as sessionmod
 
         sessionmod.SESSIONS_DIR = Path(args.session_dir).expanduser()
         sessionmod.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+    try:
+        cfg = load_config(args.config)
+    except ConfigError as e:
+        render_error(str(e))
+        return 1
 
     if args.init:
         return cmd_init(args.provider, args.model)
@@ -1782,12 +1811,6 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_list_tools()
     if args.sessions:
         return cmd_sessions(args.search, as_json=args.json)
-
-    try:
-        cfg = load_config(args.config)
-    except ConfigError as e:
-        render_error(str(e))
-        return 1
 
     # Auto-create ~/.termux-agent/config.yaml on first run (like opencode).
     if not CONFIG_FILE.exists() and not args.config:
@@ -1903,7 +1926,7 @@ def main(argv: list[str] | None = None) -> int:
             max_context_tokens=args.max_context_tokens,
             as_json=args.json,
             quiet=args.quiet,
-            stream=args.stream,
+            stream=args.stream and not args.no_stream,
             disabled_groups=_disabled_groups_from(args),
             max_output_chars=args.max_output_chars,
             command_timeout=args.command_timeout,
@@ -1933,6 +1956,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_dirs=_allow_dirs_from(args),
             screenshot_dir=args.screenshot_dir,
             max_rounds=args.max_rounds,
+            notify=args.notify,
         )
 
     if args.batch:
@@ -1981,7 +2005,7 @@ def main(argv: list[str] | None = None) -> int:
             output=args.output,
             clip=args.clip,
             screenshot=args.screenshot,
-            stream=args.stream,
+            stream=args.stream and not args.no_stream,
             retries=args.retries,
             no_fallback=args.no_fallback,
             rules_file=args.rules,
