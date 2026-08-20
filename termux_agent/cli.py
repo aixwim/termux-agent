@@ -643,10 +643,89 @@ def cmd_batch(
     attach: list[str] | None = None,
     temperature: float | None = None,
 ) -> int:
-    """Run one one-shot per line of a prompts file (blank lines skipped; '-' reads stdin)."""
+    """Run one one-shot per line of a prompts file (blank lines skipped; '-' reads stdin; a directory batches its prompt files)."""
     import json as _json
 
     from termux_agent.ui.renderer import render_error, render_info
+
+    if Path(prompts_file).expanduser().is_dir():
+        root = Path(prompts_file).expanduser()
+        files = sorted(p for p in root.iterdir() if p.suffix.lower() in (".txt", ".md") and p.is_file())
+        if not files:
+            render_error(f"No .txt/.md prompt files found in {root}")
+            return 1
+        if not as_json:
+            render_info(f"Batching {len(files)} prompt file(s) from {root}")
+        prompts = []
+        for f in files:
+            try:
+                prompts.append((f.name, f.read_text(encoding="utf-8").strip()))
+            except OSError as e:
+                render_error(f"Cannot read {f.name}: {e}")
+                return 1
+        results: list[dict] = []
+
+        def _run_one_named(item: tuple) -> dict:
+            name, p = item
+            r = _batch_run_one(
+                cfg,
+                provider,
+                model,
+                auto_accept,
+                timeout,
+                disabled_groups,
+                max_output_chars,
+                command_timeout,
+                agent_name,
+                working_dir,
+                only_tools,
+                allow_dirs,
+                p,
+                attach=attach,
+                temperature=temperature,
+            )
+            r["name"] = name
+            return r
+
+        if workers > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+                results = list(ex.map(_run_one_named, prompts))
+        else:
+            for i, (name, p) in enumerate(prompts, start=1):
+                if not as_json:
+                    render_info(f"[{i}/{len(prompts)}] {name}")
+                r = _run_one_named((name, p))
+                results.append(r)
+                if r.get("error"):
+                    if not as_json:
+                        render_error(f"  -> {name} failed: {r['error']}")
+                    if fail_fast:
+                        if output:
+                            Path(output).write_text(_json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+                            render_info(f"Partial results written to {output}")
+                        elif as_json:
+                            print(_json.dumps({"results": results, "fail_fast": True}, ensure_ascii=False))
+                        if notify:
+                            from termux_agent.notify import notify as _notify
+
+                            _notify(f"Batch failed at {name}: {r['error'][:120]}")
+                        return 1
+                else:
+                    if not as_json:
+                        render_info(f"  -> {name}: {r['answer'][:80]}")
+        if output:
+            Path(output).write_text(_json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+            render_info(f"Results written to {output}")
+        elif as_json:
+            print(_json.dumps({"results": results}, ensure_ascii=False))
+        if notify:
+            from termux_agent.notify import notify as _notify
+
+            failed = sum(1 for r in results if r.get("error"))
+            _notify(f"Batch done: {len(results) - failed}/{len(results)} succeeded" + (f", {failed} failed" if failed else ""))
+        return 0
 
     if prompts_file == "-":
         import sys as _sys

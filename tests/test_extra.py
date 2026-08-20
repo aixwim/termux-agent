@@ -6283,6 +6283,33 @@ def test_batch_temperature(tmp_path: Path, monkeypatch):
     assert seen["temperature"] == 0.3
 
 
+def test_batch_directory(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "prompts" / "b.txt").write_text("prompt b")
+    (tmp_path / "prompts" / "a.txt").write_text("prompt a")
+    (tmp_path / "prompts" / "skip.log").write_text("ignored")
+
+    seen = []
+
+    def fake_run_one(*a, **k):
+        seen.append(a[-1])
+        return {"prompt": a[-1], "answer": "ok:" + a[-1]}
+
+    monkeypatch.setattr(cli, "_batch_run_one", fake_run_one)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_batch(_min_cfg(), str(tmp_path / "prompts"), "zen", None, as_json=True) == 0
+    payload = _json.loads(out.getvalue())
+    assert [r["name"] for r in payload["results"]] == ["a.txt", "b.txt"]
+    assert seen == ["prompt a", "prompt b"]
+    assert payload["results"][0]["answer"] == "ok:prompt a"
+
+
 # --- session notes ---
 def test_cmd_note_set_read_clear(tmp_path: Path, monkeypatch):
     import io
