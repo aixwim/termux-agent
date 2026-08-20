@@ -482,11 +482,63 @@ def _run_guarded(agent: Agent, prompt: str, on_tool_use, timeout: int | None, on
     return result["answer"]
 
 
-def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as_json: bool = False, output: str | None = None, prompt: str = "Reply with exactly: ok") -> int:
-    """Time one tiny prompt against each model of a provider (best-effort)."""
+def _bench_provider(cfg: dict, provider_name: str, prompt: str, timeout: int) -> dict:
+    import time
+
+    models = (cfg.get("providers", {}).get(provider_name, {}).get("models") or [])
+    results: list[dict] = []
+    for m in models:
+        start = time.monotonic()
+        try:
+            answer = _run_guarded(build_agent(cfg, provider_name, m, auto_accept=True), prompt, None, timeout)
+            dt = time.monotonic() - start
+            results.append({"model": m, "seconds": round(dt, 2), "chars": len(answer), "ok": True})
+        except Exception:  # noqa: BLE001
+            results.append({"model": m, "seconds": round(time.monotonic() - start, 2), "chars": 0, "ok": False})
+    return {"provider": provider_name, "models": results}
+
+
+def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as_json: bool = False, output: str | None = None, prompt: str = "Reply with exactly: ok", all_providers: bool = False) -> int:
+    """Time one tiny prompt against each model of a provider (best-effort; --all runs every configured provider)."""
+    import json as _json
     import time
 
     from termux_agent.ui.renderer import render_error, render_info
+
+    if all_providers:
+        names = list(cfg.get("providers", {}).keys())
+        if not names:
+            render_error("No providers configured to benchmark.")
+            return 1
+        if not as_json:
+            render_info(f"Benchmarking {len(names)} provider(s) — one tiny request per model.")
+        payloads = [_bench_provider(cfg, n, prompt, timeout) for n in names]
+        total_ok = sum(1 for p in payloads for m in p["models"] if m["ok"])
+        total = sum(len(p["models"]) for p in payloads)
+        if as_json or output:
+            payload = {"ok": True, "providers": payloads, "tested": total, "ok": total_ok}
+            if output:
+                Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                render_info(f"Benchmark written to {output}")
+                return 0
+            if as_json:
+                print(_json.dumps(payload, ensure_ascii=False))
+                return 0
+        from rich.table import Table
+
+        from termux_agent.ui.renderer import console
+
+        for p in payloads:
+            table = Table(title=f"Latency benchmark: {p['provider']}", expand=False)
+            table.add_column("model")
+            table.add_column("time (s)", justify="right")
+            table.add_column("chars", justify="right")
+            table.add_column("status")
+            for m in sorted(p["models"], key=lambda r: r["seconds"]):
+                table.add_row(m["model"], f"{m['seconds']:.1f}", str(m["chars"]), "ok" if m["ok"] else "FAILED")
+            console.print(table)
+        render_info(f"{total_ok}/{total} benchmark requests succeeded.")
+        return 0
 
     provider_name = provider_name or cfg.get("provider", "zen")
     models = (cfg.get("providers", {}).get(provider_name, {}).get("models") or [])
@@ -505,8 +557,6 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
         except Exception:  # noqa: BLE001
             results.append((m, time.monotonic() - start, 0, False))
     if as_json or output:
-        import json as _json
-
         payload = {
             "provider": provider_name,
             "models": [
@@ -3126,7 +3176,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--since-days", type=int, metavar="N", help="With --sessions: only list sessions from the last N days")
     parser.add_argument("--session", metavar="SESSION", help="With --tokens: estimate a session transcript instead of a file")
     parser.add_argument("--limit", type=int, default=20, metavar="N", help="Max sessions to list (with --sessions/--export-all; --all lists every session)")
-    parser.add_argument("--all", action="store_true", help="With --sessions: list every session (ignore --limit); with --rerun/--tokens: operate on every session")
+    parser.add_argument("--all", action="store_true", help="With --sessions: list every session (ignore --limit); with --rerun/--summarize/--tokens/--forget: operate on every session; with --bench: benchmark every configured provider")
     parser.add_argument("--session-dir", metavar="DIR", help="Use this directory for session files instead of ~/.termux-agent/sessions")
     parser.add_argument("--search", help="Filter --sessions by keyword in the first message")
     parser.add_argument("--search-sessions", metavar="TERM", help="Search every session transcript and note for a term and list matches")
@@ -3261,7 +3311,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.init:
         return cmd_init(args.provider, args.model, force=args.force)
     if args.bench:
-        return cmd_bench(cfg, None if args.bench == "__default__" else args.bench, args.timeout or 60, as_json=args.json, output=args.output, prompt=args.bench_prompt or "Reply with exactly: ok")
+        return cmd_bench(cfg, None if args.bench == "__default__" else args.bench, args.timeout or 60, as_json=args.json, output=args.output, prompt=args.bench_prompt or "Reply with exactly: ok", all_providers=args.all)
     if args.export:
         return cmd_export(args.export, as_markdown=args.markdown, redact=args.redact, output=args.output)
     if args.export_all:

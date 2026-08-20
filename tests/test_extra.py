@@ -1679,6 +1679,26 @@ def test_cmd_bench_runs_all_models(tmp_path: Path, monkeypatch):
     assert cli.cmd_bench(cfg, "zen", timeout=5) == 0
 
 
+def test_cmd_bench_all_providers(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "build_agent", lambda *a, **k: object())
+    monkeypatch.setattr(cli, "_run_guarded", lambda a, p, t, to: "ok")
+    cfg = _min_cfg()
+    cfg["providers"]["zen"]["models"] = ["m1"]
+    cfg["providers"]["groq"] = {"type": "openai", "models": ["g1"], "base_url": "http://x", "api_key_env": "X"}
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_bench(cfg, None, timeout=5, as_json=True, all_providers=True) == 0
+    payload = _json.loads(out.getvalue())
+    assert [p["provider"] for p in payload["providers"]] == ["zen", "groq"]
+    assert payload["tested"] == 2
+    assert payload["ok"] == 2
+
+
 def test_server_cors_headers(tmp_path: Path, monkeypatch):
     import threading
     from types import SimpleNamespace
