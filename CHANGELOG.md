@@ -4,6 +4,10 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Report configured provider names such as `zen` in JSON, diagnostics, and sessions instead of leaking the internal `openai_compat` backend label.
+- Fall back immediately when a model promotion has ended or a model is explicitly missing, while keeping generic authentication failures fatal.
+- Run model benchmarks concurrently with a bounded worker pool, fail reliably on provider/empty-response errors, include safe per-model diagnostics and summary counts, and return a nonzero status when any model fails.
+- Refresh the OpenCode Zen preset with all eight live-tested free models, remove the expired DeepSeek promotion, and repair the stale doctor fallback model.
 - Bound project-rule and memory prompt files, stream session reads, tolerate disappearing session files during sorting, and fix duplicate benchmark JSON status keys.
 - Validate restored YAML config, JSON notes, and every JSONL session record before changing local state, including legacy bundles without checksums, with bounded directory-file reads.
 - Add streaming SHA-256 checksums to new bundles and reject tampered or incomplete files before restore while accepting legacy manifests.

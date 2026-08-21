@@ -238,6 +238,19 @@ class Agent:
         """Transient failures worth retrying on a mobile/flaky network."""
         return "connection failed" in msg or __import__("re").search(r"HTTP 5\d\d", msg) is not None
 
+    @staticmethod
+    def _is_model_unavailable(msg: str) -> bool:
+        """Model-specific failures that should advance to a configured fallback."""
+        lowered = msg.casefold()
+        markers = (
+            "promotion has ended",
+            "model not found",
+            "model does not exist",
+            "model is unavailable",
+            "model no longer available",
+        )
+        return "http 404" in lowered or any(marker in lowered for marker in markers)
+
     def _attempt(
         self,
         models: list[str],
@@ -266,6 +279,8 @@ class Agent:
                         break  # exhausted retries -> try next fallback model
                     if "429" in msg:
                         break  # rate limited -> try next fallback model
+                    if self._is_model_unavailable(msg):
+                        break  # retired/missing model -> try next fallback model
                     if self._is_transient(msg) and attempt < self.retries:
                         self.retry_count += 1
                         time.sleep(self.retry_backoff * (attempt + 1))

@@ -222,6 +222,7 @@ termux-agent --doctor            # full environment check
 termux-agent --doctor --fix      # repair common issues automatically
 termux-agent --health            # fast offline health check
 termux-agent --bench zen         # latency per model (--bench --all for all providers)
+termux-agent --bench zen --bench-workers 3 --json  # bounded parallel health check
 termux-agent --smoke             # end-to-end test with the real model
 termux-agent --tokens main.py    # estimate before a big prompt
 ```
@@ -274,7 +275,7 @@ Key options (see [config.example.yaml](config.example.yaml) for the full annotat
 termux-agent --provider zen --model nemotron-3-ultra-free "what is 2+2?"
 ```
 
-Currently free: `nemotron-3-ultra-free`, `deepseek-v4-flash-free`, `mimo-v2.5-free`, `big-pickle`. Other models require an `OPENCODE_API_KEY` from <https://opencode.ai/auth>.
+Currently tested free models: `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free`, `mimo-v2.5-free`, `hy3-free`, `laguna-s-2.1-free`, `muse-spark-1.2-contributor-free`, `x-preview-f-free`, and `big-pickle`. The catalog can change; use `termux-agent --models zen` to refresh it. Other models require an `OPENCODE_API_KEY` from <https://opencode.ai/auth>.
 
 ---
 

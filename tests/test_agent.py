@@ -104,6 +104,64 @@ def test_agent_retries_empty_response_then_falls_back(tmp_path: Path):
     assert agent.last_error is None
 
 
+def test_agent_falls_back_when_model_promotion_has_ended(tmp_path: Path):
+    from termux_agent.providers.base import ProviderError
+
+    attempts = []
+
+    class ExpiredPromotionProvider(Provider):
+        name = "fake"
+        model = "expired-free"
+        fallback_models = ["working-free"]
+
+        def stream(self, messages, tools=None, temperature=0.7, max_tokens=8192):
+            attempts.append(self.model)
+            if self.model == "expired-free":
+                raise ProviderError(
+                    "fake: HTTP 401 - Free promotion has ended for this model"
+                )
+            yield StreamEvent(kind="text_delta", text="fallback worked")
+
+    agent = Agent(
+        ExpiredPromotionProvider(),
+        ToolContext(working_dir=tmp_path, confirm_commands=False),
+        retries=2,
+        retry_backoff=0,
+    )
+
+    assert agent.run("x") == "fallback worked"
+    assert attempts == ["expired-free", "working-free"]
+    assert agent.fallback_count == 1
+    assert agent.retry_count == 0
+
+
+def test_agent_does_not_fallback_on_generic_authentication_failure(tmp_path: Path):
+    from termux_agent.providers.base import ProviderError
+
+    attempts = []
+
+    class InvalidKeyProvider(Provider):
+        name = "fake"
+        model = "primary"
+        fallback_models = ["fallback"]
+
+        def stream(self, messages, tools=None, temperature=0.7, max_tokens=8192):
+            attempts.append(self.model)
+            raise ProviderError("fake: HTTP 401 - invalid API key")
+            yield  # pragma: no cover
+
+    agent = Agent(
+        InvalidKeyProvider(),
+        ToolContext(working_dir=tmp_path, confirm_commands=False),
+        retries=2,
+        retry_backoff=0,
+    )
+
+    assert "invalid API key" in agent.run("x")
+    assert attempts == ["primary"]
+    assert agent.fallback_count == 0
+
+
 def test_agent_max_rounds(tmp_path: Path):
     call = StreamEvent(
         kind="tool_calls",

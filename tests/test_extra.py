@@ -796,6 +796,34 @@ def test_cmd_one_shot_copy(tmp_path: Path, monkeypatch):
 
 
 # --- project-local config ---
+def test_default_zen_preset_contains_only_verified_free_models():
+    from termux_agent.config import DEFAULTS
+
+    zen = DEFAULTS["providers"]["zen"]
+    assert zen["models"] == [
+        "nemotron-3-ultra-free",
+        "nemotron-3.5-lightning-free",
+        "mimo-v2.5-free",
+        "hy3-free",
+        "laguna-s-2.1-free",
+        "muse-spark-1.2-contributor-free",
+        "x-preview-f-free",
+        "big-pickle",
+    ]
+    assert "deepseek-v4-flash-free" not in zen["fallback_models"]
+    assert set(zen["fallback_models"]) < set(zen["models"])
+
+
+def test_build_agent_uses_public_provider_name(tmp_path: Path, monkeypatch):
+    from termux_agent import cli
+
+    cfg = _min_cfg()
+    cfg["working_dir"] = str(tmp_path)
+    agent = cli.build_agent(cfg, "zen", "m", auto_accept=True)
+
+    assert agent.provider.name == "zen"
+
+
 def test_project_config_overrides(tmp_path: Path, monkeypatch):
     import os
 
@@ -1749,6 +1777,68 @@ def test_cmd_bench_all_providers(tmp_path: Path, monkeypatch):
     assert payload["ok"] is True
     assert payload["succeeded"] == 2
     assert payload["failed"] == 0
+
+
+def test_cmd_bench_reports_agent_errors_and_returns_nonzero(
+    tmp_path: Path, monkeypatch
+):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    def fake_build(cfg, provider, model, auto_accept=True):
+        return SimpleNamespace(
+            last_error="HTTP 401: promotion ended" if model == "expired" else None,
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(
+        cli,
+        "_run_guarded",
+        lambda agent, prompt, callback, timeout: (
+            "Error: unavailable" if agent.last_error else "OK"
+        ),
+    )
+    cfg = _min_cfg()
+    cfg["providers"]["zen"]["models"] = ["working", "expired"]
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_bench(cfg, "zen", as_json=True) == 1
+    payload = _json.loads(output.getvalue())
+    assert payload["ok"] is False
+    assert payload["tested"] == 2
+    assert payload["succeeded"] == 1
+    assert payload["failed"] == 1
+    failed = next(item for item in payload["models"] if not item["ok"])
+    assert failed["model"] == "expired"
+    assert "promotion ended" in failed["error"]
+
+
+def test_cmd_bench_parallel_preserves_model_order(monkeypatch):
+    import io
+    import json as _json
+    import time
+
+    from termux_agent import cli
+
+    cfg = _min_cfg()
+    cfg["providers"]["zen"]["models"] = ["slow", "fast"]
+
+    def fake_bench(cfg, provider, model, prompt, timeout):
+        if model == "slow":
+            time.sleep(0.05)
+        return {"model": model, "seconds": 0.01, "chars": 2, "ok": True}
+
+    monkeypatch.setattr(cli, "_bench_model", fake_bench)
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_bench(cfg, "zen", as_json=True, workers=2) == 0
+    payload = _json.loads(output.getvalue())
+    assert [item["model"] for item in payload["models"]] == ["slow", "fast"]
 
 
 def test_server_cors_headers(tmp_path: Path, monkeypatch):

@@ -73,6 +73,9 @@ def build_agent(
 
     name = provider_name or cfg.get("provider", "zen")
     provider = create_provider(name, cfg, model)
+    # Keep backend implementation details (for example ``openai_compat``) out
+    # of user-facing JSON, diagnostics, and persisted session metadata.
+    provider.name = name
     if no_fallback:
         provider.fallback_models = []
     if working_dir:
@@ -555,26 +558,69 @@ def _run_guarded(agent: Agent, prompt: str, on_tool_use, timeout: int | None, on
     return result["answer"]
 
 
-def _bench_provider(cfg: dict, provider_name: str, prompt: str, timeout: int) -> dict:
+def _bench_model(
+    cfg: dict, provider_name: str, model: str, prompt: str, timeout: int
+) -> dict:
     import time
 
+    start = time.monotonic()
+    agent = None
+    try:
+        agent = build_agent(cfg, provider_name, model, auto_accept=True)
+        answer = _run_guarded(agent, prompt, None, timeout)
+        error = getattr(agent, "last_error", None)
+        if error:
+            raise RuntimeError(str(error))
+        if not isinstance(answer, str) or not answer.strip():
+            raise RuntimeError("empty response")
+        return {
+            "model": model,
+            "seconds": round(time.monotonic() - start, 2),
+            "chars": len(answer),
+            "ok": True,
+        }
+    except Exception as error:  # noqa: BLE001
+        return {
+            "model": model,
+            "seconds": round(time.monotonic() - start, 2),
+            "chars": 0,
+            "ok": False,
+            "error": str(error)[:300] or type(error).__name__,
+        }
+
+
+def _bench_provider(
+    cfg: dict,
+    provider_name: str,
+    prompt: str,
+    timeout: int,
+    workers: int = 3,
+) -> dict:
+    from concurrent.futures import ThreadPoolExecutor
+
     models = (cfg.get("providers", {}).get(provider_name, {}).get("models") or [])
-    results: list[dict] = []
-    for m in models:
-        start = time.monotonic()
-        try:
-            answer = _run_guarded(build_agent(cfg, provider_name, m, auto_accept=True), prompt, None, timeout)
-            dt = time.monotonic() - start
-            results.append({"model": m, "seconds": round(dt, 2), "chars": len(answer), "ok": True})
-        except Exception:  # noqa: BLE001
-            results.append({"model": m, "seconds": round(time.monotonic() - start, 2), "chars": 0, "ok": False})
+    worker_count = max(1, min(int(workers), len(models) or 1, 8))
+    if worker_count == 1:
+        results = [
+            _bench_model(cfg, provider_name, model, prompt, timeout)
+            for model in models
+        ]
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            results = list(
+                pool.map(
+                    lambda model: _bench_model(
+                        cfg, provider_name, model, prompt, timeout
+                    ),
+                    models,
+                )
+            )
     return {"provider": provider_name, "models": results}
 
 
-def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as_json: bool = False, output: str | None = None, prompt: str = "Reply with exactly: ok", all_providers: bool = False) -> int:
+def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as_json: bool = False, output: str | None = None, prompt: str = "Reply with exactly: ok", all_providers: bool = False, workers: int = 3) -> int:
     """Time one tiny prompt against each model of a provider (best-effort; --all runs every configured provider)."""
     import json as _json
-    import time
 
     from termux_agent.ui.renderer import render_error, render_info
 
@@ -585,7 +631,9 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
             return 1
         if not as_json:
             render_info(f"Benchmarking {len(names)} provider(s) — one tiny request per model.")
-        payloads = [_bench_provider(cfg, n, prompt, timeout) for n in names]
+        payloads = [
+            _bench_provider(cfg, name, prompt, timeout, workers) for name in names
+        ]
         total_ok = sum(1 for p in payloads for m in p["models"] if m["ok"])
         total = sum(len(p["models"]) for p in payloads)
         if as_json or output:
@@ -599,10 +647,10 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
             if output:
                 Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
                 render_info(f"Benchmark written to {output}")
-                return 0
+                return 0 if payload["ok"] else 1
             if as_json:
                 print(_json.dumps(payload, ensure_ascii=False))
-                return 0
+                return 0 if payload["ok"] else 1
         from rich.table import Table
 
         from termux_agent.ui.renderer import console
@@ -617,7 +665,7 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
                 table.add_row(m["model"], f"{m['seconds']:.1f}", str(m["chars"]), "ok" if m["ok"] else "FAILED")
             console.print(table)
         render_info(f"{total_ok}/{total} benchmark requests succeeded.")
-        return 0
+        return 0 if total_ok == total else 1
 
     provider_name = provider_name or cfg.get("provider", "zen")
     models = (cfg.get("providers", {}).get(provider_name, {}).get("models") or [])
@@ -626,22 +674,19 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
         return 1
     if not as_json:
         render_info(f"Benchmarking {provider_name}: {len(models)} model(s) — one tiny request each.")
-    results: list[tuple[str, float, int, bool]] = []
-    for m in models:
-        start = time.monotonic()
-        try:
-            answer = _run_guarded(build_agent(cfg, provider_name, m, auto_accept=True), prompt, None, timeout)
-            dt = time.monotonic() - start
-            results.append((m, dt, len(answer), True))
-        except Exception:  # noqa: BLE001
-            results.append((m, time.monotonic() - start, 0, False))
+    results = _bench_provider(
+        cfg, provider_name, prompt, timeout, workers
+    )["models"]
+    succeeded = sum(1 for result in results if result["ok"])
+    benchmark_ok = succeeded == len(results)
     if as_json or output:
         payload = {
+            "ok": benchmark_ok,
             "provider": provider_name,
-            "models": [
-                {"model": m, "seconds": round(dt, 2), "chars": ch, "ok": ok}
-                for m, dt, ch, ok in results
-            ],
+            "models": results,
+            "tested": len(results),
+            "succeeded": succeeded,
+            "failed": len(results) - succeeded,
         }
         if output:
             try:
@@ -652,9 +697,9 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
                 return 1
         if as_json:
             print(_json.dumps(payload, ensure_ascii=False))
-            return 0
+            return 0 if benchmark_ok else 1
         if output and not as_json:
-            return 0
+            return 0 if benchmark_ok else 1
     from rich.table import Table
 
     from termux_agent.ui.renderer import console
@@ -664,10 +709,15 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
     table.add_column("time (s)", justify="right")
     table.add_column("chars", justify="right")
     table.add_column("status")
-    for m, dt, chars, ok in sorted(results, key=lambda r: r[1]):
-        table.add_row(m, f"{dt:.1f}", str(chars), "ok" if ok else "FAILED")
+    for result in sorted(results, key=lambda item: item["seconds"]):
+        table.add_row(
+            result["model"],
+            f"{result['seconds']:.1f}",
+            str(result["chars"]),
+            "ok" if result["ok"] else "FAILED",
+        )
     console.print(table)
-    return 0
+    return 0 if benchmark_ok else 1
 
 
 def _run_logger(path: str):
@@ -3330,7 +3380,9 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
         if not cfg.get("model") and not cfg.get("providers", {}).get(cfg.get("provider", "zen"), {}).get("models"):
             loaded = _yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
             if "model" not in loaded:
-                loaded.setdefault("providers", {}).setdefault("zen", {})["models"] = ["opencode-zen-v4-flash-free"]
+                loaded.setdefault("providers", {}).setdefault("zen", {})[
+                    "models"
+                ] = ["nemotron-3-ultra-free"]
                 atomic_write_text(
                     CONFIG_FILE,
                     _yaml.safe_dump(loaded, sort_keys=False, allow_unicode=True),
@@ -3627,6 +3679,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--export-all", metavar="DIR", help="Export every session as a JSON file into DIR (--markdown: readable .md transcripts)")
     parser.add_argument("--bench", nargs="?", const="__default__", metavar="PROVIDER", help="Benchmark latency across a provider's models (one tiny request each)")
     parser.add_argument("--bench-prompt", metavar="TEXT", help="Custom prompt for --bench (default: a tiny 'Reply with exactly: ok')")
+    parser.add_argument("--bench-workers", type=int, default=3, metavar="N", help="Run model benchmarks in parallel (default 3, maximum 8)")
     parser.add_argument("--list-providers", action="store_true", help="List provider presets")
     parser.add_argument("--list-agents", action="store_true", help="List available sub-agents")
     parser.add_argument("--models", nargs="?", const="__default__", metavar="PROVIDER", help="List models for a provider (live, or preset fallback)")
@@ -3737,7 +3790,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.init:
         return cmd_init(args.provider, args.model, force=args.force)
     if args.bench:
-        return cmd_bench(cfg, None if args.bench == "__default__" else args.bench, args.timeout or 60, as_json=args.json, output=args.output, prompt=args.bench_prompt or "Reply with exactly: ok", all_providers=args.all)
+        return cmd_bench(cfg, None if args.bench == "__default__" else args.bench, args.timeout or 60, as_json=args.json, output=args.output, prompt=args.bench_prompt or "Reply with exactly: ok", all_providers=args.all, workers=args.bench_workers)
     if args.export:
         return cmd_export(args.export, as_markdown=args.markdown, redact=args.redact, output=args.output)
     if args.export_all:
