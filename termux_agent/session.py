@@ -131,6 +131,7 @@ class Session:
 def list_sessions() -> list[Path]:
     if not SESSIONS_DIR.exists():
         return []
+
     def modified(path: Path) -> float:
         try:
             return path.stat().st_mtime
@@ -189,7 +190,7 @@ def session_meta(path: Path) -> tuple[int, str, dict]:
 def session_messages(path: Path) -> list[dict]:
     """Rebuild the conversation history (user/assistant) from a session file."""
     msgs = []
-    for rec in read_session(path):
+    for rec in iter_session(path):
         if rec.get("role") in ("user", "assistant"):
             content = rec.get("content")
             if isinstance(content, str) and content.strip():
@@ -198,8 +199,21 @@ def session_messages(path: Path) -> list[dict]:
 
 
 def latest_session() -> Path | None:
-    sessions = list_sessions()
-    return sessions[0] if sessions else None
+    """Return the newest session without sorting the entire session store."""
+    if not SESSIONS_DIR.exists():
+        return None
+
+    latest: Path | None = None
+    latest_mtime = -1.0
+    for path in SESSIONS_DIR.glob("*.jsonl"):
+        try:
+            modified = path.stat().st_mtime
+        except OSError:
+            continue
+        if modified > latest_mtime:
+            latest = path
+            latest_mtime = modified
+    return latest
 
 
 def record_messages(messages: list[dict], provider_name: str, model: str, session_id: str | None = None) -> str:
@@ -218,12 +232,21 @@ def record_messages(messages: list[dict], provider_name: str, model: str, sessio
 def resolve_session(ref: str | None = None) -> Path | None:
     """Resolve a session ref (id prefix or 'latest') to a path."""
     if ref and ref not in ("latest", ""):
-        sessions = list_sessions()
-        exact = next((path for path in sessions if path.stem == ref), None)
-        if exact:
+        try:
+            safe_ref = validate_session_id(ref)
+        except ValueError:
+            return None
+        exact = SESSIONS_DIR / f"{safe_ref}.jsonl"
+        if exact.is_file():
             return exact
-        matches = [path for path in sessions if path.stem.startswith(ref)]
-        return matches[0] if len(matches) == 1 else None
+        # Stop as soon as a prefix is known to be ambiguous. This avoids
+        # sorting and retaining the full store for the common resume path.
+        match: Path | None = None
+        for path in SESSIONS_DIR.glob(f"{safe_ref}*.jsonl"):
+            if match is not None:
+                return None
+            match = path
+        return match
     return latest_session()
 
 
@@ -244,18 +267,21 @@ def export_session(ref: str | None = None) -> dict:
     path = resolve_session(ref)
     if not path:
         raise FileNotFoundError("session not found")
-    recs = read_session(path)
-    info = next((r for r in recs if r.get("provider")), {})
+    info: dict = {}
+    messages: list[dict[str, str]] = []
+    for record in iter_session(path):
+        if not info and record.get("provider"):
+            info = record
+        role = record.get("role")
+        content = record.get("content")
+        if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+            messages.append({"role": role, "content": content})
     return {
         "version": 1,
         "id": path.stem,
         "provider": info.get("provider") or "",
         "model": info.get("model") or "",
-        "messages": [
-            {"role": r["role"], "content": r["content"]}
-            for r in recs
-            if r.get("role") in ("user", "assistant") and isinstance(r.get("content"), str) and r["content"].strip()
-        ],
+        "messages": messages,
     }
 
 
