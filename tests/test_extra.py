@@ -26,6 +26,18 @@ def test_load_rules_ignores_missing(tmp_path: Path):
     assert load_rules(tmp_path) == ""
 
 
+def test_load_rules_bounds_large_files(tmp_path: Path, monkeypatch):
+    import termux_agent.agent as agent_module
+
+    (tmp_path / "AGENTS.md").write_text("x" * 64)
+    monkeypatch.setattr(agent_module, "MAX_RULE_FILE_BYTES", 16)
+    monkeypatch.setattr(agent_module, "MAX_RULES_BYTES", 16)
+    rules = agent_module.load_rules(tmp_path)
+    assert "x" * 16 in rules
+    assert "x" * 17 not in rules
+    assert "[content truncated]" in rules
+
+
 def test_build_system_prompt_appends_rules():
     base = build_system_prompt("")
     with_rules = build_system_prompt("Aturan proyek: X")
@@ -1734,7 +1746,9 @@ def test_cmd_bench_all_providers(tmp_path: Path, monkeypatch):
     payload = _json.loads(out.getvalue())
     assert [p["provider"] for p in payload["providers"]] == ["zen", "groq"]
     assert payload["tested"] == 2
-    assert payload["ok"] == 2
+    assert payload["ok"] is True
+    assert payload["succeeded"] == 2
+    assert payload["failed"] == 0
 
 
 def test_server_cors_headers(tmp_path: Path, monkeypatch):

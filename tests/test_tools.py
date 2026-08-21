@@ -83,6 +83,22 @@ def test_run_command_safe_no_confirm(ctx: ToolContext):
     assert "exit 0" in r and "halo" in r
 
 
+def test_safe_command_with_shell_control_needs_confirmation(tmp_work: Path):
+    destination = tmp_work / "altered"
+    context = ToolContext(
+        working_dir=tmp_work,
+        confirm_commands=True,
+        confirm=None,
+    )
+    result = run_tool(
+        "run_command",
+        {"command": "echo unsafe > altered"},
+        context,
+    )
+    assert "not in the whitelist" in result
+    assert not destination.exists()
+
+
 def test_run_command_non_whitelist_confirmed(tmp_work: Path):
     c = ToolContext(working_dir=tmp_work, confirm_commands=True, confirm=lambda _: True)
     assert "exit 0" in run_tool("run_command", {"command": "touch x"}, c)

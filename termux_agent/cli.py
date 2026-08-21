@@ -589,7 +589,13 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
         total_ok = sum(1 for p in payloads for m in p["models"] if m["ok"])
         total = sum(len(p["models"]) for p in payloads)
         if as_json or output:
-            payload = {"ok": True, "providers": payloads, "tested": total, "ok": total_ok}
+            payload = {
+                "ok": total_ok == total,
+                "providers": payloads,
+                "tested": total,
+                "succeeded": total_ok,
+                "failed": total - total_ok,
+            }
             if output:
                 Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
                 render_info(f"Benchmark written to {output}")
@@ -2216,6 +2222,7 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
 MAX_BUNDLE_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_BUNDLE_EXTRACTED_BYTES = 256 * 1024 * 1024
 MAX_BUNDLE_ENTRIES = 10_000
+MAX_BUNDLE_TEXT_FILE_BYTES = 32 * 1024 * 1024
 
 
 def _extract_bundle_archive(
@@ -2317,13 +2324,31 @@ def _restore_from_dir(src: Path, dry_run: bool = False, as_json: bool = False, m
         if bool(declared) != (src / filename).is_file():
             render_error(f"Invalid bundle manifest: {key} file mismatch.")
             return 1
+    total_bytes = 0
+
+    def _read_bounded(path: Path) -> str:
+        nonlocal total_bytes
+        size = path.stat().st_size
+        if size > MAX_BUNDLE_TEXT_FILE_BYTES:
+            raise ValueError(
+                "file exceeds the per-file limit of "
+                f"{MAX_BUNDLE_TEXT_FILE_BYTES} bytes"
+            )
+        total_bytes += size
+        if total_bytes > MAX_BUNDLE_EXTRACTED_BYTES:
+            raise ValueError(
+                "bundle content exceeds the "
+                f"{MAX_BUNDLE_EXTRACTED_BYTES // (1024 * 1024)} MiB limit"
+            )
+        return path.read_text(encoding="utf-8")
+
     text_files: list[tuple[str, str]] = []
     for name in ("config.yaml", "memory.md", "notes.json"):
         f = src / name
         if f.is_file():
             try:
-                text_files.append((name, f.read_text(encoding="utf-8")))
-            except (OSError, UnicodeDecodeError) as e:
+                text_files.append((name, _read_bounded(f)))
+            except (OSError, UnicodeDecodeError, ValueError) as e:
                 render_error(f"Invalid bundle file {name}: {e}")
                 return 1
 
@@ -2347,11 +2372,8 @@ def _restore_from_dir(src: Path, dry_run: bool = False, as_json: bool = False, m
     for f in candidates:
         try:
             validate_session_id(f.stem)
-            session_files.append((f, f.read_text(encoding="utf-8")))
-        except ValueError as e:
-            render_error(f"Invalid session file {f.name}: {e}")
-            return 1
-        except (OSError, UnicodeDecodeError) as e:
+            session_files.append((f, _read_bounded(f)))
+        except (OSError, UnicodeDecodeError, ValueError) as e:
             render_error(f"Invalid session file {f.name}: {e}")
             return 1
 
@@ -2382,6 +2404,54 @@ def _restore_from_dir(src: Path, dry_run: bool = False, as_json: bool = False, m
         except OSError as e:
             render_error(f"Invalid bundle: checksum verification failed: {e}")
             return 1
+
+    text_by_name = dict(text_files)
+    if "config.yaml" in text_by_name:
+        import yaml as _yaml
+
+        try:
+            config_data = _yaml.safe_load(text_by_name["config.yaml"])
+        except _yaml.YAMLError as e:
+            render_error(f"Invalid bundle config.yaml: {e}")
+            return 1
+        if not isinstance(config_data, dict):
+            render_error("Invalid bundle config.yaml: expected a YAML mapping.")
+            return 1
+    if "notes.json" in text_by_name:
+        try:
+            notes_data = _json.loads(text_by_name["notes.json"])
+        except _json.JSONDecodeError as e:
+            render_error(f"Invalid bundle notes.json: {e}")
+            return 1
+        if not isinstance(notes_data, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in notes_data.items()
+        ):
+            render_error(
+                "Invalid bundle notes.json: expected string keys and values."
+            )
+            return 1
+    for path, content in session_files:
+        for line_number, line in enumerate(content.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                record = _json.loads(line)
+            except _json.JSONDecodeError as e:
+                render_error(
+                    f"Invalid session file {path.name} line {line_number}: {e}"
+                )
+                return 1
+            if (
+                not isinstance(record, dict)
+                or record.get("role") not in ("user", "assistant")
+                or not isinstance(record.get("content"), str)
+            ):
+                render_error(
+                    f"Invalid session file {path.name} line {line_number}: "
+                    "expected a user/assistant record with string content."
+                )
+                return 1
 
     restored = [name for name, _ in text_files]
     restored.extend(f"session/{path.name}" for path, _ in session_files)

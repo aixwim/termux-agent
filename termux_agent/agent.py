@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -25,6 +24,20 @@ Rules:
 
 # Project rule files that are auto-loaded (like AGENTS.md in opencode).
 RULES_FILES = ("AGENTS.md", "CLAUDE.md", ".termux-agent/rules.md")
+MAX_RULE_FILE_BYTES = 256 * 1024
+MAX_RULES_BYTES = 1024 * 1024
+MAX_MEMORY_BYTES = 512 * 1024
+
+
+def _read_bounded_text(path: Path, limit: int) -> str:
+    """Decode at most ``limit`` bytes and mark truncated prompt context."""
+    with path.open("rb") as handle:
+        raw = handle.read(limit + 1)
+    truncated = len(raw) > limit
+    text = raw[:limit].decode("utf-8", errors="replace").strip()
+    if truncated:
+        text += "\n[content truncated]"
+    return text
 
 
 def load_rules(working_dir: Path) -> str:
@@ -32,12 +45,19 @@ def load_rules(working_dir: Path) -> str:
     parts: list[str] = []
     home = Path.home()
     start = working_dir.resolve()
+    remaining = MAX_RULES_BYTES
     for directory in (start, *start.parents):
         for name in RULES_FILES:
             f = directory / name
             if f.is_file():
                 try:
-                    parts.append(f"[Rules from {f.relative_to(start) if f.is_relative_to(start) else f}]\n{f.read_text(encoding='utf-8', errors='replace').strip()}")
+                    if remaining <= 0:
+                        break
+                    limit = min(MAX_RULE_FILE_BYTES, remaining)
+                    content = _read_bounded_text(f, limit)
+                    remaining -= min(f.stat().st_size, limit)
+                    label = f.relative_to(start) if f.is_relative_to(start) else f
+                    parts.append(f"[Rules from {label}]\n{content}")
                 except OSError:
                     continue
         if directory == home:
@@ -61,7 +81,7 @@ def load_memory() -> str:
     """Read the persistent memory file (~/.termux-agent/memory.md), if any."""
     try:
         if MEMORY_FILE.is_file():
-            return MEMORY_FILE.read_text(encoding="utf-8", errors="replace").strip()
+            return _read_bounded_text(MEMORY_FILE, MAX_MEMORY_BYTES)
     except OSError:
         pass
     return ""

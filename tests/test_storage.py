@@ -472,3 +472,94 @@ def test_restore_rejects_tampered_bundle_file(tmp_path, monkeypatch):
     assert cli.cmd_restore(str(bundle)) == 1
     assert "checksum mismatch for config.yaml" in cli.sys.stdout.getvalue()
     assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "message"),
+    [
+        ("config.yaml", "providers: [unterminated", "Invalid bundle config.yaml"),
+        ("config.yaml", "- not\n- a\n- mapping\n", "expected a YAML mapping"),
+        ("notes.json", "not-json", "Invalid bundle notes.json"),
+        ("notes.json", '{"session": 42}', "expected string keys and values"),
+    ],
+)
+def test_restore_rejects_invalid_metadata_content(
+    tmp_path, monkeypatch, filename, content, message
+):
+    import io
+    import json
+
+    from termux_agent import cli
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    manifest = {
+        "app": "termux-agent",
+        "sessions": 0,
+        "config": "config.yaml" if filename == "config.yaml" else None,
+        "notes": "notes.json" if filename == "notes.json" else None,
+    }
+    (bundle / "manifest.json").write_text(json.dumps(manifest))
+    (bundle / filename).write_text(content)
+    destination = tmp_path / "destination"
+    monkeypatch.setattr(cli, "CONFIG_DIR", destination)
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_restore(str(bundle)) == 1
+    assert message in output.getvalue()
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "not-json\n",
+        '{"role":"tool","content":"x"}\n',
+        '{"role":"user","content":42}\n',
+    ],
+)
+def test_restore_rejects_invalid_session_records(tmp_path, monkeypatch, content):
+    import io
+
+    from termux_agent import cli, session
+
+    bundle = tmp_path / "bundle"
+    sessions = bundle / "sessions"
+    sessions.mkdir(parents=True)
+    (bundle / "manifest.json").write_text(
+        '{"app":"termux-agent","sessions":1}'
+    )
+    (sessions / "invalid.jsonl").write_text(content)
+    destination = tmp_path / "destination"
+    monkeypatch.setattr(cli, "CONFIG_DIR", destination)
+    monkeypatch.setattr(session, "SESSIONS_DIR", destination / "sessions")
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_restore(str(bundle)) == 1
+    assert "Invalid session file invalid.jsonl line 1" in output.getvalue()
+    assert not destination.exists()
+
+
+def test_restore_rejects_oversized_directory_file(tmp_path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(
+        '{"app":"termux-agent","memory":"memory.md","sessions":0}'
+    )
+    memory = bundle / "memory.md"
+    memory.write_bytes(b"x" * 20)
+    monkeypatch.setattr(cli, "MAX_BUNDLE_TEXT_FILE_BYTES", 10)
+    destination = tmp_path / "destination"
+    monkeypatch.setattr(cli, "CONFIG_DIR", destination)
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_restore(str(bundle)) == 1
+    assert "file exceeds the per-file limit of 10 bytes" in output.getvalue()
+    assert not destination.exists()

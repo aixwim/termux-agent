@@ -16,6 +16,11 @@ SAFE_COMMANDS = {
 }
 
 
+def _has_shell_control(command: str) -> bool:
+    """Return whether a command can compose or redirect shell operations."""
+    return any(token in command for token in (";", "&&", "||", "|", ">", "<", "`", "$(", "\n", "\r"))
+
+
 @tool(
     "run_command",
     "Run a shell command in Termux. Runs in working_dir. "
@@ -34,8 +39,13 @@ def run_command(args: dict, ctx: ToolContext) -> str:
     if not command:
         return "Error: empty command"
     base_cmd = shlex.split(command)[0]
-    whitelisted = base_cmd in SAFE_COMMANDS or any(
-        command.startswith(p) for p in ctx.whitelisted_commands if p
+    explicitly_allowed = any(
+        command == prefix or command.startswith(prefix + " ")
+        for prefix in ctx.whitelisted_commands
+        if prefix
+    )
+    whitelisted = not _has_shell_control(command) and (
+        base_cmd in SAFE_COMMANDS or explicitly_allowed
     )
     needs_confirm = not whitelisted
     if needs_confirm and ctx.confirm_commands:

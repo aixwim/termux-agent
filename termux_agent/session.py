@@ -115,17 +115,24 @@ class Session:
 def list_sessions() -> list[Path]:
     if not SESSIONS_DIR.exists():
         return []
-    return sorted(SESSIONS_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    def modified(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return -1
+
+    return sorted(SESSIONS_DIR.glob("*.jsonl"), key=modified, reverse=True)
 
 
 def read_session(path: Path) -> list[dict]:
     out = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
     return out
 
 
