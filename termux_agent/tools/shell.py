@@ -9,11 +9,40 @@ from termux_agent.tools.base import ToolContext, tool
 # Read-only commands safe to run without confirmation.
 SAFE_COMMANDS = {
     "ls", "pwd", "cat", "echo", "head", "tail", "wc", "whoami", "uname",
-    "date", "env", "type", "which", "find", "grep", "rg", "du", "df", "free",
-    "uptime", "lsusb", "getprop", "curl", "wget", "python3", "python", "git",
-    "node", "npm", "cargo", "go", "termux-clipboard-get", "termux-battery-status",
-    "termux-wifi-scaninfo", "termux-brightness", "termux-volume",
+    "date", "type", "which", "grep", "rg", "du", "df", "free", "uptime",
+    "lsusb", "getprop", "termux-clipboard-get", "termux-battery-status",
+    "termux-wifi-scaninfo",
 }
+
+SAFE_GIT_SUBCOMMANDS = {
+    "diff",
+    "log",
+    "rev-parse",
+    "show",
+    "status",
+}
+
+
+def _has_shell_control(command: str) -> bool:
+    """Return whether a command can compose or redirect shell operations."""
+    return any(token in command for token in (";", "&&", "||", "|", ">", "<", "`", "$(", "\n", "\r"))
+
+
+def _is_read_only_command(tokens: list[str]) -> bool:
+    """Recognize commands whose arguments cannot directly modify local state."""
+    if not tokens:
+        return False
+    base = tokens[0]
+    if base in SAFE_COMMANDS:
+        return True
+    if base == "git":
+        return len(tokens) > 1 and tokens[1] in SAFE_GIT_SUBCOMMANDS
+    if base == "find":
+        mutating = {"-delete", "-exec", "-execdir", "-ok", "-okdir"}
+        return not any(token in mutating for token in tokens[1:])
+    if base == "termux-volume":
+        return len(tokens) == 1
+    return False
 
 
 @tool(
@@ -33,9 +62,15 @@ def run_command(args: dict, ctx: ToolContext) -> str:
     command = str(args.get("command", "")).strip()
     if not command:
         return "Error: empty command"
-    base_cmd = shlex.split(command)[0]
-    whitelisted = base_cmd in SAFE_COMMANDS or any(
-        command.startswith(p) for p in ctx.whitelisted_commands if p
+    tokens = shlex.split(command)
+    base_cmd = tokens[0]
+    explicitly_allowed = any(
+        command == prefix or command.startswith(prefix + " ")
+        for prefix in ctx.whitelisted_commands
+        if prefix
+    )
+    whitelisted = not _has_shell_control(command) and (
+        _is_read_only_command(tokens) or explicitly_allowed
     )
     needs_confirm = not whitelisted
     if needs_confirm and ctx.confirm_commands:

@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from prompt_toolkit import PromptSession
 
 from termux_agent.agent import Agent
 from termux_agent.config import CONFIG_DIR
@@ -11,8 +15,12 @@ from termux_agent.ui.renderer import (
     PlainStreamPrinter,
     console,
     render_answer,
+    render_banner,
     render_error,
+    render_help,
     render_info,
+    render_summary,
+    render_table,
     render_tool_use,
 )
 
@@ -20,7 +28,30 @@ from termux_agent.ui.renderer import (
 def _prompt_style() -> object:
     from prompt_toolkit.styles import Style
 
-    return Style.from_dict({"prompt": "bold cyan"})
+    return Style.from_dict(
+        {
+            "prompt.label": "bold ansicyan",
+            "prompt.arrow": "bold ansibrightcyan",
+            "prompt.continuation": "ansibrightblack",
+            "toolbar": "bg:#20252b #9aa4ad",
+            "toolbar.active": "bg:#20252b bold #67e8f9",
+            "toolbar.mode": "bg:#20252b #d8b4fe",
+        }
+    )
+
+
+def _confirm_style() -> object:
+    from prompt_toolkit.styles import Style
+
+    return Style.from_dict(
+        {
+            "confirm.icon": "bold ansiyellow",
+            "confirm.label": "bold ansiyellow",
+            "confirm.command": "ansiwhite",
+            "confirm.hint": "ansibrightblack",
+        }
+    )
+
 
 def copy_to_clipboard(text: str) -> bool:
     """Copy text using termux-clipboard-set / xclip / pbcopy. Returns True on success."""
@@ -37,7 +68,9 @@ HELP = """\
 Special commands (start with /):
   /exit, /quit    quit
   /new            start a new session
-  /help           show this help
+  /help [TERM]    show help or search commands
+  /clear          clear the terminal without resetting the session
+  /history [N]    show the most recent conversation messages
   /provider NAME  switch provider (e.g. /provider groq)
   /model MODEL    switch model (e.g. /model gpt-4o-mini)
   /cwd            show the working directory
@@ -48,6 +81,7 @@ Special commands (start with /):
   /export [PATH]  export the conversation to Markdown (/export json writes a JSON file instead)
   /copy           copy the last answer to the clipboard
   /stats          show token usage of this session
+  /status         show the active session and last-run dashboard
   /undo           revert the most recent file write/edit
   /config         show the active configuration
   /forget [ID]    delete a session (default: this session)
@@ -74,19 +108,108 @@ Special commands (start with /):
   /redo           re-run the last turn with the current provider/model (rolls back the last answer)
   /quiet          toggle streaming (print the answer only when done)
   /temp [N]       show or set sampling temperature (0.0-2.0)
-  /maxrounds [N] show or set max tool rounds (1-200)
   /maxrounds [N]  show or set max tool rounds (1-200)
 Type a normal message to ask; Ctrl+C to cancel."""
 
+def _slash_commands() -> list[str]:
+    """Extract slash commands from HELP so completion and documentation stay in sync."""
+    commands: list[str] = []
+    for line in HELP.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("/"):
+            continue
+        usage = stripped.split("  ", 1)[0]
+        for command in usage.split(","):
+            name = command.strip().split(" ", 1)[0]
+            if name.startswith("/") and name not in commands:
+                commands.append(name)
+    return commands
 
-def make_prompt_session(history_file: str) -> PromptSession:
+
+def _filtered_help(query: str) -> str:
+    """Return HELP narrowed to command/description lines matching a query."""
+    query = query.strip().lower()
+    if not query:
+        return HELP
+    lines = HELP.strip().splitlines()
+    matches = [line for line in lines[1:-1] if query in line.lower()]
+    if not matches:
+        return ""
+    return "\n".join([f"Help results for {query!r}:", *matches, lines[-1]])
+
+
+def _command_completer() -> object:
+    """Build contextual completion for commands, paths, and live session IDs."""
+    from prompt_toolkit.completion import (
+        DynamicCompleter,
+        NestedCompleter,
+        PathCompleter,
+        WordCompleter,
+        merge_completers,
+    )
+
+    def session_completer() -> object:
+        from termux_agent.session import list_sessions
+
+        try:
+            session_ids = [path.stem for path in list_sessions()]
+        except OSError:
+            session_ids = []
+        return WordCompleter(session_ids, sentence=True)
+
+    def config_completer(kind: str) -> object:
+        from termux_agent.config import ConfigError, load_config
+
+        try:
+            cfg = load_config()
+        except (ConfigError, OSError):
+            values: list[str] = []
+        else:
+            if kind == "provider":
+                values = list(cfg.get("providers", {}))
+            elif kind == "agent":
+                values = list(cfg.get("agents", {}))
+            else:
+                values = []
+                for spec in cfg.get("providers", {}).values():
+                    values.extend(str(model) for model in spec.get("models", []))
+                    values.extend(str(model) for model in spec.get("fallback_models", []))
+        return WordCompleter(sorted(set(values)), sentence=True, ignore_case=True)
+
+    choices: dict[str, object | None] = {command: None for command in _slash_commands()}
+    choices.update(
+        {
+            "/attach": PathCompleter(expanduser=True),
+            "/image": PathCompleter(expanduser=True),
+            "/cd": PathCompleter(only_directories=True, expanduser=True),
+            "/resume": DynamicCompleter(session_completer),
+            "/forget": DynamicCompleter(session_completer),
+            "/provider": DynamicCompleter(lambda: config_completer("provider")),
+            "/model": DynamicCompleter(lambda: config_completer("model")),
+            "/agent": DynamicCompleter(lambda: config_completer("agent")),
+            "/temp": WordCompleter(["0", "0.2", "0.5", "0.7", "1.0"], sentence=True),
+            "/maxrounds": WordCompleter(["10", "20", "40", "80"], sentence=True),
+            "/history": WordCompleter(["5", "10", "20", "50"], sentence=True),
+        }
+    )
+    root = WordCompleter(_slash_commands(), sentence=True, ignore_case=True)
+    contextual = NestedCompleter.from_nested_dict(choices)
+    return merge_completers([root, contextual], deduplicate=True)
+
+
+def make_prompt_session(history_file: str, bottom_toolbar: object | None = None) -> PromptSession:
     from prompt_toolkit import PromptSession as _PromptSession
+    from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
     from prompt_toolkit.history import FileHistory
 
     (CONFIG_DIR / "history").mkdir(parents=True, exist_ok=True)
     return _PromptSession(
         history=FileHistory(str(CONFIG_DIR / "history" / history_file)),
         style=_prompt_style(),
+        completer=_command_completer(),
+        auto_suggest=AutoSuggestFromHistory(),
+        complete_while_typing=True,
+        bottom_toolbar=bottom_toolbar,
     )
 
 
@@ -134,19 +257,38 @@ class Repl:
         try:
             from prompt_toolkit import prompt
 
-            ans = prompt(f"  Run this command? [y/N]  {command}\n> ", default="n")
+            message = [
+                ("class:confirm.icon", "  ⚠ "),
+                ("class:confirm.label", "confirm shell command\n"),
+                ("class:confirm.command", f"  {command}\n"),
+                ("class:confirm.hint", "  Run? [y/N] "),
+            ]
+            ans = prompt(message, default="n", style=_confirm_style())
             return ans.strip().lower() in ("y", "yes")
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, EOFError):
             return False
 
     def _attach_confirm(self) -> None:
         self.agent.ctx.confirm = self._confirm
 
     def _banner(self) -> None:
-        render_info(
-            f"termux-agent | provider: {self.provider_name} | model: {self.model} | "
-            f"agent: {self.agent_name} | cwd: {self.agent.ctx.working_dir}\nType /help for help."
+        render_banner(
+            self.provider_name,
+            self.model,
+            self.agent_name,
+            self.agent.ctx.working_dir,
         )
+
+    def _bottom_toolbar(self) -> list[tuple[str, str]]:
+        messages = max(0, len(getattr(self.agent, "messages", [])) - 1)
+        mode = "PLAN" if self.plan_mode else ("QUIET" if self.quiet else "STREAM")
+        return [
+            ("class:toolbar", " "),
+            ("class:toolbar.active", f"{self.provider_name}/{self.model}"),
+            ("class:toolbar", "  ·  "),
+            ("class:toolbar.mode", mode),
+            ("class:toolbar", f"  ·  {self.agent_name}  ·  {messages} msgs  ·  /help "),
+        ]
 
     def run(self) -> None:
         if sys.stdin.isatty():
@@ -160,10 +302,12 @@ class Repl:
             self._run_piped()
 
     def _run_tty(self) -> None:
-        ps = make_prompt_session(self.provider_name)
+        ps = make_prompt_session(self.provider_name, bottom_toolbar=self._bottom_toolbar)
         while True:
             try:
-                user = ps.prompt("you> ")
+                user = ps.prompt(
+                    [("class:prompt.label", "you "), ("class:prompt.arrow", "› ")]
+                )
             except (KeyboardInterrupt, EOFError):
                 console.print()
                 break
@@ -188,7 +332,7 @@ class Repl:
         lines = [first]
         try:
             while True:
-                more = ps.prompt("...> ")
+                more = ps.prompt([("class:prompt.continuation", "  · ")])
                 lines.append(more)
                 if more.rstrip().endswith("}}"):
                     break
@@ -217,7 +361,15 @@ class Repl:
         if c in ("/exit", "/quit"):
             return True
         if c == "/help":
-            console.print(HELP)
+            help_text = _filtered_help(rest)
+            if help_text:
+                render_help(help_text)
+            else:
+                render_error(f"No commands matched {rest!r}. Run /help to see everything.")
+        elif c == "/clear":
+            console.clear()
+        elif c == "/history":
+            self._show_history(rest)
         elif c == "/new":
             self.session = Session(provider_name=self.provider_name, model=self.model)
             self.agent.messages = [
@@ -248,8 +400,12 @@ class Repl:
             if not sessions:
                 render_info("No sessions yet.")
             else:
+                rows = []
                 for s in sessions[:10]:
-                    render_info(f"  {s.name} ({s.stat().st_size}B)")
+                    size = s.stat().st_size
+                    display_size = f"{size} B" if size < 1024 else f"{size / 1024:.1f} KiB"
+                    rows.append([s.stem, display_size])
+                render_table("recent sessions", ["session", "size"], rows)
         elif c == "/resume":
             self._resume(rest)
         elif c == "/compact":
@@ -265,14 +421,23 @@ class Repl:
             self._copy_last()
         elif c == "/stats":
             self._show_stats()
+        elif c == "/status":
+            self._show_status()
         elif c == "/undo":
             render_info(self.agent.ctx.undo())
         elif c == "/config":
-            render_info(
-                f"provider: {self.provider_name} | model: {self.model}\n"
-                f"agent: {self.agent_name} | cwd: {self.agent.ctx.working_dir}\n"
-                f"temperature: {self.agent.temperature} | max_tool_rounds: {self.agent.max_tool_rounds} | "
-                f"max_context_tokens: {self.agent.max_context_tokens} | confirm_commands: {self.agent.ctx.confirm_commands}"
+            render_summary(
+                "configuration",
+                [
+                    ("provider", self.provider_name),
+                    ("model", self.model),
+                    ("agent", self.agent_name),
+                    ("working directory", self.agent.ctx.working_dir),
+                    ("temperature", self.agent.temperature),
+                    ("max tool rounds", self.agent.max_tool_rounds),
+                    ("context limit", self.agent.max_context_tokens or "automatic"),
+                    ("confirm commands", "on" if self.agent.ctx.confirm_commands else "off"),
+                ],
             )
         elif c == "/forget":
             from termux_agent.session import delete_session
@@ -345,7 +510,8 @@ class Repl:
             return False
         elif c == "/tokens":
             chars = sum(len(str(m.get("content", ""))) for m in self.agent.messages)
-            render_info(f"{chars} characters, ~{max(1, chars // 4)} tokens in the current conversation (rough heuristic: chars/4).")
+            estimated = 0 if chars <= 0 else max(1, chars // 4)
+            render_info(f"{chars} characters, ~{estimated} tokens in the current conversation (rough heuristic: chars/4).")
             return False
         elif c == "/memory":
             from termux_agent.agent import MEMORY_FILE, load_memory
@@ -377,34 +543,21 @@ class Repl:
             if not rest:
                 render_error("Usage: /attach FILE [FILE ...]  (URLs are fetched too)")
                 return False
-            parts: list[str] = []
-            for f in rest.split():
-                if f.startswith(("http://", "https://")):
-                    import tempfile
-                    import urllib.parse
-                    import urllib.request
+            import shlex
 
-                    try:
-                        with urllib.request.urlopen(f, timeout=30) as resp:
-                            raw = resp.read()
-                        tmp = Path(tempfile.gettempdir()) / "termux-agent-attach.txt"
-                        tmp.write_bytes(raw)
-                        p = tmp
-                        content = raw.decode("utf-8", errors="replace")
-                        label = f"<file name={Path(urllib.parse.urlparse(f).path).name or 'remote'}>"
-                        parts.append(f"{label}\n{content}\n</file>")
-                        continue
-                    except Exception as e:  # noqa: BLE001
-                        render_error(f"Cannot fetch {f}: {e}")
-                        return False
-                p = Path(f).expanduser()
-                try:
-                    content = p.read_text(encoding="utf-8")
-                except OSError as e:
-                    render_error(f"Cannot read {p}: {e}")
-                    return False
-                parts.append(f"<file name={p}>\n{content}\n</file>")
-            self._run_turn("Here is the file content:\n\n" + "\n\n".join(parts))
+            try:
+                targets = shlex.split(rest)
+            except ValueError as e:
+                render_error(f"Invalid attachment path or quoting: {e}")
+                return False
+            from termux_agent.attachments import AttachmentError, append_attachments
+
+            try:
+                prompt = append_attachments("Here is the file content:", targets)
+            except AttachmentError as e:
+                render_error(str(e))
+                return False
+            self._run_turn(prompt)
         elif c == "/search":
             self._search(rest.strip())
         elif c == "/retry":
@@ -465,7 +618,11 @@ class Repl:
             render_info("Benchmarking models (one tiny request each)...")
             cmd_bench(load_config(), self.provider_name)
         else:
-            render_error(f"Unknown command: {c}")
+            from difflib import get_close_matches
+
+            suggestions = get_close_matches(c, _slash_commands(), n=2, cutoff=0.45)
+            hint = f" Did you mean {', '.join(suggestions)}?" if suggestions else " Run /help for commands."
+            render_error(f"Unknown command: {c}.{hint}")
         return False
 
     def _switch_agent(self, name: str) -> None:
@@ -567,13 +724,80 @@ class Repl:
         u = self.agent.usage
         if not u or not any(u.values()):
             total = sum(len(str(m.get("content", ""))) // 4 for m in self.agent.messages if m.get("content"))
-            render_info(f"Provider reports no usage; estimated context so far: ~{total} tokens.")
+            render_summary(
+                "session usage",
+                [
+                    ("token source", "local estimate"),
+                    ("estimated context", f"~{total} tokens"),
+                    ("messages", max(0, len(self.agent.messages) - 1)),
+                ],
+            )
             return
-        render_info(
-            f"Tokens: prompt {u.get('prompt_tokens', 0)} | "
-            f"completion {u.get('completion_tokens', 0)} | "
-            f"total {u.get('total_tokens', 0)}"
+        render_summary(
+            "session usage",
+            [
+                ("prompt tokens", u.get("prompt_tokens", 0)),
+                ("completion tokens", u.get("completion_tokens", 0)),
+                ("total tokens", u.get("total_tokens", 0)),
+                ("messages", max(0, len(self.agent.messages) - 1)),
+            ],
         )
+
+    def _show_status(self) -> None:
+        """Show active runtime and session details in one compact dashboard."""
+        usage = getattr(self.agent, "usage", {}) or {}
+        messages = max(0, len(getattr(self.agent, "messages", [])) - 1)
+        reported_tokens = int(usage.get("total_tokens", 0) or 0)
+        estimated_tokens = sum(
+            len(str(message.get("content", ""))) // 4
+            for message in getattr(self.agent, "messages", [])
+            if message.get("content")
+        )
+        elapsed = float(getattr(self.agent, "elapsed_seconds", 0.0) or 0.0)
+        first_token = getattr(self.agent, "first_token_seconds", None)
+        token_value = str(reported_tokens) if reported_tokens else f"~{estimated_tokens} estimated"
+        last_run = f"{elapsed:.2f}s"
+        if first_token is not None:
+            last_run += f" · first token {float(first_token):.2f}s"
+        render_summary(
+            "agent status",
+            [
+                ("provider / model", f"{self.provider_name} / {self.model}"),
+                ("agent", self.agent_name),
+                ("working directory", self.agent.ctx.working_dir),
+                ("session", self.session.session_id),
+                ("mode", "plan" if self.plan_mode else ("quiet" if self.quiet else "streaming")),
+                ("messages", messages),
+                ("tokens", token_value),
+                ("last run", last_run if elapsed or first_token is not None else "not available"),
+                ("tool calls", getattr(self.agent, "tool_call_count", 0)),
+                ("retries / fallbacks", f"{getattr(self.agent, 'retry_count', 0)} / {getattr(self.agent, 'fallback_count', 0)}"),
+            ],
+        )
+
+    def _show_history(self, value: str) -> None:
+        try:
+            limit = int(value) if value else 10
+            if not 1 <= limit <= 50:
+                raise ValueError
+        except ValueError:
+            render_error("History count must be an integer between 1 and 50.")
+            return
+        messages = [
+            message
+            for message in getattr(self.agent, "messages", [])
+            if message.get("role") in ("user", "assistant")
+        ][-limit:]
+        if not messages:
+            render_info("Conversation history is empty.")
+            return
+        rows = []
+        for message in messages:
+            content = " ".join(str(message.get("content", "")).split())
+            if len(content) > 120:
+                content = content[:119] + "…"
+            rows.append([message.get("role", "?"), content or "(empty)"])
+        render_table("conversation history", ["role", "message"], rows)
 
     def _list_models(self) -> None:
         from termux_agent.cli import cmd_list_models
@@ -588,19 +812,19 @@ class Repl:
             render_error("Usage: /search TERM")
             return
         term = term.lower()
-        found = 0
+        rows = []
         for s in list_sessions():
             for rec in session_messages(s):
                 content = str(rec.get("content", ""))
                 if term in content.lower():
                     snippet = content.strip().replace("\n", " ")[:120]
-                    console.print(f"[bold]{s.stem}[/bold]  {snippet}")
-                    found += 1
+                    rows.append([s.stem, snippet])
                     break
-        if not found:
+        if not rows:
             render_info(f"No sessions matched '{term}'.")
         else:
-            render_info(f"{found} session(s) matched. Use /resume <id> to open one.")
+            render_table("session search", ["session", "match"], rows)
+            render_info(f"{len(rows)} session(s) matched. Use /resume <id> to open one.")
 
     def _rebuild_system_prompt(self) -> str:
         p = self._base_prompt

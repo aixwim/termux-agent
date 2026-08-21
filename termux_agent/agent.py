@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -25,6 +24,20 @@ Rules:
 
 # Project rule files that are auto-loaded (like AGENTS.md in opencode).
 RULES_FILES = ("AGENTS.md", "CLAUDE.md", ".termux-agent/rules.md")
+MAX_RULE_FILE_BYTES = 256 * 1024
+MAX_RULES_BYTES = 1024 * 1024
+MAX_MEMORY_BYTES = 512 * 1024
+
+
+def _read_bounded_text(path: Path, limit: int) -> str:
+    """Decode at most ``limit`` bytes and mark truncated prompt context."""
+    with path.open("rb") as handle:
+        raw = handle.read(limit + 1)
+    truncated = len(raw) > limit
+    text = raw[:limit].decode("utf-8", errors="replace").strip()
+    if truncated:
+        text += "\n[content truncated]"
+    return text
 
 
 def load_rules(working_dir: Path) -> str:
@@ -32,12 +45,19 @@ def load_rules(working_dir: Path) -> str:
     parts: list[str] = []
     home = Path.home()
     start = working_dir.resolve()
+    remaining = MAX_RULES_BYTES
     for directory in (start, *start.parents):
         for name in RULES_FILES:
             f = directory / name
             if f.is_file():
                 try:
-                    parts.append(f"[Rules from {f.relative_to(start) if f.is_relative_to(start) else f}]\n{f.read_text(encoding='utf-8', errors='replace').strip()}")
+                    if remaining <= 0:
+                        break
+                    limit = min(MAX_RULE_FILE_BYTES, remaining)
+                    content = _read_bounded_text(f, limit)
+                    remaining -= min(f.stat().st_size, limit)
+                    label = f.relative_to(start) if f.is_relative_to(start) else f
+                    parts.append(f"[Rules from {label}]\n{content}")
                 except OSError:
                     continue
         if directory == home:
@@ -61,7 +81,7 @@ def load_memory() -> str:
     """Read the persistent memory file (~/.termux-agent/memory.md), if any."""
     try:
         if MEMORY_FILE.is_file():
-            return MEMORY_FILE.read_text(encoding="utf-8", errors="replace").strip()
+            return _read_bounded_text(MEMORY_FILE, MAX_MEMORY_BYTES)
     except OSError:
         pass
     return ""
@@ -114,6 +134,15 @@ class Agent:
                 self.system_prompt += f"\n\n[Memory]\n{mem}"
         self.messages: list[dict] = [{"role": "system", "content": self.system_prompt}]
         self.usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        self.model_attempts: list[str] = []
+        self.retry_count = 0
+        self.fallback_count = 0
+        self.elapsed_seconds = 0.0
+        self.first_token_seconds: float | None = None
+        self.round_count = 0
+        self.tool_call_count = 0
+        self._run_started = 0.0
+        self.last_error: str | None = None
 
     def _add_usage(self, usage: dict) -> None:
         for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
@@ -194,17 +223,43 @@ class Agent:
         Returns the final answer text."""
         self.messages.append({"role": "user", "content": user_input})
         self._compacted_this_turn = False
+        self.model_attempts = []
+        self.retry_count = 0
+        self.fallback_count = 0
+        started = __import__("time").perf_counter()
+        self._run_started = started
+        self.first_token_seconds = None
+        self.round_count = 0
+        self.tool_call_count = 0
+        self.last_error = None
         models = [self.provider.model, *self.provider.fallback_models]
         try:
-            return self._attempt(models, on_text_delta, on_tool_use)
-        except ProviderError as e:
-            self.messages.append({"role": "assistant", "content": f"[error] {e}"})
-            return f"Error: {e}"
+            try:
+                return self._attempt(models, on_text_delta, on_tool_use)
+            except ProviderError as e:
+                self.last_error = str(e)
+                self.messages.append({"role": "assistant", "content": f"[error] {e}"})
+                return f"Error: {e}"
+        finally:
+            self.elapsed_seconds = __import__("time").perf_counter() - started
 
     @staticmethod
     def _is_transient(msg: str) -> bool:
         """Transient failures worth retrying on a mobile/flaky network."""
         return "connection failed" in msg or __import__("re").search(r"HTTP 5\d\d", msg) is not None
+
+    @staticmethod
+    def _is_model_unavailable(msg: str) -> bool:
+        """Model-specific failures that should advance to a configured fallback."""
+        lowered = msg.casefold()
+        markers = (
+            "promotion has ended",
+            "model not found",
+            "model does not exist",
+            "model is unavailable",
+            "model no longer available",
+        )
+        return "http 404" in lowered or any(marker in lowered for marker in markers)
 
     def _attempt(
         self,
@@ -218,15 +273,26 @@ class Agent:
         for i, model in enumerate(models):
             if i:
                 self.provider.model = model
+                self.fallback_count += 1
             for attempt in range(self.retries + 1):
+                self.model_attempts.append(model)
                 try:
                     return self._run_rounds(on_text_delta, on_tool_use)
                 except ProviderError as e:
                     last = e
                     msg = str(e)
+                    if "empty response" in msg:
+                        if attempt < self.retries:
+                            self.retry_count += 1
+                            time.sleep(self.retry_backoff * (attempt + 1))
+                            continue
+                        break  # exhausted retries -> try next fallback model
                     if "429" in msg:
                         break  # rate limited -> try next fallback model
+                    if self._is_model_unavailable(msg):
+                        break  # retired/missing model -> try next fallback model
                     if self._is_transient(msg) and attempt < self.retries:
+                        self.retry_count += 1
                         time.sleep(self.retry_backoff * (attempt + 1))
                         continue
                     raise  # not transient, or retries exhausted
@@ -239,6 +305,7 @@ class Agent:
         on_tool_use: Callable[[str, str], None] | None,
     ) -> str:
         for _round in range(self.max_tool_rounds):
+            self.round_count += 1
             text_parts: list[str] = []
             tool_calls: list[dict] = []
             events: Iterable[StreamEvent] = self.provider.stream(
@@ -246,6 +313,8 @@ class Agent:
             )
             for ev in events:
                 if ev.kind == "text_delta":
+                    if ev.text and self.first_token_seconds is None:
+                        self.first_token_seconds = __import__("time").perf_counter() - self._run_started
                     text_parts.append(ev.text)
                     if on_text_delta:
                         on_text_delta(ev.text)
@@ -260,15 +329,18 @@ class Agent:
             text = "".join(text_parts)
 
             if not tool_calls:
-                self.messages.append({"role": "assistant", "content": text})
                 if not text.strip():
-                    return "(model returned an empty response - try rephrasing with a more specific prompt)"
+                    raise ProviderError(
+                        f"{self.provider.name}: empty response from model {self.provider.model}"
+                    )
+                self.messages.append({"role": "assistant", "content": text})
                 return text
 
             self.messages.append(
                 {"role": "assistant", "content": text, "tool_calls": tool_calls}
             )
             for tc in tool_calls:
+                self.tool_call_count += 1
                 name = tc.get("name", "")
                 raw_args = tc.get("arguments", "")
                 try:

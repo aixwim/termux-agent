@@ -2,10 +2,10 @@
 
 > A CLI coding agent for **Termux (Android)** — chat with an LLM that can read/write files, search code, and run commands through a full tool-use loop. Multi-provider, scriptable, and works out of the box with a free model.
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue)](#)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue)](#)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](#)
 [![Python](https://img.shields.io/badge/python-3.10%2B-informational)](#)
-[![Tests](https://img.shields.io/badge/tests-346%20passing-brightgreen)](#)
+[![Tests](https://img.shields.io/badge/tests-355%20passing-brightgreen)](#)
 [![CI](https://github.com/aixwim/termux-agent/actions/workflows/ci.yml/badge.svg)](#)
 
 ---
@@ -91,6 +91,7 @@ Restrict any group with `--no-shell`, `--no-web`, `--no-git`, or pin exact tools
 
 - OpenAI, Anthropic, OpenRouter, Ollama, Groq, DeepSeek, Gemini, xAI (Grok), Mistral, Cerebras, and OpenCode Zen.
 - Automatic fallback models on rate limits, transient retries for flaky networks, model rotation (`--rotate`), and a latency benchmark (`--bench`).
+- JSON runs include elapsed and first-token time, attempted models, retries, fallbacks, agent rounds, and tool-call counts for troubleshooting provider behavior.
 
 ### Termux / device integration
 
@@ -154,14 +155,16 @@ termux-agent                          # start the REPL
 | `/note [TXT]` | attach/read a note to the current session |
 | `/notes` | list notes across all sessions |
 | `/tokens` | estimate the current conversation's tokens |
+| `/status` | show the active runtime and last-run dashboard |
+| `/history [N]` / `/clear` | inspect recent messages / clear the viewport |
 | `/session` / `/last` | show session id / re-print the last answer |
 | `/export [PATH]` | export as Markdown (`/export json` for JSON) |
 | `/redo` / `/retry` | re-run the last turn (redo uses the current model) |
 | `/compact` | summarize old history to save context |
 | `/memory` / `/remember` | show/add persistent memory |
 | `/undo` | revert the most recent file write/edit |
-| `/plan`, `/temp`, `/maxrounds`, `/bench`, `/context`, `/image`, `/attach` | tuning & input helpers |
-| `/help` | full command reference |
+| `/plan`, `/temp`, `/maxrounds`, `/bench`, `/context`, `/image`, `/attach` | tuning & input helpers (`/attach` accepts quoted paths and URLs) |
+| `/help [TERM]` | full or filtered command reference |
 | `/exit` | quit |
 
 ### One-shot
@@ -172,6 +175,7 @@ echo "fix the bugs in main.py" | termux-agent     # pipe stdin as the prompt
 termux-agent --json "summarize this repo"         # machine-readable result
 termux-agent --quiet "what files changed?"        # answer only (no banner)
 termux-agent --notify "run the test suite"        # notify when done
+termux-agent --attach notes.txt "summarize it"    # text only; 2 MiB/file, 4 MiB total
 ```
 
 ### Sessions & review
@@ -218,6 +222,7 @@ termux-agent --doctor            # full environment check
 termux-agent --doctor --fix      # repair common issues automatically
 termux-agent --health            # fast offline health check
 termux-agent --bench zen         # latency per model (--bench --all for all providers)
+termux-agent --bench zen --bench-workers 3 --json  # bounded parallel health check
 termux-agent --smoke             # end-to-end test with the real model
 termux-agent --tokens main.py    # estimate before a big prompt
 ```
@@ -270,7 +275,7 @@ Key options (see [config.example.yaml](config.example.yaml) for the full annotat
 termux-agent --provider zen --model nemotron-3-ultra-free "what is 2+2?"
 ```
 
-Currently free: `nemotron-3-ultra-free`, `deepseek-v4-flash-free`, `mimo-v2.5-free`, `big-pickle`. Other models require an `OPENCODE_API_KEY` from <https://opencode.ai/auth>.
+Currently tested free models: `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free`, `mimo-v2.5-free`, `hy3-free`, `laguna-s-2.1-free`, `muse-spark-1.2-contributor-free`, `x-preview-f-free`, and `big-pickle`. The catalog can change; use `termux-agent --models zen` to refresh it. Other models require an `OPENCODE_API_KEY` from <https://opencode.ai/auth>.
 
 ---
 
@@ -295,7 +300,7 @@ curl -X POST http://127.0.0.1:8787/chat \
 | `POST /sessions/<id>/note` | attach/update a session note |
 | `DELETE /sessions/<id>` | delete a session |
 | `POST /chat` | chat with the agent (all CLI overrides + `note`, `stream`, `history`, `session`) |
-| `POST /batch` | run a list of prompts in parallel |
+| `POST /batch` | run up to 100 prompts in parallel (`workers`: 1-4) |
 | `POST /summarize` | summarize a stored session (`{"session": id}`) |
 | `POST /rerun` | re-run a session's last question (`{"session": id}`) |
 | `POST /memory` / `GET /memory` | persistent memory |
@@ -307,7 +312,9 @@ curl -X POST http://127.0.0.1:8787/chat \
 
 ```bash
 pip install -e ".[dev]"
+python -m flake8 termux_agent tests --select=E9,F63,F7,F82
 python -m pytest tests/ -q
+python -m pip_audit -r requirements.txt --progress-spinner off  # optional security audit
 python tests/mock_server.py &   # mock provider for offline testing
 termux-agent --model mock-model "..."   # use the mock provider
 ```
@@ -323,7 +330,8 @@ termux_agent/
 └── ui/             # renderer (rich) + REPL (prompt_toolkit)
 ```
 
-CI runs the full test suite on Python 3.10–3.13 via GitHub Actions.
+CI runs Flake8 and the full test suite on Python 3.10–3.14, plus a separate
+runtime dependency vulnerability audit, via GitHub Actions.
 
 ---
 

@@ -17,6 +17,7 @@ from termux_agent.config import (
     ConfigError,
     ensure_config_file,
     load_config,
+    read_config_mapping,
     resolve_working_dir,
 )
 if TYPE_CHECKING:
@@ -53,7 +54,18 @@ READONLY_TOOLS = {
     "web_search",
     "git_status",
     "git_diff",
+    "git_log",
 }
+
+
+def _run_with_image_cleanup(downloaded_image: Path | None, command, *args, **kwargs):
+    """Run a command and remove its temporary remote image afterwards."""
+    try:
+        return command(*args, **kwargs)
+    finally:
+        from termux_agent.images import cleanup_downloaded_image
+
+        cleanup_downloaded_image(downloaded_image)
 
 
 def build_agent(
@@ -84,6 +96,9 @@ def build_agent(
 
     name = provider_name or cfg.get("provider", "zen")
     provider = create_provider(name, cfg, model)
+    # Keep backend implementation details (for example ``openai_compat``) out
+    # of user-facing JSON, diagnostics, and persisted session metadata.
+    provider.name = name
     if no_fallback:
         provider.fallback_models = []
     if working_dir:
@@ -139,21 +154,33 @@ def build_agent(
     return agent
 
 
-def cmd_init(provider: str | None = None, model: str | None = None, force: bool = False) -> int:
-    if CONFIG_FILE.exists() and not force:
+def cmd_init(
+    provider: str | None = None,
+    model: str | None = None,
+    force: bool = False,
+    config_file: str | None = None,
+) -> int:
+    target = Path(config_file).expanduser() if config_file else CONFIG_FILE
+    if target.exists() and not force:
         render_error("Configuration already exists. Use --force to overwrite it.")
         return 1
     if provider or model:
-        return _init_noninteractive(provider, model)
+        return _init_noninteractive(provider, model, target)
     if sys.stdin.isatty():
-        return _init_wizard()
+        return _init_wizard(target)
+    if force or config_file:
+        return _init_noninteractive(None, None, target)
     path = ensure_config_file()
     render_info(f"Configuration created: {path}\n")
     render_info("Next steps:\n  1. Set the API key in an env var (e.g. export OPENAI_API_KEY=...)\n  2. Run: termux-agent")
     return 0
 
 
-def _init_noninteractive(provider: str | None, model: str | None) -> int:
+def _init_noninteractive(
+    provider: str | None,
+    model: str | None,
+    target: Path = CONFIG_FILE,
+) -> int:
     """Create ~/.termux-agent/config.yaml with the chosen provider/model (no wizard)."""
     cfg = copy.deepcopy(DEFAULTS)
     if provider:
@@ -165,16 +192,20 @@ def _init_noninteractive(provider: str | None, model: str | None) -> int:
     if model:
         cfg["providers"][pname]["models"] = [model]
         cfg["model"] = model
+    elif provider:
+        provider_models = cfg["providers"][pname].get("models") or []
+        cfg["model"] = provider_models[0] if provider_models else ""
     import yaml as _yaml
 
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(_yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
-    render_info(f"Configuration created: {CONFIG_FILE}")
-    render_info(f"Provider: {pname} | Model: {model or cfg['providers'][pname]['models'][0]}")
+    from termux_agent.storage import atomic_write_text
+
+    atomic_write_text(target, _yaml.safe_dump(cfg, sort_keys=False))
+    render_info(f"Configuration created: {target}")
+    render_info(f"Provider: {pname} | Model: {cfg.get('model') or '(none)'}")
     return 0
 
 
-def _init_wizard() -> int:
+def _init_wizard(target: Path = CONFIG_FILE) -> int:
     render_info("termux-agent setup (press Enter to keep the default)")
     providers = sorted(DEFAULTS.get("providers", {}))
     p = input(f"Provider [{'/'.join(providers)}] (default: zen) > ").strip() or "zen"
@@ -189,11 +220,17 @@ def _init_wizard() -> int:
     cfg["provider"] = p
     if m:
         cfg["model"] = m
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        configured_models = cfg["providers"][p].get("models") or []
+        if m not in configured_models:
+            cfg["providers"][p]["models"] = [m, *configured_models]
     import yaml as _yaml
+    from termux_agent.storage import atomic_write_text
 
-    CONFIG_FILE.write_text(_yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
-    render_info(f"Configuration created: {CONFIG_FILE}")
+    atomic_write_text(
+        target,
+        _yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True),
+    )
+    render_info(f"Configuration created: {target}")
     key_env = pc.get("api_key_env")
     if key_env:
         render_info(
@@ -252,26 +289,28 @@ def cmd_one_shot(
     attach: list[str] | None = None,
     rotate: bool = False,
 ) -> int:
-    from termux_agent.ui.renderer import render_answer, render_tool_use
+    from termux_agent.ui.renderer import activity, render_answer, render_tool_use
 
     if attach:
-        for f in attach:
-            try:
-                content = Path(f).expanduser().read_text(encoding="utf-8")
-            except OSError as e:
-                render_error(f"Cannot read --attach file: {e}")
-                return 1
-            prompt = f"{prompt}\n\n<file name={f}>\n{content}\n</file>".strip()
-        render_info(f"Attached {len(attach)} file(s) to the prompt.")
+        from termux_agent.attachments import AttachmentError, append_attachments
+
+        try:
+            prompt = append_attachments(prompt, attach)
+        except AttachmentError as e:
+            _render_or_json_error(str(e), as_json)
+            return 1
+        if not as_json and not quiet:
+            render_info(f"Attached {len(attach)} file(s) to the prompt.")
 
     if clip and not prompt:
         from termux_agent.notify import clipboard_get
 
         prompt = clipboard_get() or prompt
         if not prompt:
-            render_error("Clipboard is empty (or termux-api is not installed).")
+            _render_or_json_error("Clipboard is empty (or termux-api is not installed).", as_json)
             return 2
-        render_info("Using clipboard as prompt.")
+        if not as_json and not quiet:
+            render_info("Using clipboard as prompt.")
     if screenshot:
         from termux_agent.notify import screenshot as _screenshot
 
@@ -282,20 +321,24 @@ def cmd_one_shot(
         else:
             img = _screenshot()
         if not img:
-            render_error("Could not take a screenshot (is termux-api installed and screen sharing granted?).")
+            _render_or_json_error(
+                "Could not take a screenshot (is termux-api installed and screen sharing granted?).",
+                as_json,
+            )
             return 2
         prompt = f"{prompt}\n\n[image: {img}]".strip() if prompt else f"Describe this screenshot:\n\n[image: {img}]"
-        render_info(f"Attached screenshot: {img}")
+        if not as_json and not quiet:
+            render_info(f"Attached screenshot: {img}")
 
     extra_rules = ""
     if rules_file:
         try:
             extra_rules = Path(rules_file).expanduser().read_text(encoding="utf-8").strip()
         except OSError as e:
-            render_error(f"Cannot read --rules file: {e}")
+            _render_or_json_error(f"Cannot read --rules file: {e}", as_json)
             return 1
         if not extra_rules:
-            render_error(f"--rules file is empty: {rules_file}")
+            _render_or_json_error(f"--rules file is empty: {rules_file}", as_json)
             return 1
     if git_context:
         cwd = Path(working_dir).expanduser().resolve() if working_dir else resolve_working_dir(cfg)
@@ -308,10 +351,10 @@ def cmd_one_shot(
         try:
             sys_prompt = Path(system_prompt_file).expanduser().read_text(encoding="utf-8").strip()
         except OSError as e:
-            render_error(f"Cannot read --system-prompt file: {e}")
+            _render_or_json_error(f"Cannot read --system-prompt file: {e}", as_json)
             return 1
         if not sys_prompt:
-            render_error(f"--system-prompt file is empty: {system_prompt_file}")
+            _render_or_json_error(f"--system-prompt file is empty: {system_prompt_file}", as_json)
             return 1
 
     def _make_agent(which_model: str | None = None) -> Agent:
@@ -367,7 +410,9 @@ def cmd_one_shot(
                     answer = _run_guarded(agent, prompt, _log_tool, timeout, on_text_delta=printer.feed)
                     printer.flush()
                 else:
-                    answer = _run_guarded(agent, prompt, _log_tool, timeout)
+                    status = activity("Thinking") if not as_json and not quiet else __import__("contextlib").nullcontext()
+                    with status:
+                        answer = _run_guarded(agent, prompt, _log_tool, timeout)
                 break
             except KeyboardInterrupt:
                 raise
@@ -404,6 +449,17 @@ def cmd_one_shot(
         from termux_agent.notify import wake_unlock
 
         wake_unlock()
+    agent_error = getattr(agent, "last_error", None)
+    if agent_error:
+        if logger:
+            logger("error", {"type": "provider", "message": agent_error})
+        if as_json:
+            _emit_json({"ok": False, "error": agent_error, "tool_calls": tool_log}, agent)
+        elif quiet:
+            print(f"Error: {agent_error}")
+        else:
+            render_error(f"Error: {agent_error}")
+        return 1
     if speak:
         from termux_agent.notify import speak as _speak
 
@@ -412,7 +468,8 @@ def cmd_one_shot(
         try:
             Path(output).write_text(answer + "\n", encoding="utf-8")
         except OSError as e:
-            render_error(f"Cannot write output file {output}: {e}")
+            _render_or_json_error(f"Cannot write output file {output}: {e}", as_json)
+            return 1
     if getattr(agent, "messages", None) and not no_save:
         from termux_agent.session import record_messages
 
@@ -424,9 +481,9 @@ def cmd_one_shot(
         from termux_agent.ui.repl import copy_to_clipboard
 
         if copy_to_clipboard(answer):
-            if not quiet:
+            if not as_json and not quiet:
                 render_info("Answer copied to the clipboard.")
-        elif not quiet:
+        elif not as_json and not quiet:
             render_error("Clipboard unavailable. Install termux-api (pkg install termux-api).")
     if as_json:
         _emit_json({"ok": True, "answer": answer, "tool_calls": tool_log}, agent, include_usage=bool(stats))
@@ -440,6 +497,15 @@ def cmd_one_shot(
             render_info(
                 f"Tokens: prompt {u.get('prompt_tokens', 0)} | completion {u.get('completion_tokens', 0)} | total {u.get('total_tokens', 0)}"
             )
+        else:
+            render_info("Tokens: unavailable from provider")
+        first_token = getattr(agent, "first_token_seconds", None)
+        first_token_text = f"{first_token:.2f}s" if first_token is not None else "n/a"
+        render_info(
+            f"Run: {getattr(agent, 'elapsed_seconds', 0.0):.2f}s | first token: {first_token_text} | "
+            f"rounds: {getattr(agent, 'round_count', 0)} | tools: {getattr(agent, 'tool_call_count', 0)} | "
+            f"retries: {getattr(agent, 'retry_count', 0)} | fallbacks: {getattr(agent, 'fallback_count', 0)}"
+        )
     return 0
 
 
@@ -452,7 +518,37 @@ def _emit_json(payload: dict, agent: "Agent | None", include_usage: bool = False
         usage = getattr(agent, "usage", {})
         if usage or include_usage:
             payload["usage"] = usage or {}
+        attempts = getattr(agent, "model_attempts", None)
+        elapsed = getattr(agent, "elapsed_seconds", None)
+        if attempts is not None or elapsed is not None:
+            payload["diagnostics"] = {
+                "elapsed_seconds": round(float(elapsed or 0.0), 3),
+                "first_token_seconds": (
+                    round(float(agent.first_token_seconds), 3)
+                    if getattr(agent, "first_token_seconds", None) is not None
+                    else None
+                ),
+                "model_attempts": list(attempts or []),
+                "retry_count": int(getattr(agent, "retry_count", 0)),
+                "fallback_count": int(getattr(agent, "fallback_count", 0)),
+                "round_count": int(getattr(agent, "round_count", 0)),
+                "tool_call_count": int(getattr(agent, "tool_call_count", 0)),
+            }
     print(json.dumps(payload, ensure_ascii=False))
+
+
+def _render_or_json_error(message: str, as_json: bool) -> None:
+    """Keep stdout machine-readable when a pre-agent CLI operation fails."""
+    if as_json:
+        _emit_json({"ok": False, "error": message}, None)
+    else:
+        render_error(message)
+
+
+def _raise_agent_error(agent: "Agent") -> None:
+    """Turn Agent.run's REPL-friendly error state into a workflow failure."""
+    if getattr(agent, "last_error", None):
+        raise RuntimeError(agent.last_error)
 
 
 def _maybe_notify(cfg: dict, title: str, answer: str, as_json: bool = False) -> None:
@@ -474,55 +570,102 @@ def _attach_agent_context(agent: Agent, context_text: str) -> None:
 
 def _run_guarded(agent: Agent, prompt: str, on_tool_use, timeout: int | None, on_text_delta=None):
     """Run the agent, aborting with TimeoutError after `timeout` seconds (0 = unlimited)."""
-    if on_text_delta is None:
-        if not timeout:
-            return agent.run(prompt, on_tool_use=on_tool_use)
-        result: dict = {}
-
-        def _worker() -> None:
-            result["answer"] = agent.run(prompt, on_tool_use=on_tool_use)
-
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
-        t.join(timeout)
-        if t.is_alive():
-            raise TimeoutError
-        return result["answer"]
     if not timeout:
-        return agent.run(prompt, on_tool_use=on_tool_use, on_text_delta=on_text_delta)
+        if on_text_delta is None:
+            return agent.run(prompt, on_tool_use=on_tool_use)
+        return agent.run(
+            prompt,
+            on_tool_use=on_tool_use,
+            on_text_delta=on_text_delta,
+        )
     result: dict = {}
 
     def _worker() -> None:
-        result["answer"] = agent.run(prompt, on_tool_use=on_tool_use, on_text_delta=on_text_delta)
+        try:
+            if on_text_delta is None:
+                result["answer"] = agent.run(prompt, on_tool_use=on_tool_use)
+            else:
+                result["answer"] = agent.run(
+                    prompt,
+                    on_tool_use=on_tool_use,
+                    on_text_delta=on_text_delta,
+                )
+        except BaseException as error:  # propagate failures from the worker
+            result["error"] = error
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
     t.join(timeout)
     if t.is_alive():
         raise TimeoutError
+    if "error" in result:
+        raise result["error"]
     return result["answer"]
 
 
-def _bench_provider(cfg: dict, provider_name: str, prompt: str, timeout: int) -> dict:
+def _bench_model(
+    cfg: dict, provider_name: str, model: str, prompt: str, timeout: int
+) -> dict:
     import time
 
+    start = time.monotonic()
+    agent = None
+    try:
+        agent = build_agent(cfg, provider_name, model, auto_accept=True)
+        answer = _run_guarded(agent, prompt, None, timeout)
+        error = getattr(agent, "last_error", None)
+        if error:
+            raise RuntimeError(str(error))
+        if not isinstance(answer, str) or not answer.strip():
+            raise RuntimeError("empty response")
+        return {
+            "model": model,
+            "seconds": round(time.monotonic() - start, 2),
+            "chars": len(answer),
+            "ok": True,
+        }
+    except Exception as error:  # noqa: BLE001
+        return {
+            "model": model,
+            "seconds": round(time.monotonic() - start, 2),
+            "chars": 0,
+            "ok": False,
+            "error": str(error)[:300] or type(error).__name__,
+        }
+
+
+def _bench_provider(
+    cfg: dict,
+    provider_name: str,
+    prompt: str,
+    timeout: int,
+    workers: int = 3,
+) -> dict:
+    from concurrent.futures import ThreadPoolExecutor
+
     models = (cfg.get("providers", {}).get(provider_name, {}).get("models") or [])
-    results: list[dict] = []
-    for m in models:
-        start = time.monotonic()
-        try:
-            answer = _run_guarded(build_agent(cfg, provider_name, m, auto_accept=True), prompt, None, timeout)
-            dt = time.monotonic() - start
-            results.append({"model": m, "seconds": round(dt, 2), "chars": len(answer), "ok": True})
-        except Exception:  # noqa: BLE001
-            results.append({"model": m, "seconds": round(time.monotonic() - start, 2), "chars": 0, "ok": False})
+    worker_count = max(1, min(int(workers), len(models) or 1, 8))
+    if worker_count == 1:
+        results = [
+            _bench_model(cfg, provider_name, model, prompt, timeout)
+            for model in models
+        ]
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            results = list(
+                pool.map(
+                    lambda model: _bench_model(
+                        cfg, provider_name, model, prompt, timeout
+                    ),
+                    models,
+                )
+            )
     return {"provider": provider_name, "models": results}
 
 
-def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as_json: bool = False, output: str | None = None, prompt: str = "Reply with exactly: ok", all_providers: bool = False) -> int:
+def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as_json: bool = False, output: str | None = None, prompt: str = "Reply with exactly: ok", all_providers: bool = False, workers: int = 3) -> int:
     """Time one tiny prompt against each model of a provider (best-effort; --all runs every configured provider)."""
     import json as _json
-    import time
 
     from termux_agent.ui.renderer import render_error, render_info
 
@@ -533,18 +676,33 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
             return 1
         if not as_json:
             render_info(f"Benchmarking {len(names)} provider(s) — one tiny request per model.")
-        payloads = [_bench_provider(cfg, n, prompt, timeout) for n in names]
+        payloads = [
+            _bench_provider(cfg, name, prompt, timeout, workers) for name in names
+        ]
         total_ok = sum(1 for p in payloads for m in p["models"] if m["ok"])
         total = sum(len(p["models"]) for p in payloads)
         if as_json or output:
-            payload = {"ok": True, "providers": payloads, "tested": total, "ok": total_ok}
+            payload = {
+                "ok": total_ok == total,
+                "providers": payloads,
+                "tested": total,
+                "succeeded": total_ok,
+                "failed": total - total_ok,
+            }
             if output:
-                Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-                render_info(f"Benchmark written to {output}")
-                return 0
+                try:
+                    Path(output).expanduser().write_text(
+                        _json.dumps(payload, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                    render_info(f"Benchmark written to {output}")
+                except OSError as e:
+                    render_error(f"Cannot write output file {output}: {e}")
+                    return 1
+                return 0 if payload["ok"] else 1
             if as_json:
                 print(_json.dumps(payload, ensure_ascii=False))
-                return 0
+                return 0 if payload["ok"] else 1
         from rich.table import Table
 
         from termux_agent.ui.renderer import console
@@ -559,7 +717,7 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
                 table.add_row(m["model"], f"{m['seconds']:.1f}", str(m["chars"]), "ok" if m["ok"] else "FAILED")
             console.print(table)
         render_info(f"{total_ok}/{total} benchmark requests succeeded.")
-        return 0
+        return 0 if total_ok == total else 1
 
     provider_name = provider_name or cfg.get("provider", "zen")
     models = (cfg.get("providers", {}).get(provider_name, {}).get("models") or [])
@@ -568,22 +726,19 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
         return 1
     if not as_json:
         render_info(f"Benchmarking {provider_name}: {len(models)} model(s) — one tiny request each.")
-    results: list[tuple[str, float, int, bool]] = []
-    for m in models:
-        start = time.monotonic()
-        try:
-            answer = _run_guarded(build_agent(cfg, provider_name, m, auto_accept=True), prompt, None, timeout)
-            dt = time.monotonic() - start
-            results.append((m, dt, len(answer), True))
-        except Exception:  # noqa: BLE001
-            results.append((m, time.monotonic() - start, 0, False))
+    results = _bench_provider(
+        cfg, provider_name, prompt, timeout, workers
+    )["models"]
+    succeeded = sum(1 for result in results if result["ok"])
+    benchmark_ok = succeeded == len(results)
     if as_json or output:
         payload = {
+            "ok": benchmark_ok,
             "provider": provider_name,
-            "models": [
-                {"model": m, "seconds": round(dt, 2), "chars": ch, "ok": ok}
-                for m, dt, ch, ok in results
-            ],
+            "models": results,
+            "tested": len(results),
+            "succeeded": succeeded,
+            "failed": len(results) - succeeded,
         }
         if output:
             try:
@@ -594,9 +749,9 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
                 return 1
         if as_json:
             print(_json.dumps(payload, ensure_ascii=False))
-            return 0
+            return 0 if benchmark_ok else 1
         if output and not as_json:
-            return 0
+            return 0 if benchmark_ok else 1
     from rich.table import Table
 
     from termux_agent.ui.renderer import console
@@ -606,10 +761,15 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
     table.add_column("time (s)", justify="right")
     table.add_column("chars", justify="right")
     table.add_column("status")
-    for m, dt, chars, ok in sorted(results, key=lambda r: r[1]):
-        table.add_row(m, f"{dt:.1f}", str(chars), "ok" if ok else "FAILED")
+    for result in sorted(results, key=lambda item: item["seconds"]):
+        table.add_row(
+            result["model"],
+            f"{result['seconds']:.1f}",
+            str(result["chars"]),
+            "ok" if result["ok"] else "FAILED",
+        )
     console.print(table)
-    return 0
+    return 0 if benchmark_ok else 1
 
 
 def _run_logger(path: str):
@@ -685,8 +845,11 @@ def _batch_run_one(cfg, provider, model, auto_accept, timeout, disabled_groups, 
     try:
         agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools, allow_dirs=allow_dirs, temperature=temperature)
         if attach:
-            p = f"{p}\n\n" + "\n\n".join(f"[file: {f}]\n{Path(f).expanduser().read_text(encoding='utf-8')}" for f in attach)
+            from termux_agent.attachments import append_attachments
+
+            p = append_attachments(p, attach, bracket=True)
         answer = _run_guarded(agent, p, lambda *a, **k: None, timeout)
+        _raise_agent_error(agent)
     except Exception as e:  # noqa: BLE001
         return {"prompt": p, "answer": None, "error": str(e)}
     return {"prompt": p, "answer": answer}
@@ -775,9 +938,10 @@ def cmd_batch(
                     if fail_fast:
                         if output:
                             Path(output).write_text(_json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-                            render_info(f"Partial results written to {output}")
+                            if not as_json:
+                                render_info(f"Partial results written to {output}")
                         elif as_json:
-                            print(_json.dumps({"results": results, "fail_fast": True}, ensure_ascii=False))
+                            print(_json.dumps({"ok": False, "results": results, "failed": 1, "fail_fast": True}, ensure_ascii=False))
                         if notify:
                             from termux_agent.notify import notify as _notify
 
@@ -788,15 +952,17 @@ def cmd_batch(
                         render_info(f"  -> {name}: {r['answer'][:80]}")
         if output:
             Path(output).write_text(_json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-            render_info(f"Results written to {output}")
+            if not as_json:
+                render_info(f"Results written to {output}")
         elif as_json:
-            print(_json.dumps({"results": results}, ensure_ascii=False))
+            failed = sum(1 for r in results if r.get("error"))
+            print(_json.dumps({"ok": failed == 0, "total": len(results), "succeeded": len(results) - failed, "failed": failed, "results": results}, ensure_ascii=False))
         if notify:
             from termux_agent.notify import notify as _notify
 
             failed = sum(1 for r in results if r.get("error"))
             _notify(f"Batch done: {len(results) - failed}/{len(results)} succeeded" + (f", {failed} failed" if failed else ""))
-        return 0
+        return 1 if any(r.get("error") for r in results) else 0
 
     if prompts_file == "-":
         import sys as _sys
@@ -850,9 +1016,10 @@ def cmd_batch(
                 if fail_fast:
                     if output:
                         Path(output).write_text(_json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-                        render_info(f"Partial results written to {output}")
+                        if not as_json:
+                            render_info(f"Partial results written to {output}")
                     elif as_json:
-                        print(_json.dumps({"results": results, "fail_fast": True}, ensure_ascii=False))
+                        print(_json.dumps({"ok": False, "results": results, "failed": 1, "fail_fast": True}, ensure_ascii=False))
                     if notify:
                         from termux_agent.notify import notify as _notify
 
@@ -863,15 +1030,17 @@ def cmd_batch(
                     render_info(f"  -> {r['answer'][:80]}")
     if output:
         Path(output).write_text(_json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-        render_info(f"Results written to {output}")
+        if not as_json:
+            render_info(f"Results written to {output}")
     elif as_json:
-        print(_json.dumps({"results": results}, ensure_ascii=False))
+        failed = sum(1 for r in results if r.get("error"))
+        print(_json.dumps({"ok": failed == 0, "total": len(results), "succeeded": len(results) - failed, "failed": failed, "results": results}, ensure_ascii=False))
     if notify:
         from termux_agent.notify import notify as _notify
 
         failed = sum(1 for r in results if r.get("error"))
         _notify(f"Batch done: {len(results) - failed}/{len(results)} succeeded" + (f", {failed} failed" if failed else ""))
-    return 0
+    return 1 if any(r.get("error") for r in results) else 0
 
 
 def cmd_watch(
@@ -912,13 +1081,13 @@ def cmd_watch(
 
     agent = build_agent(cfg, provider, model, auto_accept=auto_accept, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, agent_name=agent_name, working_dir=working_dir, only_tools=only_tools, allow_dirs=allow_dirs, temperature=temperature)
     if attach:
-        for f in attach:
-            try:
-                content = Path(f).expanduser().read_text(encoding="utf-8")
-            except OSError as e:
-                render_error(f"Cannot read --attach file: {e}")
-                return 1
-            prompt = f"{prompt}\n\n<file name={f}>\n{content}\n</file>".strip()
+        from termux_agent.attachments import AttachmentError, append_attachments
+
+        try:
+            prompt = append_attachments(prompt, attach)
+        except AttachmentError as e:
+            _render_or_json_error(str(e), as_json)
+            return 1
         if not as_json:
             render_info(f"Attached {len(attach)} file(s) to the prompt.")
     if context:
@@ -938,6 +1107,8 @@ def cmd_watch(
             render_info(f"Watching every {interval}s — press Ctrl+C to stop.")
     round_no = 0
     last_answer: str | None = None
+    successful_rounds = 0
+    failed_rounds = 0
     try:
         while max_rounds is None or round_no < max_rounds:
             if deadline is not None and time.monotonic() >= deadline:
@@ -967,7 +1138,9 @@ def cmd_watch(
                     render_error("Screenshot failed this round — continuing without it.")
             try:
                 answer = _run_guarded(agent, p, render_tool_use, timeout)
+                _raise_agent_error(agent)
             except TimeoutError:
+                failed_rounds += 1
                 if diff and not as_json:
                     render_info(f"\n--- round {round_no} (timed out) ---")
                 if as_json:
@@ -981,6 +1154,7 @@ def cmd_watch(
             except KeyboardInterrupt:
                 raise
             except Exception as e:  # noqa: BLE001
+                failed_rounds += 1
                 if diff and not as_json:
                     render_info(f"\n--- round {round_no} (failed) ---")
                 if as_json:
@@ -992,6 +1166,7 @@ def cmd_watch(
 
                     _notify(f"Round {round_no} failed: {e}")
             else:
+                successful_rounds += 1
                 if diff and last_answer is not None and answer == last_answer:
                     if not as_json:
                         render_info(f"round {round_no}: answer unchanged — skipping.")
@@ -1056,7 +1231,7 @@ def cmd_watch(
         if not as_json:
             render_info("\nStopped.")
         return 0
-    return 0
+    return 1 if failed_rounds and not successful_rounds else 0
 
 
 def cmd_plan(
@@ -1300,8 +1475,43 @@ def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None, 
         return 0
     print(_session_to_markdown(data))
     chars = sum(len(str(m.get("content", ""))) for m in data.get("messages", []))
-    render_info(f"\n~{max(1, chars // 4)} tokens estimated ({chars} message characters, chars/4 heuristic).")
+    render_info(f"\n~{_estimate_tokens(chars)} tokens estimated ({chars} message characters, chars/4 heuristic).")
     return 0
+
+
+def _estimate_tokens(chars: int) -> int:
+    """Apply the chars/4 heuristic without inventing a token for empty input."""
+    return 0 if chars <= 0 else max(1, chars // 4)
+
+
+def _count_utf8_file(path: Path, *, errors: str = "strict") -> int | None:
+    """Count decoded characters incrementally; return None for binary files."""
+    import codecs
+
+    decoder = codecs.getincrementaldecoder("utf-8")(errors=errors)
+    total = 0
+    first = True
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            if first:
+                first = False
+                if b"\x00" in chunk[:4096]:
+                    return None
+            total += len(decoder.decode(chunk))
+    total += len(decoder.decode(b"", final=True))
+    return total
+
+
+def _is_git_diff_ref(value: str) -> bool:
+    """Recognize documented HEAD refs and explicit two-ref Git ranges."""
+    import re
+
+    if re.fullmatch(r"HEAD(?:[~^]\d+)*", value):
+        return True
+    return re.fullmatch(
+        r"[A-Za-z0-9_./-]+\.\.\.?[A-Za-z0-9_./-]+",
+        value,
+    ) is not None
 
 
 def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False, session_ref: str | None = None, output: str | None = None, exclude: list[str] | None = None, all_sessions: bool = False) -> int:
@@ -1322,7 +1532,7 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
             per.append({"session": p.stem, "chars": chars})
         extra = {"sessions": len(per), "all": per}
         chars = total
-        estimated = max(1, chars // 4)
+        estimated = _estimate_tokens(chars)
         if as_json or output:
             import json as _json
 
@@ -1340,7 +1550,8 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
         render_info(f"{chars} characters, ~{estimated} tokens across {len(per)} session(s) (rough heuristic: chars/4).")
         return 0
 
-    if path and (path == "HEAD" or path.startswith("HEAD~") or ".." in path or "..." in path):
+    token_path = Path(path).expanduser() if path else None
+    if path and token_path is not None and not token_path.exists() and _is_git_diff_ref(path):
         import os as _os
         import subprocess
 
@@ -1382,8 +1593,6 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
             return 1
         chars = sum(len(str(m.get("content", ""))) for m in data.get("messages", []))
     elif path and Path(path).expanduser().is_dir():
-        import re as _re
-
         root = Path(path).expanduser()
         skip = {".git", ".hg", ".svn", "__pycache__", "node_modules", ".venv", "venv", ".tox", "build", "dist", ".termux-agent"}
         total = 0
@@ -1399,22 +1608,21 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
                     if any(_fnmatch.fnmatch(rel, pat) or _fnmatch.fnmatch(p.name, pat) for pat in exclude):
                         continue
                 try:
-                    raw = p.read_bytes()
+                    count = _count_utf8_file(p, errors="ignore")
                 except OSError:
                     continue
-                if b"\x00" in raw[:4096]:
+                if count is None:
                     continue
-                try:
-                    total += len(raw.decode("utf-8", errors="ignore"))
-                    files += 1
-                except Exception:  # noqa: BLE001
-                    continue
+                total += count
+                files += 1
         chars = total
         extra = {"files": files}
     elif path:
         try:
-            text = Path(path).expanduser().read_text(encoding="utf-8")
-        except OSError as e:
+            count = _count_utf8_file(Path(path).expanduser())
+            if count is None:
+                raise UnicodeDecodeError("utf-8", b"\x00", 0, 1, "binary file")
+        except (OSError, UnicodeDecodeError) as e:
             if as_json:
                 import json as _json
 
@@ -1422,7 +1630,7 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
             else:
                 render_error(f"Cannot read file: {e}")
             return 1
-        chars = len(text)
+        chars = count
         extra = {}
     elif not text:
         text = _sys.stdin.read() if not _sys.stdin.isatty() else ""
@@ -1431,7 +1639,7 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
     else:
         chars = len(text)
         extra = {}
-    estimated = max(1, chars // 4)
+    estimated = _estimate_tokens(chars)
     if as_json or output:
         import json as _json
 
@@ -1523,7 +1731,7 @@ def cmd_import(path: str, dry_run: bool = False, as_json: bool = False, markdown
                 if not dry_run:
                     import_session(data)
                 imported += 1
-            except Exception as e:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 failed.append(f.name)
         if as_json:
             print(_json.dumps({"ok": True, "dry_run": dry_run, "imported": imported, "failed": failed, "total": len(files)}, ensure_ascii=False))
@@ -1634,15 +1842,29 @@ def cmd_config_show(cfg: dict, as_json: bool = False, redact: bool = False, outp
     return 0
 
 
-def cmd_config_set(key: str, value: str, as_json: bool = False, unset: bool = False) -> int:
+def cmd_config_set(
+    key: str,
+    value: str,
+    as_json: bool = False,
+    unset: bool = False,
+    config_file: str | None = None,
+) -> int:
     """Set a config key and save it back to the config file. Dot paths navigate nested keys."""
     import json as _json
     import yaml as _yaml
 
-    if not CONFIG_FILE.exists():
-        render_error("No config file. Run 'termux-agent --init' first.")
+    target = Path(config_file).expanduser() if config_file else CONFIG_FILE
+    if not target.exists():
+        render_error(f"No config file at {target}. Run 'termux-agent --init' first.")
         return 1
-    cfg = _yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
+    try:
+        cfg = read_config_mapping(target)
+    except ConfigError as error:
+        if as_json:
+            print(_json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False))
+        else:
+            render_error(str(error))
+        return 1
 
     parts = key.split(".")
     node = cfg
@@ -1664,8 +1886,20 @@ def cmd_config_set(key: str, value: str, as_json: bool = False, unset: bool = Fa
             else:
                 render_error(f"Config key {key!r} does not exist.")
             return 1
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(_yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        from termux_agent.storage import atomic_write_text
+
+        try:
+            atomic_write_text(
+                target,
+                _yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True),
+            )
+        except OSError as error:
+            message = f"Cannot write config {target}: {error}"
+            if as_json:
+                print(_json.dumps({"ok": False, "error": message}, ensure_ascii=False))
+            else:
+                render_error(message)
+            return 1
         if as_json:
             print(_json.dumps({"ok": True, "key": key, "removed": removed_val}, ensure_ascii=False))
         else:
@@ -1691,8 +1925,20 @@ def cmd_config_set(key: str, value: str, as_json: bool = False, unset: bool = Fa
 
     node[parts[-1]] = parsed
 
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(_yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    from termux_agent.storage import atomic_write_text
+
+    try:
+        atomic_write_text(
+            target,
+            _yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True),
+        )
+    except OSError as error:
+        message = f"Cannot write config {target}: {error}"
+        if as_json:
+            print(_json.dumps({"ok": False, "error": message}, ensure_ascii=False))
+        else:
+            render_error(message)
+        return 1
     if as_json:
         print(_json.dumps({"key": key, "value": parsed}, ensure_ascii=False))
     else:
@@ -1925,6 +2171,7 @@ def cmd_summarize(
         try:
             agent = build_agent(cfg, provider, model, auto_accept=True, temperature=temperature)
             summary = _run_guarded(agent, prompt, lambda *a, **k: None, timeout)
+            _raise_agent_error(agent)
         except Exception as e:  # noqa: BLE001
             return {"session": data.get("id", sid), "error": str(e)}
         return {"session": data.get("id", sid), "summary": summary}
@@ -1939,10 +2186,11 @@ def cmd_summarize(
                 for r in results:
                     if "summary" in r:
                         f.write(f"[{r['session']}]\n{r['summary']}\n\n")
-            render_info(f"Summaries written to {output}")
+            if not as_json:
+                render_info(f"Summaries written to {output}")
         if as_json:
-            print(_json.dumps({"ok": True, "summarized": len(results), "failed": len(failed), "results": results}, ensure_ascii=False))
-            return 0
+            print(_json.dumps({"ok": not failed, "summarized": len(results), "failed": len(failed), "results": results}, ensure_ascii=False))
+            return 1 if failed else 0
         for r in results:
             if "error" in r:
                 render_error(f"{r['session']}: {r['error']}")
@@ -1955,7 +2203,7 @@ def cmd_summarize(
     try:
         data = export_session(ref)
     except FileNotFoundError:
-        render_error("Session not found.")
+        _render_or_json_error("Session not found.", as_json)
         return 1
     if redact:
         data = _redact_cfg(data)
@@ -1970,7 +2218,7 @@ def cmd_summarize(
             continue
         transcript.append(f"{role.upper()}: {content}")
     if not transcript:
-        render_error("Session has no usable messages to summarize.")
+        _render_or_json_error("Session has no usable messages to summarize.", as_json)
         return 1
     prompt = (
         "Summarize the following conversation in a clear, structured way: "
@@ -1981,13 +2229,15 @@ def cmd_summarize(
     try:
         agent = build_agent(cfg, provider, model, auto_accept=True, temperature=temperature)
         summary = _run_guarded(agent, prompt, lambda *a, **k: None, timeout)
+        _raise_agent_error(agent)
     except Exception as e:  # noqa: BLE001
-        render_error(f"Summarize failed: {e}")
+        _render_or_json_error(f"Summarize failed: {e}", as_json)
         return 1
     if output:
         with open(Path(output).expanduser(), "a" if append else "w", encoding="utf-8") as f:
             f.write(summary + "\n")
-        render_info(f"Summary written to {output}")
+        if not as_json:
+            render_info(f"Summary written to {output}")
     if notify:
         from termux_agent.notify import notify as _notify
 
@@ -2002,57 +2252,109 @@ def cmd_summarize(
 def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = True) -> int:
     """Back up config, memory, and all sessions into a portable directory (or a gzipped tar to stdout with '-')."""
     import json as _json
-    import shutil
 
     from termux_agent.agent import MEMORY_FILE
-    from termux_agent.session import NOTES_FILE, SESSIONS_DIR, list_sessions
+    from termux_agent.session import NOTES_FILE, list_sessions
+    from termux_agent.storage import (
+        atomic_copy_file,
+        atomic_write_text,
+        sha256_file,
+    )
 
-    def _collect() -> list[Path]:
-        files = []
+    def _collect() -> list[tuple[Path, str]]:
+        files: list[tuple[Path, str]] = []
         if CONFIG_FILE.is_file():
-            files.append(CONFIG_FILE)
+            files.append((CONFIG_FILE, CONFIG_FILE.name))
         if MEMORY_FILE.is_file():
-            files.append(MEMORY_FILE)
+            files.append((MEMORY_FILE, MEMORY_FILE.name))
         if NOTES_FILE.is_file():
-            files.append(NOTES_FILE)
+            files.append((NOTES_FILE, NOTES_FILE.name))
         if include_sessions:
             for s in list_sessions():
-                files.append(s)
+                files.append((s, f"sessions/{s.name}"))
         return files
 
     if target_dir == "-":
+        import hashlib
         import io
         import tarfile
-
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-            for f in _collect():
-                tf.add(f, arcname=f.name)
         import sys as _sys
 
-        _sys.stdout.buffer.write(buf.getvalue())
+        files = _collect()
+        session_count = sum(
+            1 for _, archive_name in files if archive_name.startswith("sessions/")
+        )
+        manifest = {
+            "app": "termux-agent",
+            "version": __version__,
+            "config": CONFIG_FILE.name if CONFIG_FILE.is_file() else None,
+            "memory": MEMORY_FILE.name if MEMORY_FILE.is_file() else None,
+            "notes": NOTES_FILE.name if NOTES_FILE.is_file() else None,
+            "sessions": session_count,
+            "checksums": {},
+        }
+
+        class _HashingReader:
+            def __init__(self, handle, digest):
+                self.handle = handle
+                self.digest = digest
+
+            def read(self, size=-1):
+                chunk = self.handle.read(size)
+                self.digest.update(chunk)
+                return chunk
+
+        with tarfile.open(fileobj=_sys.stdout.buffer, mode="w|gz") as archive:
+            for source, archive_name in files:
+                info = archive.gettarinfo(str(source), arcname=archive_name)
+                digest = hashlib.sha256()
+                with source.open("rb") as handle:
+                    archive.addfile(info, _HashingReader(handle, digest))
+                manifest["checksums"][archive_name] = digest.hexdigest()
+            manifest_data = _json.dumps(
+                manifest, ensure_ascii=False, indent=2
+            ).encode("utf-8")
+            info = tarfile.TarInfo("manifest.json")
+            info.size = len(manifest_data)
+            archive.addfile(info, io.BytesIO(manifest_data))
         _sys.stdout.buffer.flush()
         return 0
 
     out = Path(target_dir)
     out.mkdir(parents=True, exist_ok=True)
     copied = []
+    current_top_level: set[str] = set()
     if CONFIG_FILE.is_file():
-        shutil.copy2(CONFIG_FILE, out / CONFIG_FILE.name)
+        atomic_copy_file(CONFIG_FILE, out / CONFIG_FILE.name)
         copied.append(CONFIG_FILE.name)
+        current_top_level.add(CONFIG_FILE.name)
     if MEMORY_FILE.is_file():
-        shutil.copy2(MEMORY_FILE, out / MEMORY_FILE.name)
+        atomic_copy_file(MEMORY_FILE, out / MEMORY_FILE.name)
         copied.append(MEMORY_FILE.name)
+        current_top_level.add(MEMORY_FILE.name)
     if NOTES_FILE.is_file():
-        shutil.copy2(NOTES_FILE, out / NOTES_FILE.name)
+        atomic_copy_file(NOTES_FILE, out / NOTES_FILE.name)
         copied.append(NOTES_FILE.name)
+        current_top_level.add(NOTES_FILE.name)
     ses_dir = out / "sessions"
     if include_sessions:
         ses_dir.mkdir(parents=True, exist_ok=True)
     n_sessions = 0
+    current_sessions: set[str] = set()
     for s in list_sessions() if include_sessions else []:
-        shutil.copy2(s, ses_dir / s.name)
+        atomic_copy_file(s, ses_dir / s.name)
+        current_sessions.add(s.name)
         n_sessions += 1
+    # A reused bundle must mirror current managed state. Remove only known
+    # termux-agent artifacts; unrelated files in the destination are preserved.
+    for managed_name in ("config.yaml", "memory.md", "notes.json"):
+        stale = out / managed_name
+        if managed_name not in current_top_level and stale.is_file():
+            stale.unlink()
+    if ses_dir.is_dir():
+        for stale in ses_dir.glob("*.jsonl"):
+            if stale.name not in current_sessions:
+                stale.unlink()
     manifest = {
         "app": "termux-agent",
         "version": __version__,
@@ -2060,8 +2362,21 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
         "memory": MEMORY_FILE.name if MEMORY_FILE.is_file() else None,
         "notes": NOTES_FILE.name if NOTES_FILE.is_file() else None,
         "sessions": n_sessions,
+        "checksums": {},
     }
-    (out / "manifest.json").write_text(_json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    managed_paths = [
+        (out / name, name) for name in current_top_level
+    ] + [
+        (ses_dir / name, f"sessions/{name}") for name in current_sessions
+    ]
+    manifest["checksums"] = {
+        archive_name: sha256_file(path)
+        for path, archive_name in managed_paths
+    }
+    atomic_write_text(
+        out / "manifest.json",
+        _json.dumps(manifest, ensure_ascii=False, indent=2),
+    )
     if as_json:
         print(_json.dumps(manifest, ensure_ascii=False))
         return 0
@@ -2069,26 +2384,73 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
     return 0
 
 
+MAX_BUNDLE_ARCHIVE_BYTES = 64 * 1024 * 1024
+MAX_BUNDLE_EXTRACTED_BYTES = 256 * 1024 * 1024
+MAX_BUNDLE_ENTRIES = 10_000
+MAX_BUNDLE_TEXT_FILE_BYTES = 32 * 1024 * 1024
+
+
+def _extract_bundle_archive(
+    raw: bytes,
+    destination: Path,
+    *,
+    max_archive_bytes: int = MAX_BUNDLE_ARCHIVE_BYTES,
+    max_extracted_bytes: int = MAX_BUNDLE_EXTRACTED_BYTES,
+    max_entries: int = MAX_BUNDLE_ENTRIES,
+) -> None:
+    """Validate and extract a bounded bundle archive."""
+    import io
+    import tarfile
+
+    if len(raw) > max_archive_bytes:
+        raise ValueError(
+            f"archive exceeds the {max_archive_bytes // (1024 * 1024)} MiB limit"
+        )
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as archive:
+        members = []
+        for member in archive:
+            members.append(member)
+            if len(members) > max_entries:
+                raise ValueError(
+                    f"archive exceeds the {max_entries:,}-entry limit"
+                )
+        total_size = 0
+        for member in members:
+            if not (member.isfile() or member.isdir()):
+                raise ValueError(
+                    f"archive contains unsupported entry: {member.name}"
+                )
+            if member.isfile():
+                total_size += member.size
+                if total_size > max_extracted_bytes:
+                    raise ValueError(
+                        "archive expands beyond the "
+                        f"{max_extracted_bytes // (1024 * 1024)} MiB limit"
+                    )
+            # Run the standard path-safety filter for every entry before the
+            # first extraction so a late traversal cannot leave partial data.
+            tarfile.data_filter(member, destination)
+        archive.extractall(destination, members=members, filter="data")
+
+
 def cmd_restore(bundle_dir: str, dry_run: bool = False, as_json: bool = False, merge: bool = False) -> int:
     """Restore config, memory, and sessions from a bundle directory (or a gzipped tar on stdin with '-')."""
-    import json as _json
-    import shutil
-
-    from termux_agent.agent import MEMORY_FILE
-    from termux_agent.session import SESSIONS_DIR
-
     if bundle_dir == "-":
-        import io
         import tarfile
         import sys as _sys
         import tempfile
 
-        buf = io.BytesIO(_sys.stdin.buffer.read())
-        with tempfile.TemporaryDirectory() as tmp:
-            with tarfile.open(fileobj=buf, mode="r:gz") as tf:
-                tf.extractall(tmp, filter="data")
-            src = Path(tmp)
-            return _restore_from_dir(src, dry_run=dry_run, as_json=as_json, merge=merge)
+        raw = _sys.stdin.buffer.read(MAX_BUNDLE_ARCHIVE_BYTES + 1)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                _extract_bundle_archive(raw, Path(tmp))
+                src = Path(tmp)
+                return _restore_from_dir(
+                    src, dry_run=dry_run, as_json=as_json, merge=merge
+                )
+        except (tarfile.TarError, OSError, ValueError) as e:
+            render_error(f"Invalid bundle archive: {e}")
+            return 1
 
     return _restore_from_dir(Path(bundle_dir), dry_run=dry_run, as_json=as_json, merge=merge)
 
@@ -2096,29 +2458,187 @@ def cmd_restore(bundle_dir: str, dry_run: bool = False, as_json: bool = False, m
 def _restore_from_dir(src: Path, dry_run: bool = False, as_json: bool = False, merge: bool = False) -> int:
     """Restore config, memory, and sessions from an extracted bundle directory."""
     import json as _json
-    import shutil
 
-    from termux_agent.agent import MEMORY_FILE
-    from termux_agent.session import NOTES_FILE, SESSIONS_DIR
+    from termux_agent.session import SESSIONS_DIR
+    from termux_agent.storage import atomic_write_text, sha256_file
 
     if not (src / "manifest.json").is_file():
         render_error(f"No manifest.json found in {src} — not a termux-agent bundle.")
         return 1
-    manifest = _json.loads((src / "manifest.json").read_text(encoding="utf-8"))
-    if not dry_run:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    restored = []
+    try:
+        manifest = _json.loads(
+            (src / "manifest.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, _json.JSONDecodeError) as e:
+        render_error(f"Invalid bundle manifest: {e}")
+        return 1
+    if not isinstance(manifest, dict) or manifest.get("app") != "termux-agent":
+        render_error("Invalid bundle manifest: expected app 'termux-agent'.")
+        return 1
+    for key, filename in (
+        ("config", "config.yaml"),
+        ("memory", "memory.md"),
+        ("notes", "notes.json"),
+    ):
+        if key not in manifest:
+            continue  # Backward compatibility with older bundle manifests.
+        declared = manifest.get(key)
+        if declared not in (None, filename):
+            render_error(f"Invalid bundle manifest: unexpected {key} file.")
+            return 1
+        if bool(declared) != (src / filename).is_file():
+            render_error(f"Invalid bundle manifest: {key} file mismatch.")
+            return 1
+    total_bytes = 0
+
+    def _read_bounded(path: Path) -> str:
+        nonlocal total_bytes
+        size = path.stat().st_size
+        if size > MAX_BUNDLE_TEXT_FILE_BYTES:
+            raise ValueError(
+                "file exceeds the per-file limit of "
+                f"{MAX_BUNDLE_TEXT_FILE_BYTES} bytes"
+            )
+        total_bytes += size
+        if total_bytes > MAX_BUNDLE_EXTRACTED_BYTES:
+            raise ValueError(
+                "bundle content exceeds the "
+                f"{MAX_BUNDLE_EXTRACTED_BYTES // (1024 * 1024)} MiB limit"
+            )
+        return path.read_text(encoding="utf-8")
+
+    text_files: list[tuple[str, str]] = []
     for name in ("config.yaml", "memory.md", "notes.json"):
         f = src / name
         if f.is_file():
-            if not dry_run and not (merge and (CONFIG_DIR / name).exists()):
-                shutil.copy2(f, CONFIG_DIR / name)
-            restored.append(name)
-    for f in sorted((src / "sessions").glob("*.jsonl")) if (src / "sessions").is_dir() else []:
-        if not dry_run and not (merge and (SESSIONS_DIR / f.name).exists()):
-            shutil.copy2(f, SESSIONS_DIR / f.name)
-        restored.append(f"session/{f.name}")
+            try:
+                text_files.append((name, _read_bounded(f)))
+            except (OSError, UnicodeDecodeError, ValueError) as e:
+                render_error(f"Invalid bundle file {name}: {e}")
+                return 1
+
+    session_files: list[tuple[Path, str]] = []
+    candidates = (
+        sorted((src / "sessions").glob("*.jsonl"))
+        if (src / "sessions").is_dir()
+        else []
+    )
+    declared_sessions = manifest.get("sessions")
+    if (
+        isinstance(declared_sessions, bool)
+        or not isinstance(declared_sessions, int)
+        or declared_sessions < 0
+        or declared_sessions != len(candidates)
+    ):
+        render_error("Invalid bundle manifest: session count mismatch.")
+        return 1
+    from termux_agent.session import validate_session_id
+
+    for f in candidates:
+        try:
+            validate_session_id(f.stem)
+            session_files.append((f, _read_bounded(f)))
+        except (OSError, UnicodeDecodeError, ValueError) as e:
+            render_error(f"Invalid session file {f.name}: {e}")
+            return 1
+
+    checksums = manifest.get("checksums")
+    if checksums is not None:
+        if not isinstance(checksums, dict) or not all(
+            isinstance(name, str) and isinstance(digest, str)
+            for name, digest in checksums.items()
+        ):
+            render_error("Invalid bundle manifest: malformed checksums.")
+            return 1
+        expected_paths = {
+            name: src / name for name, _ in text_files
+        }
+        expected_paths.update(
+            {f"sessions/{path.name}": path for path, _ in session_files}
+        )
+        if set(checksums) != set(expected_paths):
+            render_error("Invalid bundle manifest: checksum file list mismatch.")
+            return 1
+        try:
+            for name, path in expected_paths.items():
+                if sha256_file(path) != checksums[name].lower():
+                    render_error(
+                        f"Invalid bundle: checksum mismatch for {name}."
+                    )
+                    return 1
+        except OSError as e:
+            render_error(f"Invalid bundle: checksum verification failed: {e}")
+            return 1
+
+    text_by_name = dict(text_files)
+    if "config.yaml" in text_by_name:
+        import yaml as _yaml
+
+        try:
+            config_data = _yaml.safe_load(text_by_name["config.yaml"])
+        except _yaml.YAMLError as e:
+            render_error(f"Invalid bundle config.yaml: {e}")
+            return 1
+        if not isinstance(config_data, dict):
+            render_error("Invalid bundle config.yaml: expected a YAML mapping.")
+            return 1
+    if "notes.json" in text_by_name:
+        try:
+            notes_data = _json.loads(text_by_name["notes.json"])
+        except _json.JSONDecodeError as e:
+            render_error(f"Invalid bundle notes.json: {e}")
+            return 1
+        if not isinstance(notes_data, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in notes_data.items()
+        ):
+            render_error(
+                "Invalid bundle notes.json: expected string keys and values."
+            )
+            return 1
+    for path, content in session_files:
+        for line_number, line in enumerate(content.splitlines(), start=1):
+            if not line.strip():
+                continue
+            try:
+                record = _json.loads(line)
+            except _json.JSONDecodeError as e:
+                render_error(
+                    f"Invalid session file {path.name} line {line_number}: {e}"
+                )
+                return 1
+            if (
+                not isinstance(record, dict)
+                or record.get("role") not in ("user", "assistant")
+                or not isinstance(record.get("content"), str)
+            ):
+                render_error(
+                    f"Invalid session file {path.name} line {line_number}: "
+                    "expected a user/assistant record with string content."
+                )
+                return 1
+
+    restored = [name for name, _ in text_files]
+    restored.extend(f"session/{path.name}" for path, _ in session_files)
+    if not dry_run:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        for name, content in text_files:
+            if merge and (CONFIG_DIR / name).exists():
+                continue
+            try:
+                atomic_write_text(CONFIG_DIR / name, content)
+            except OSError as e:
+                render_error(f"Failed to restore {name}: {e}")
+                return 1
+        for path, content in session_files:
+            if merge and (SESSIONS_DIR / path.name).exists():
+                continue
+            try:
+                atomic_write_text(SESSIONS_DIR / path.name, content)
+            except OSError as e:
+                render_error(f"Failed to restore session {path.name}: {e}")
+                return 1
     if as_json:
         print(_json.dumps({"app": manifest.get("app"), "version": manifest.get("version"), "items": restored, "dry_run": dry_run}, ensure_ascii=False))
         return 0
@@ -2171,6 +2691,7 @@ def cmd_rerun(
         try:
             agent = build_agent(cfg, provider, model, auto_accept=True, temperature=temperature)
             answer = _run_guarded(agent, last_user, lambda *a, **k: None, timeout)
+            _raise_agent_error(agent)
         except Exception as e:  # noqa: BLE001
             return {"session": data.get("id", sid), "error": str(e)}
         res = {"session": data.get("id", sid), "answer": answer, "old": old_answer}
@@ -2200,10 +2721,11 @@ def cmd_rerun(
                 for r in results:
                     if "answer" in r:
                         f.write(r["answer"] + "\n")
-            render_info(f"Answers written to {output}")
+            if not as_json:
+                render_info(f"Answers written to {output}")
         if as_json:
-            print(_json.dumps({"ok": True, "ran": len(results), "failed": len(failed), "results": results}, ensure_ascii=False))
-            return 0
+            print(_json.dumps({"ok": not failed, "ran": len(results), "failed": len(failed), "results": results}, ensure_ascii=False))
+            return 1 if failed else 0
         for r in results:
             if "error" in r:
                 render_error(f"{r['session']}: {r['error']}")
@@ -2218,7 +2740,7 @@ def cmd_rerun(
     try:
         data = export_session(ref)
     except FileNotFoundError:
-        render_error("Session not found.")
+        _render_or_json_error("Session not found.", as_json)
         return 1
     if redact:
         data = _redact_cfg(data)
@@ -2231,27 +2753,30 @@ def cmd_rerun(
         "",
     )
     if not last_user.strip():
-        render_error("Session has no user prompt to re-run.")
+        _render_or_json_error("Session has no user prompt to re-run.", as_json)
         return 1
     if attach:
-        for f in attach:
-            try:
-                content = Path(f).expanduser().read_text(encoding="utf-8")
-            except OSError as e:
-                render_error(f"Cannot read --attach file: {e}")
-                return 1
-            last_user = f"{last_user}\n\n<file name={f}>\n{content}\n</file>"
-        render_info(f"Attached {len(attach)} file(s) to the re-run prompt.")
+        from termux_agent.attachments import AttachmentError, append_attachments
+
+        try:
+            last_user = append_attachments(last_user, attach)
+        except AttachmentError as e:
+            _render_or_json_error(str(e), as_json)
+            return 1
+        if not as_json:
+            render_info(f"Attached {len(attach)} file(s) to the re-run prompt.")
     try:
         agent = build_agent(cfg, provider, model, auto_accept=True, temperature=temperature)
         answer = _run_guarded(agent, last_user, lambda *a, **k: None, timeout)
+        _raise_agent_error(agent)
     except Exception as e:  # noqa: BLE001
-        render_error(f"Rerun failed: {e}")
+        _render_or_json_error(f"Rerun failed: {e}", as_json)
         return 1
     if output:
         with open(Path(output).expanduser(), "a" if append else "w", encoding="utf-8") as f:
             f.write(answer + "\n")
-        render_info(f"Answer written to {output}")
+        if not as_json:
+            render_info(f"Answer written to {output}")
     if notify:
         from termux_agent.notify import notify as _notify
 
@@ -2351,7 +2876,7 @@ def cmd_stats_all(as_json: bool = False, output: str | None = None) -> int:
         "sessions": len(sessions),
         "messages": total_messages,
         "chars": total_chars,
-        "tokens": max(1, total_chars // 4),
+        "tokens": _estimate_tokens(total_chars),
         "notes": len(all_notes()),
         "by_provider": dict(sorted(by_provider.items(), key=lambda kv: -kv[1])),
         "by_day": dict(sorted(by_day.items(), reverse=True)),
@@ -2683,13 +3208,14 @@ def cmd_resume(
     agent = build_agent(cfg, provider_name, model, auto_accept, agent_name, working_dir, temperature, max_tool_rounds, readonly, max_context_tokens, no_tools=False, retries=None, no_fallback=False, extra_rules=extra_rules or None, system_prompt=None, disabled_groups=disabled_groups, max_output_chars=max_output_chars, command_timeout=command_timeout, allow_dirs=allow_dirs)
     agent.messages = [{"role": "system", "content": agent.system_prompt}] + history
     if prompt:
-        for f in attach or []:
+        if attach:
+            from termux_agent.attachments import AttachmentError, append_attachments
+
             try:
-                content = Path(f).expanduser().read_text(encoding="utf-8")
-            except OSError as e:
-                render_error(f"Cannot read --attach file: {e}")
+                prompt = append_attachments(prompt, attach)
+            except AttachmentError as e:
+                _render_or_json_error(str(e), as_json)
                 return 1
-            prompt = f"{prompt}\n\n<file name={f}>\n{content}\n</file>".strip()
         if attach:
             if not as_json and not quiet:
                 render_info(f"Attached {len(attach)} file(s) to the prompt.")
@@ -2707,6 +3233,16 @@ def cmd_resume(
             printer.flush()
         else:
             answer = agent.run(prompt, on_tool_use=_log)
+        if getattr(agent, "last_error", None):
+            if as_json:
+                _emit_json(
+                    {"ok": False, "error": agent.last_error, "session": path.stem}, agent
+                )
+            elif quiet:
+                print(f"Error: {agent.last_error}")
+            else:
+                render_error(f"Error: {agent.last_error}")
+            return 1
         _maybe_notify(cfg, "Resume done", answer, as_json)
         if as_json:
             _emit_json({"ok": True, "answer": answer, "session": path.stem}, agent)
@@ -2874,7 +3410,7 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
     except OSError as e:
         add("free disk (/)", False, str(e))
     try:
-        from termux_agent.session import SESSIONS_DIR, list_sessions
+        from termux_agent.session import list_sessions
 
         sess = list_sessions()
         total = sum(s.stat().st_size for s in sess)
@@ -2905,12 +3441,16 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
         else:
             add("api key", False, f"{pc['api_key_env']} empty - set the env var or fill it in the config")
     if network and pc.get("base_url"):
+        import urllib.error
         import urllib.request
 
         try:
             req = urllib.request.Request(pc["base_url"], method="HEAD")
             urllib.request.urlopen(req, timeout=10).close()
             add("connectivity", True, f"{pc['base_url']} reachable")
+        except urllib.error.HTTPError as e:
+            # Any HTTP response proves DNS, TLS, and the remote service are reachable.
+            add("connectivity", True, f"{pc['base_url']} reachable (HTTP {e.code})")
         except Exception as e:  # noqa: BLE001
             add("connectivity", False, f"{pc['base_url']}: {type(e).__name__}")
 
@@ -2936,6 +3476,8 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
         latest = _latest_pypi_version()
         if latest is None:
             add("update check", False, "could not reach PyPI (offline?) - try --doctor-network")
+        elif latest == "":
+            add("update check", True, "package is not published on PyPI; use Git to update")
         elif latest == __version__:
             add("update check", True, f"{__version__} is the latest")
         else:
@@ -2943,16 +3485,24 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
 
     if fix:
         import yaml as _yaml
+        from termux_agent.storage import atomic_write_text
 
         if not CONFIG_FILE.exists():
-            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            CONFIG_FILE.write_text(_yaml.safe_dump({"provider": "zen"}, sort_keys=False), encoding="utf-8")
+            atomic_write_text(
+                CONFIG_FILE,
+                _yaml.safe_dump({"provider": "zen"}, sort_keys=False),
+            )
             fixes.append("created missing config file (~/.termux-agent/config.yaml) with provider: zen")
         if not cfg.get("model") and not cfg.get("providers", {}).get(cfg.get("provider", "zen"), {}).get("models"):
             loaded = _yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
             if "model" not in loaded:
-                loaded.setdefault("providers", {}).setdefault("zen", {})["models"] = ["opencode-zen-v4-flash-free"]
-                CONFIG_FILE.write_text(_yaml.safe_dump(loaded, sort_keys=False, allow_unicode=True), encoding="utf-8")
+                loaded.setdefault("providers", {}).setdefault("zen", {})[
+                    "models"
+                ] = ["nemotron-3-ultra-free"]
+                atomic_write_text(
+                    CONFIG_FILE,
+                    _yaml.safe_dump(loaded, sort_keys=False, allow_unicode=True),
+                )
                 fixes.append("added a default zen model list to the config")
         if fixes:
             add("auto-fix", True, "; ".join(fixes))
@@ -3043,14 +3593,19 @@ def cmd_health(cfg: dict, as_json: bool = False, output: str | None = None) -> i
 
 
 def _latest_pypi_version() -> str | None:
-    """Return the latest published version on PyPI, or None if unreachable."""
+    """Return the PyPI version; empty means unpublished, None means unreachable."""
     import json as _json
+    import urllib.error
     import urllib.request
 
     try:
         with urllib.request.urlopen("https://pypi.org/pypi/termux-agent/json", timeout=10) as r:
             data = _json.loads(r.read())
-        return str(data.get("info", {}).get("version"))
+        return str(data.get("info", {}).get("version") or "")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return ""
+        return None
     except Exception:  # noqa: BLE001
         return None
 
@@ -3150,7 +3705,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=int, metavar="SECONDS", help="Abort a one-shot task if it takes longer than this")
     parser.add_argument("--output", metavar="FILE", help="Also write the answer to this file (plain text); with --bench/--smoke writes the structured result (JSON)")
     parser.add_argument("--clip", action="store_true", help="Use the clipboard as the prompt (needs termux-api)")
-    parser.add_argument("--attach", metavar="FILE", action="append", help="Read a file's contents into the prompt (one-shot, resume, watch, batch, rerun; repeatable)")
+    parser.add_argument("--attach", metavar="FILE_OR_URL", action="append", help="Attach text from a file or URL (max 2 MiB each / 4 MiB total; repeatable)")
     parser.add_argument("--screenshot", action="store_true", help="Attach a screenshot of the screen to the prompt (needs termux-api + screen share)")
     parser.add_argument("--screenshot-dir", metavar="DIR", help="Save screenshots into this directory instead of the current one")
     parser.add_argument("--cleanup", action="store_true", help="Delete leftover screenshot-*.png files in the current directory")
@@ -3240,6 +3795,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--export-all", metavar="DIR", help="Export every session as a JSON file into DIR (--markdown: readable .md transcripts)")
     parser.add_argument("--bench", nargs="?", const="__default__", metavar="PROVIDER", help="Benchmark latency across a provider's models (one tiny request each)")
     parser.add_argument("--bench-prompt", metavar="TEXT", help="Custom prompt for --bench (default: a tiny 'Reply with exactly: ok')")
+    parser.add_argument("--bench-workers", type=int, default=3, metavar="N", help="Run model benchmarks in parallel (default 3, maximum 8)")
     parser.add_argument("--list-providers", action="store_true", help="List provider presets")
     parser.add_argument("--list-agents", action="store_true", help="List available sub-agents")
     parser.add_argument("--models", nargs="?", const="__default__", metavar="PROVIDER", help="List models for a provider (live, or preset fallback)")
@@ -3344,13 +3900,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cfg = load_config(args.config)
     except ConfigError as e:
-        render_error(str(e))
+        _render_or_json_error(str(e), args.json)
         return 1
 
     if args.init:
-        return cmd_init(args.provider, args.model, force=args.force)
+        return cmd_init(
+            args.provider,
+            args.model,
+            force=args.force,
+            config_file=args.config,
+        )
     if args.bench:
-        return cmd_bench(cfg, None if args.bench == "__default__" else args.bench, args.timeout or 60, as_json=args.json, output=args.output, prompt=args.bench_prompt or "Reply with exactly: ok", all_providers=args.all)
+        return cmd_bench(cfg, None if args.bench == "__default__" else args.bench, args.timeout or 60, as_json=args.json, output=args.output, prompt=args.bench_prompt or "Reply with exactly: ok", all_providers=args.all, workers=args.bench_workers)
     if args.export:
         return cmd_export(args.export, as_markdown=args.markdown, redact=args.redact, output=args.output)
     if args.export_all:
@@ -3405,10 +3966,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.restore:
         return cmd_restore(args.restore, dry_run=args.dry_run, as_json=args.json, merge=args.merge)
     if args.cron:
-        if not prompt:
-            render_error("--cron requires a one-shot prompt.")
+        cron_prompt = " ".join(args.prompt).strip()
+        if not cron_prompt:
+            _render_or_json_error("--cron requires a one-shot prompt.", args.json)
             return 2
-        return cmd_cron(args.cron, prompt, as_json=args.json, notify=args.notify, output=args.output)
+        return cmd_cron(args.cron, cron_prompt, as_json=args.json, notify=args.notify, output=args.output)
     if args.stats_all:
         return cmd_stats_all(as_json=args.json, output=args.output)
     if args.cleanup:
@@ -3421,11 +3983,25 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_config_show(cfg, as_json=args.json, redact=args.redact, output=args.output)
     if args.config_set:
         if len(args.config_set) != 2:
-            render_error("--config-set requires KEY and VALUE (e.g. --config-set temperature 0.2).")
+            _render_or_json_error(
+                "--config-set requires KEY and VALUE (e.g. --config-set temperature 0.2).",
+                args.json,
+            )
             return 1
-        return cmd_config_set(args.config_set[0], args.config_set[1], as_json=args.json)
+        return cmd_config_set(
+            args.config_set[0],
+            args.config_set[1],
+            as_json=args.json,
+            config_file=args.config,
+        )
     if args.config_unset:
-        return cmd_config_set(args.config_unset, "", as_json=args.json, unset=True)
+        return cmd_config_set(
+            args.config_unset,
+            "",
+            as_json=args.json,
+            unset=True,
+            config_file=args.config,
+        )
     if args.list_tools:
         return cmd_list_tools(as_json=args.json, output=args.output)
     if args.sessions:
@@ -3468,7 +4044,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 token = Path(args.token_file).expanduser().read_text(encoding="utf-8").strip()
             except OSError as e:
-                render_error(f"Cannot read --token-file: {e}")
+                _render_or_json_error(f"Cannot read --token-file: {e}", args.json)
                 return 1
         return cmd_serve(
             cfg,
@@ -3500,7 +4076,7 @@ def main(argv: list[str] | None = None) -> int:
         pc = cfg.get("providers", {}).get(pname, {})
         env_name = pc.get("api_key_env", "")
         if not env_name:
-            render_error(f"Provider '{pname}' has no api_key_env to set.")
+            _render_or_json_error(f"Provider '{pname}' has no api_key_env to set.", args.json)
             return 1
         os.environ[env_name] = args.api_key
         if pname != "zen":
@@ -3575,36 +4151,44 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 file_prompt = _Path(args.prompt_file).expanduser().read_text(encoding="utf-8").strip()
         except OSError as e:
-            render_error(f"Cannot read --prompt-file: {e}")
+            _render_or_json_error(f"Cannot read --prompt-file: {e}", args.json)
             return 1
         prompt = (prompt + "\n\n" + file_prompt).strip() if prompt else file_prompt
+    downloaded_image: Path | None = None
     if args.image:
         if not prompt:
-            render_error("--image requires a one-shot prompt (or --prompt-file).")
+            _render_or_json_error("--image requires a one-shot prompt (or --prompt-file).", args.json)
             return 2
         img = args.image
         if img.startswith(("http://", "https://")):
-            import tempfile
-            import urllib.parse
-            import urllib.request
+            from termux_agent.images import ImageDownloadError, download_image
 
             try:
-                with urllib.request.urlopen(img, timeout=30) as resp:
-                    data = resp.read()
-                ext = Path(urllib.parse.urlparse(img).path).suffix or ".jpg"
-                tmp_img = Path(tempfile.gettempdir()) / f"termux-agent-img{ext}"
-                tmp_img.write_bytes(data)
-                img = str(tmp_img)
-                render_info(f"Downloaded image to {img} ({len(data)} bytes).")
-            except Exception as e:  # noqa: BLE001
-                render_error(f"Failed to download image: {e}")
+                downloaded_image, size = download_image(img)
+                img = str(downloaded_image)
+                if not args.json and not args.quiet:
+                    render_info(f"Downloaded image securely ({size} bytes).")
+            except ImageDownloadError as e:
+                _render_or_json_error(f"Failed to download image: {e}", args.json)
                 return 1
         if not Path(img).expanduser().is_file():
-            render_error(f"Image not found: {img}")
+            _render_or_json_error(f"Image not found: {img}", args.json)
+            return 1
+        from termux_agent.images import ImageDownloadError, read_image
+
+        try:
+            read_image(img)
+        except ImageDownloadError as e:
+            from termux_agent.images import cleanup_downloaded_image
+
+            cleanup_downloaded_image(downloaded_image)
+            _render_or_json_error(f"Invalid image: {e}", args.json)
             return 1
         prompt = f"{prompt}\n[image: {img}]"
     if args.resume:
-        return cmd_resume(
+        return _run_with_image_cleanup(
+            downloaded_image,
+            cmd_resume,
             cfg,
             args.resume,
             prompt,
@@ -3627,9 +4211,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.watch:
         if not prompt:
-            render_error("--watch requires a one-shot prompt.")
+            _render_or_json_error("--watch requires a one-shot prompt.", args.json)
             return 2
-        return cmd_watch(
+        return _run_with_image_cleanup(
+            downloaded_image,
+            cmd_watch,
             cfg,
             prompt,
             args.provider,
@@ -3661,7 +4247,9 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.batch:
-        return cmd_batch(
+        return _run_with_image_cleanup(
+            downloaded_image,
+            cmd_batch,
             cfg,
             args.batch,
             args.provider,
@@ -3686,7 +4274,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if prompt:
         try:
-            return cmd_one_shot(
+            return _run_with_image_cleanup(
+                downloaded_image,
+                cmd_one_shot,
                 cfg,
                 prompt,
                 args.provider,
@@ -3730,11 +4320,17 @@ def main(argv: list[str] | None = None) -> int:
                 rotate=args.rotate,
             )
         except ConfigError as e:
-            render_error(f"Configuration error: {e}\nRun 'termux-agent --init' first, or fix ~/.termux-agent/config.yaml.")
+            _render_or_json_error(
+                f"Configuration error: {e}\nRun 'termux-agent --init' first, or fix ~/.termux-agent/config.yaml.",
+                args.json,
+            )
             return 1
 
     if args.json:
-        render_error("--json requires a one-shot prompt (e.g. termux-agent --json 'summarize this repo').")
+        _render_or_json_error(
+            "--json requires a one-shot prompt (e.g. termux-agent --json 'summarize this repo').",
+            True,
+        )
         return 2
 
     provider_key = args.provider or cfg.get("provider", "zen")

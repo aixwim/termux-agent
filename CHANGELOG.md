@@ -2,18 +2,80 @@
 
 All notable changes to this project are documented here.
 
+## Unreleased
+
+- Reject config files whose YAML root is not a mapping and convert YAML, UTF-8, read, and atomic-write failures into clean config errors for load/set/unset operations.
+- Report zero tokens for empty files, directories, sessions, stats, and REPL histories instead of inventing a one-token minimum.
+- Prefer existing filesystem paths in `--tokens` so names containing `..` are not misclassified as Git revision ranges.
+- Stream `--tokens` file and directory scans in bounded chunks and return a clean error for binary or invalid UTF-8 single-file input.
+- Keep provider and model selections consistent during init: provider-only setup now chooses that provider's default, and wizard custom models are added to its preset list.
+- Make non-interactive `--init --force` actually replace an existing configuration and make every init mode honor `--config FILE`.
+- Restore a silently shadowed initialization regression test and clear remaining duplicate-definition diagnostics.
+- Reserve generated session IDs atomically across concurrent processes and reject ambiguous session prefixes instead of selecting the wrong transcript.
+- Require confirmation for mutating commands that previously hid behind safe executable names, including `git clean`, `find -delete`, interpreters, and downloader output flags.
+- Make agent file writes, edits, and undo restores atomic without stripping existing executable permissions, so interrupted operations cannot leave truncated target files.
+- Preserve exceptions raised inside timeout worker threads, make config set/unset honor `--config FILE`, and report `--bench --all` output-file failures without a traceback.
+- Report configured provider names such as `zen` in JSON, diagnostics, and sessions instead of leaking the internal `openai_compat` backend label.
+- Fall back immediately when a model promotion has ended or a model is explicitly missing, while keeping generic authentication failures fatal.
+- Run model benchmarks concurrently with a bounded worker pool, fail reliably on provider/empty-response errors, include safe per-model diagnostics and summary counts, and return a nonzero status when any model fails.
+- Refresh the OpenCode Zen preset with all eight live-tested free models, remove the expired DeepSeek promotion, and repair the stale doctor fallback model.
+- Bound project-rule and memory prompt files, stream session reads, tolerate disappearing session files during sorting, and fix duplicate benchmark JSON status keys.
+- Validate restored YAML config, JSON notes, and every JSONL session record before changing local state, including legacy bundles without checksums, with bounded directory-file reads.
+- Add streaming SHA-256 checksums to new bundles and reject tampered or incomplete files before restore while accepting legacy manifests.
+- Remove stale managed artifacts when refreshing a directory bundle, preserve unrelated files, and verify manifest contents/counts before restore.
+- Create directory backups with streaming atomic file copies and publish their manifest through atomic replacement.
+- Stream stdout backups without buffering the full archive and include the manifest/session layout required for a successful piped restore.
+- Bound stdin backup archives to 64 MiB compressed, 256 MiB extracted, and 10,000 regular entries while rejecting links and special files.
+- Validate backup manifests and session filenames before restore, and restore text files through atomic replacement.
+- Reject unsafe session IDs that could escape the sessions directory and replace imported session files atomically.
+- Write session notes, memory, and configuration through flushed atomic replacement, and serialize concurrent note mutations to prevent corruption or lost updates.
+- Preserve successful `/chat` answers when session or note persistence fails, report degradation through warnings, and return structured storage errors from memory/note endpoints.
+- Isolate handler configuration per HTTP server instance so concurrent servers cannot overwrite each other's token, provider, or model.
+- Compare HTTP bearer tokens in constant time and include consistent authentication, CORS, and request-log metadata on 401 responses.
+- Make HTTP batch jobs respect the server's confirmation mode unless `auto_accept` is explicitly overridden.
+- Emit an OpenAI-compatible SSE error object when streaming execution fails instead of reporting a successful `stop`.
+- Send native chat SSE headers exactly once so event bodies remain protocol-compliant across multi-event streams.
+- Return structured HTTP 500 responses when non-stream chat execution fails instead of dropping the client connection.
+- Cap HTTP batches at 100 prompts, limit individual prompts to 200,000 characters, and support an explicit safe `workers` range of 1-4.
+- Limit HTTP request bodies to 16 MiB and return explicit errors for invalid lengths, truncated payloads, malformed UTF-8/JSON, and non-object bodies.
+- Bound CLI and HTTP-server vision inputs to 10 MiB, verify file and data-URI image signatures, use collision-safe temporary files, and clean downloads after each request.
+- Make batch, watch, aggregate summarize, and aggregate rerun status/exit codes reflect partial and total failures accurately.
+- Report exhausted provider/model failures as real workflow failures across one-shot, batch, watch, summarize, rerun, and resume.
+- Preserve valid machine-readable output across one-shot and dispatcher preflight failures in `--json` workflows.
+- Share quoted-path, URL, safe-decoding, binary rejection, and 2 MiB-per-file/4 MiB-total memory protection across all attachment modes.
+- Add `/history [N]` for a safe compact conversation view and `/clear` for resetting the terminal viewport without losing context.
+- Add searchable `/help [TERM]` output and typo-aware suggestions for unknown REPL commands.
+- Add a live REPL status bar for provider/model, agent, mode, message count, and help discovery.
+- Add slash-command completion, history-based inline suggestions, and dynamic completion for paths, sessions, providers, models, agents, and common tuning values.
+- Add a `/status` REPL dashboard for active configuration, session state, token counts, and last-run diagnostics.
+- Make shell-command confirmation visually distinct, default-safe, and EOF-safe in the interactive REPL.
+- Present interactive configuration, session usage, recent sessions, and search results as aligned, phone-friendly summaries and safe tables.
+- Refresh the interactive terminal theme with clearer answer panels, user/assistant identity, semantic status icons, compact tool activity, a scannable `/help` table, a TTY-only thinking indicator, and a more informative mobile-friendly banner.
+- Add a Termux-compatible Flake8 gate for critical Python errors to local development and CI.
+- Add a least-privilege CI dependency audit using `pip-audit`.
+- Fix `--cron` using its prompt before the CLI had initialized it.
+- Add JSON run diagnostics for elapsed time, model attempts, retries, and fallbacks.
+- Add time-to-first-token, agent round, and tool-call metrics to JSON and `--stats` output.
+
+## [1.2.0] - 2026-08-20
+
+### Highlights
+
+- **Faster, lower-memory search** — file traversal, globbing, and session metadata are streamed lazily; generated directories are pruned on large repositories.
+- **Polished mobile output** — compact adaptive banner, clearer doctor sections, concise tool-call lines, and correct multiline streaming on narrow Termux screens.
+- **More reliable model fallback** — empty provider responses are retried and then routed to a fallback model instead of being reported as successful blank answers.
+- **Safer read-only inspection** — `git_log` is available in read-only mode.
+- **Accurate diagnostics** — provider HTTP responses are distinguished from network failures, and unpublished PyPI packages are no longer reported as offline.
+- **Python 3.14 support** — included in package classifiers and the CI test matrix.
+
 ### Fixes
 
-- **Piped REPL commands now work** — piping slash-commands (`printf '/sessions\n' | termux-agent`) used to be swallowed as a one-shot prompt; they now reach the REPL correctly.
-- **Friendly error for unknown providers** — no more raw traceback for `--provider nope`.
-- **`--doctor --fix` works** — the intuitive `--fix` alias is now accepted alongside `--doctor-fix`.
-
-- **`--tokens --all` works** — the `--tokens` flag no longer swallows `--all` as its file argument; whole-store estimation works as documented.
-
-### Fixes
-
-- **REPL shows rate-limit/API errors** — when a model fails (e.g. zen `429 FreeUsageLimitError`) before producing any streamed text, the REPL now prints the error instead of silently returning to the prompt.
-- **Zen fallback models updated** — the fallback list no longer points at the three free models that were rate-limited (`deepseek-v4-flash-free`, `mimo-v2.5-free`, `big-pickle`); it now tries `hy3-free`, `nemotron-3.5-lightning-free`, `laguna-s-2.1-free`, `muse-spark-1.2-contributor-free`.
+- Piped REPL slash-commands now reach the REPL correctly.
+- Unknown providers return a friendly error instead of a traceback.
+- `--doctor --fix` is accepted alongside `--doctor-fix`.
+- `--tokens --all` no longer consumes `--all` as a file argument.
+- Rate-limit and API errors are visible in the REPL.
+- Zen fallback models prefer currently available free models.
 
 ## [1.1.0] - 2026-08-20
 

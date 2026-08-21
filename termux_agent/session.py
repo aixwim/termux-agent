@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import re
+import threading
 import time
 from pathlib import Path
 from typing import Iterator
@@ -10,6 +12,28 @@ from termux_agent.config import CONFIG_DIR
 
 SESSIONS_DIR = CONFIG_DIR / "sessions"
 NOTES_FILE = CONFIG_DIR / "notes.json"
+_NOTES_LOCK = threading.RLock()
+_SESSION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+
+
+def validate_session_id(session_id: object) -> str:
+    """Return a safe session id or reject path separators and special paths."""
+    if not isinstance(session_id, str) or not _SESSION_ID_PATTERN.fullmatch(
+        session_id
+    ):
+        raise ValueError(
+            "invalid session id (use 1-128 letters, numbers, '.', '_' or '-')"
+        )
+    return session_id
+
+
+def _write_notes(notes: dict[str, str]) -> None:
+    from termux_agent.storage import atomic_write_text
+
+    atomic_write_text(
+        NOTES_FILE,
+        json.dumps(notes, ensure_ascii=False, indent=2),
+    )
 
 
 def all_notes() -> dict[str, str]:
@@ -28,49 +52,67 @@ def get_note(session_id: str) -> str | None:
 
 
 def set_note(session_id: str, text: str) -> None:
-    notes = all_notes()
-    if text.strip():
-        notes[session_id] = text.strip()
-    else:
-        notes.pop(session_id, None)
-    NOTES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    NOTES_FILE.write_text(json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8")
+    with _NOTES_LOCK:
+        notes = all_notes()
+        if text.strip():
+            notes[session_id] = text.strip()
+        else:
+            notes.pop(session_id, None)
+        _write_notes(notes)
 
 
 def clear_note(session_id: str) -> bool:
-    notes = all_notes()
-    if session_id not in notes:
-        return False
-    notes.pop(session_id, None)
-    NOTES_FILE.write_text(json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8")
-    return True
+    with _NOTES_LOCK:
+        notes = all_notes()
+        if session_id not in notes:
+            return False
+        notes.pop(session_id, None)
+        _write_notes(notes)
+        return True
 
 
 def prune_notes(valid_ids: set[str]) -> int:
     """Drop notes for sessions that no longer exist. Returns number removed."""
-    notes = all_notes()
-    gone = [sid for sid in notes if sid not in valid_ids]
-    if not gone:
-        return 0
-    for sid in gone:
-        notes.pop(sid, None)
-    NOTES_FILE.write_text(json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8")
-    return len(gone)
+    with _NOTES_LOCK:
+        notes = all_notes()
+        gone = [sid for sid in notes if sid not in valid_ids]
+        if not gone:
+            return 0
+        for sid in gone:
+            notes.pop(sid, None)
+        _write_notes(notes)
+        return len(gone)
 
 
 class Session:
     def __init__(self, session_id: str | None = None, provider_name: str = "openai", model: str = "") -> None:
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        sid = session_id or time.strftime("%Y%m%d-%H%M%S")
-        if not session_id:
-            i = 1
-            while (SESSIONS_DIR / f"{sid}.jsonl").exists():
-                sid = f"{time.strftime('%Y%m%d-%H%M%S')}-{i}"
-                i += 1
+        if session_id:
+            sid = validate_session_id(session_id)
+            path = SESSIONS_DIR / f"{sid}.jsonl"
+            reservation = None
+        else:
+            base = time.strftime("%Y%m%d-%H%M%S")
+            index = 0
+            while True:
+                sid = base if index == 0 else f"{base}-{index}"
+                path = SESSIONS_DIR / f"{sid}.jsonl"
+                reservation = SESSIONS_DIR / f".{sid}.reserve"
+                try:
+                    if path.exists():
+                        raise FileExistsError
+                    reservation.touch(exist_ok=False)
+                    if path.exists():
+                        reservation.unlink(missing_ok=True)
+                        raise FileExistsError
+                    break
+                except FileExistsError:
+                    index += 1
         self.session_id = sid
         self.provider_name = provider_name
         self.model = model
-        self.path = SESSIONS_DIR / f"{self.session_id}.jsonl"
+        self.path = path
+        self._reservation = reservation
 
     def append(self, entry: dict) -> None:
         record = {
@@ -81,12 +123,21 @@ class Session:
         record.update(entry)
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        if self._reservation is not None:
+            self._reservation.unlink(missing_ok=True)
+            self._reservation = None
 
 
 def list_sessions() -> list[Path]:
     if not SESSIONS_DIR.exists():
         return []
-    return sorted(SESSIONS_DIR.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    def modified(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return -1
+
+    return sorted(SESSIONS_DIR.glob("*.jsonl"), key=modified, reverse=True)
 
 
 def iter_session(path: Path) -> Iterator[dict]:
@@ -167,8 +218,12 @@ def record_messages(messages: list[dict], provider_name: str, model: str, sessio
 def resolve_session(ref: str | None = None) -> Path | None:
     """Resolve a session ref (id prefix or 'latest') to a path."""
     if ref and ref not in ("latest", ""):
-        matches = [s for s in list_sessions() if s.stem.startswith(ref)]
-        return matches[-1] if matches else None
+        sessions = list_sessions()
+        exact = next((path for path in sessions if path.stem == ref), None)
+        if exact:
+            return exact
+        matches = [path for path in sessions if path.stem.startswith(ref)]
+        return matches[0] if len(matches) == 1 else None
     return latest_session()
 
 
@@ -224,9 +279,19 @@ def import_session(data: dict, session_id: str | None = None) -> str:
         provider_name=str(data.get("provider") or ""),
         model=str(data.get("model") or ""),
     )
-    s.path.write_text("", encoding="utf-8")
-    for m in clean:
-        s.append(m)
+    now = time.time()
+    records = []
+    for offset, message in enumerate(clean):
+        record = {
+            "ts": now + offset * 0.000001,
+            "provider": s.provider_name,
+            "model": s.model,
+            **message,
+        }
+        records.append(json.dumps(record, ensure_ascii=False))
+    from termux_agent.storage import atomic_write_text
+
+    atomic_write_text(s.path, "\n".join(records) + "\n")
     return s.session_id
 
 

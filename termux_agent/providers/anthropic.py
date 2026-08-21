@@ -136,8 +136,9 @@ class AnthropicProvider(Provider):
     ) -> Iterable[StreamEvent]:
         url = f"{self.base_url}/v1/messages"
         body = self._body(messages, tools, temperature, max_tokens)
-        tool_inputs: dict[str, str] = {}
-        tool_names: dict[str, str] = {}
+        tool_inputs: dict[int, str] = {}
+        tool_names: dict[int, str] = {}
+        tool_ids: dict[int, str] = {}
         text_acc: list[str] = []
         try:
             with self._client.stream("POST", url, headers=self._headers(), json=body) as resp:
@@ -158,8 +159,10 @@ class AnthropicProvider(Provider):
                     if etype == "content_block_start":
                         cb = ev.get("content_block", {})
                         if cb.get("type") == "tool_use":
-                            tool_names[cb.get("index", 0)] = cb.get("name", "")
-                            tool_inputs.setdefault(cb.get("index", 0), "")
+                            idx = ev.get("index", 0)
+                            tool_names[idx] = cb.get("name", "")
+                            tool_ids[idx] = cb.get("id", "")
+                            tool_inputs.setdefault(idx, "")
                     elif etype == "content_block_delta":
                         delta = ev.get("delta", {})
                         if delta.get("type") == "text_delta":
@@ -175,7 +178,7 @@ class AnthropicProvider(Provider):
             for idx, raw in tool_inputs.items():
                 tool_calls.append(
                     {
-                        "id": f"toolu_{idx}",
+                        "id": tool_ids.get(idx) or f"toolu_{idx}",
                         "name": tool_names.get(idx, ""),
                         "arguments": raw,
                     }

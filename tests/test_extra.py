@@ -26,6 +26,18 @@ def test_load_rules_ignores_missing(tmp_path: Path):
     assert load_rules(tmp_path) == ""
 
 
+def test_load_rules_bounds_large_files(tmp_path: Path, monkeypatch):
+    import termux_agent.agent as agent_module
+
+    (tmp_path / "AGENTS.md").write_text("x" * 64)
+    monkeypatch.setattr(agent_module, "MAX_RULE_FILE_BYTES", 16)
+    monkeypatch.setattr(agent_module, "MAX_RULES_BYTES", 16)
+    rules = agent_module.load_rules(tmp_path)
+    assert "x" * 16 in rules
+    assert "x" * 17 not in rules
+    assert "[content truncated]" in rules
+
+
 def test_build_system_prompt_appends_rules():
     base = build_system_prompt("")
     with_rules = build_system_prompt("Aturan proyek: X")
@@ -116,6 +128,25 @@ def test_session_messages(tmp_path: Path, monkeypatch):
         {"role": "user", "content": "halo"},
         {"role": "assistant", "content": "hai!"},
     ]
+
+
+def test_generated_session_ids_are_reserved_immediately(tmp_path: Path, monkeypatch):
+    import termux_agent.session as sess
+
+    monkeypatch.setattr(sess, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(sess.time, "strftime", lambda pattern: "20260821-120000")
+
+    first = sess.Session()
+    second = sess.Session()
+
+    assert first.session_id == "20260821-120000"
+    assert second.session_id == "20260821-120000-1"
+    assert sess.list_sessions() == []
+    assert len(list(tmp_path.glob(".*.reserve"))) == 2
+
+    first.append({"role": "user", "content": "hello"})
+    assert sess.list_sessions() == [first.path]
+    assert not (tmp_path / ".20260821-120000.reserve").exists()
 
 
 # --- compact ---
@@ -280,6 +311,7 @@ def test_build_agent_readonly(tmp_path: Path, monkeypatch):
     agent = build_agent(_min_cfg(), "zen", None, readonly=True)
     names = {t.name for t in agent.tools}
     assert names == READONLY_TOOLS
+    assert "git_log" in names
     assert "write_file" not in names
     assert "run_command" not in names
     assert "read-only" in agent.system_prompt.lower()
@@ -598,8 +630,6 @@ def test_cmd_one_shot_json(tmp_path: Path, monkeypatch):
 
     from termux_agent import cli
 
-    calls = {}
-
     def fake_build(*a, **k):
         return SimpleNamespace(
             provider=SimpleNamespace(name="zen", model="m"),
@@ -618,6 +648,41 @@ def test_cmd_one_shot_json(tmp_path: Path, monkeypatch):
     assert data["answer"] == "ANSWER"
     assert data["tool_calls"][0]["name"] == "read_file"
     assert data["usage"]["total_tokens"] == 8
+
+
+def test_emit_json_includes_agent_diagnostics(monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    agent = SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="fallback-model"),
+        usage={},
+        elapsed_seconds=1.23456,
+        model_attempts=["primary-model", "fallback-model"],
+        retry_count=1,
+        fallback_count=1,
+        first_token_seconds=0.4567,
+        round_count=2,
+        tool_call_count=1,
+    )
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+
+    cli._emit_json({"ok": True}, agent)
+
+    diagnostics = _json.loads(out.getvalue())["diagnostics"]
+    assert diagnostics == {
+        "elapsed_seconds": 1.235,
+        "first_token_seconds": 0.457,
+        "model_attempts": ["primary-model", "fallback-model"],
+        "retry_count": 1,
+        "fallback_count": 1,
+        "round_count": 2,
+        "tool_call_count": 1,
+    }
 
 
 # --- auto-compact on token budget ---
@@ -700,6 +765,26 @@ def test_delete_session_nonexistent(tmp_path: Path, monkeypatch):
     assert session.delete_session("nope") is None
 
 
+def test_resolve_session_rejects_ambiguous_prefix_but_prefers_exact(
+    tmp_path: Path, monkeypatch
+):
+    from termux_agent import session
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    exact = sessions_dir / "shared.jsonl"
+    longer = sessions_dir / "shared-extra.jsonl"
+    exact.write_text("{}\n")
+    longer.write_text("{}\n")
+    monkeypatch.setattr(session, "SESSIONS_DIR", sessions_dir)
+
+    assert session.resolve_session("shared") == exact
+    assert session.resolve_session("sha") is None
+    assert session.delete_session("sha") is None
+    assert exact.exists()
+    assert longer.exists()
+
+
 # --- --quiet / --copy ---
 def test_cmd_one_shot_quiet(tmp_path: Path, monkeypatch):
     import io
@@ -748,6 +833,34 @@ def test_cmd_one_shot_copy(tmp_path: Path, monkeypatch):
 
 
 # --- project-local config ---
+def test_default_zen_preset_contains_only_verified_free_models():
+    from termux_agent.config import DEFAULTS
+
+    zen = DEFAULTS["providers"]["zen"]
+    assert zen["models"] == [
+        "nemotron-3-ultra-free",
+        "nemotron-3.5-lightning-free",
+        "mimo-v2.5-free",
+        "hy3-free",
+        "laguna-s-2.1-free",
+        "muse-spark-1.2-contributor-free",
+        "x-preview-f-free",
+        "big-pickle",
+    ]
+    assert "deepseek-v4-flash-free" not in zen["fallback_models"]
+    assert set(zen["fallback_models"]) < set(zen["models"])
+
+
+def test_build_agent_uses_public_provider_name(tmp_path: Path, monkeypatch):
+    from termux_agent import cli
+
+    cfg = _min_cfg()
+    cfg["working_dir"] = str(tmp_path)
+    agent = cli.build_agent(cfg, "zen", "m", auto_accept=True)
+
+    assert agent.provider.name == "zen"
+
+
 def test_project_config_overrides(tmp_path: Path, monkeypatch):
     import os
 
@@ -960,7 +1073,7 @@ def test_embed_images_converts_to_parts(tmp_path: Path):
     from termux_agent.providers import openai_compat as oc
 
     img = tmp_path / "shot.png"
-    img.write_bytes(b"\x89PNG fake")
+    img.write_bytes(b"\x89PNG\r\n\x1a\nimage")
     out = oc._embed_images(f"look at [image: {img}] and describe it")
     assert isinstance(out, list)
     assert out[0]["type"] == "text"
@@ -988,7 +1101,7 @@ def test_wire_message_embeds_image(tmp_path: Path):
     from termux_agent.providers.openai_compat import _to_openai_wire
 
     img = tmp_path / "a.jpg"
-    img.write_bytes(b"jpegdata")
+    img.write_bytes(b"\xff\xd8\xffimage")
     out = _to_openai_wire([{"role": "user", "content": f"what is in [image: {img}]"}])
     assert out[0]["role"] == "user"
     assert isinstance(out[0]["content"], list)
@@ -1023,7 +1136,7 @@ def test_main_image_flag(tmp_path: Path, monkeypatch):
     from termux_agent import cli
 
     img = tmp_path / "x.png"
-    img.write_bytes(b"data")
+    img.write_bytes(b"\x89PNG\r\n\x1a\nimage")
     seen = {}
 
     def fake_one_shot(cfg, prompt, provider, model, **kw):
@@ -1393,6 +1506,25 @@ def test_run_guarded_no_timeout(monkeypatch):
     assert cli._run_guarded(agent, "p", None, timeout=None) == "FAST"
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+def test_run_guarded_preserves_worker_exception(streaming):
+    from termux_agent import cli
+
+    class BrokenAgent:
+        def run(self, prompt, on_tool_use=None, on_text_delta=None):
+            raise ValueError("original provider failure")
+
+    callback = (lambda text: None) if streaming else None
+    with pytest.raises(ValueError, match="original provider failure"):
+        cli._run_guarded(
+            BrokenAgent(),
+            "p",
+            None,
+            timeout=1,
+            on_text_delta=callback,
+        )
+
+
 def test_record_messages(tmp_path: Path, monkeypatch):
     from termux_agent import session
 
@@ -1602,6 +1734,8 @@ def test_server_token_auth(tmp_path: Path, monkeypatch):
             raise AssertionError("expected 401")
         except urllib.error.HTTPError as e:
             assert e.code == 401
+            assert e.headers["WWW-Authenticate"] == "Bearer"
+            assert e.headers["Access-Control-Allow-Origin"] == "*"
         with chat("sekret") as r:
             assert _json.loads(r.read())["ok"] is True
 
@@ -1696,7 +1830,91 @@ def test_cmd_bench_all_providers(tmp_path: Path, monkeypatch):
     payload = _json.loads(out.getvalue())
     assert [p["provider"] for p in payload["providers"]] == ["zen", "groq"]
     assert payload["tested"] == 2
-    assert payload["ok"] == 2
+    assert payload["ok"] is True
+    assert payload["succeeded"] == 2
+    assert payload["failed"] == 0
+
+
+def test_cmd_bench_all_providers_handles_output_error(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "build_agent", lambda *args, **kwargs: object())
+    monkeypatch.setattr(cli, "_run_guarded", lambda *args, **kwargs: "ok")
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    cfg = _min_cfg()
+    cfg["providers"]["zen"]["models"] = ["m1"]
+
+    assert cli.cmd_bench(
+        cfg,
+        as_json=True,
+        all_providers=True,
+        output=str(tmp_path),
+    ) == 1
+    assert "Cannot write output file" in cli.sys.stdout.getvalue()
+
+
+def test_cmd_bench_reports_agent_errors_and_returns_nonzero(
+    tmp_path: Path, monkeypatch
+):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    def fake_build(cfg, provider, model, auto_accept=True):
+        return SimpleNamespace(
+            last_error="HTTP 401: promotion ended" if model == "expired" else None,
+        )
+
+    monkeypatch.setattr(cli, "build_agent", fake_build)
+    monkeypatch.setattr(
+        cli,
+        "_run_guarded",
+        lambda agent, prompt, callback, timeout: (
+            "Error: unavailable" if agent.last_error else "OK"
+        ),
+    )
+    cfg = _min_cfg()
+    cfg["providers"]["zen"]["models"] = ["working", "expired"]
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_bench(cfg, "zen", as_json=True) == 1
+    payload = _json.loads(output.getvalue())
+    assert payload["ok"] is False
+    assert payload["tested"] == 2
+    assert payload["succeeded"] == 1
+    assert payload["failed"] == 1
+    failed = next(item for item in payload["models"] if not item["ok"])
+    assert failed["model"] == "expired"
+    assert "promotion ended" in failed["error"]
+
+
+def test_cmd_bench_parallel_preserves_model_order(monkeypatch):
+    import io
+    import json as _json
+    import time
+
+    from termux_agent import cli
+
+    cfg = _min_cfg()
+    cfg["providers"]["zen"]["models"] = ["slow", "fast"]
+
+    def fake_bench(cfg, provider, model, prompt, timeout):
+        if model == "slow":
+            time.sleep(0.05)
+        return {"model": model, "seconds": 0.01, "chars": 2, "ok": True}
+
+    monkeypatch.setattr(cli, "_bench_model", fake_bench)
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_bench(cfg, "zen", as_json=True, workers=2) == 0
+    payload = _json.loads(output.getvalue())
+    assert [item["model"] for item in payload["models"]] == ["slow", "fast"]
 
 
 def test_server_cors_headers(tmp_path: Path, monkeypatch):
@@ -1837,19 +2055,40 @@ def test_load_config_explicit_file(tmp_path: Path, monkeypatch):
     assert seen == {"provider": "anthropic", "model": "claude-x"}
 
 
-def test_init_noninteractive(tmp_path: Path, monkeypatch):
+def test_init_noninteractive_explicit_provider_model(tmp_path: Path, monkeypatch):
     import io
 
-    from termux_agent import cli, config
+    from termux_agent import cli
 
     fake_cf = tmp_path / "config.yaml"
     monkeypatch.setattr(cli, "CONFIG_FILE", fake_cf)
     monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
     assert cli.cmd_init("openai", "gpt-test") == 0
-    cfg = config.load_config(str(fake_cf))
+    import yaml
+
+    cfg = yaml.safe_load(fake_cf.read_text(encoding="utf-8"))
     assert cfg["provider"] == "openai"
     assert cfg["providers"]["openai"]["models"] == ["gpt-test"]
+
+
+def test_init_provider_without_model_uses_that_provider_default(
+    tmp_path: Path, monkeypatch
+):
+    import io
+    import yaml
+
+    from termux_agent import cli
+
+    fake_cf = tmp_path / "config.yaml"
+    monkeypatch.setattr(cli, "CONFIG_FILE", fake_cf)
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+
+    assert cli.cmd_init("openai") == 0
+    cfg = yaml.safe_load(fake_cf.read_text(encoding="utf-8"))
+    assert cfg["provider"] == "openai"
+    assert cfg["model"] == cfg["providers"]["openai"]["models"][0]
+    assert cfg["model"] != "nemotron-3-ultra-free"
 
 
 def test_init_unknown_provider(monkeypatch):
@@ -1924,6 +2163,7 @@ def test_server_stream_sse(tmp_path: Path, monkeypatch):
         assert '"text": "hel"' in body
         assert 'event: done' in body
         assert '"answer": "hello"' in body
+        assert "Content-Type:" not in body
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -2421,6 +2661,73 @@ def test_cmd_tokens_file(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(cli.sys, "stdout", out)
     assert cli.cmd_tokens(str(f)) == 0
     assert "800 characters, ~200 tokens" in out.getvalue()
+
+
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_cmd_tokens_empty_input_reports_zero_tokens(tmp_path: Path, monkeypatch, kind):
+    import io
+    import json
+
+    from termux_agent import cli
+
+    target = tmp_path / kind
+    if kind == "file":
+        target.write_text("", encoding="utf-8")
+    else:
+        target.mkdir()
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_tokens(str(target), as_json=True) == 0
+    payload = json.loads(output.getvalue())
+    assert payload["chars"] == 0
+    assert payload["tokens"] == 0
+
+
+def test_count_utf8_file_streams_across_multibyte_boundary(tmp_path: Path):
+    from termux_agent import cli
+
+    size = 1024 * 1024
+    path = tmp_path / "large.txt"
+    path.write_bytes((b"a" * (size - 1)) + "😀".encode("utf-8"))
+
+    assert cli._count_utf8_file(path) == size
+
+
+def test_cmd_tokens_binary_file_returns_clean_json_error(tmp_path: Path, monkeypatch):
+    import io
+    import json
+
+    from termux_agent import cli
+
+    path = tmp_path / "binary.dat"
+    path.write_bytes(b"prefix\x00payload")
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_tokens(str(path), as_json=True) == 1
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is False
+    assert "binary file" in payload["error"]
+
+
+def test_cmd_tokens_existing_double_dot_path_is_not_a_git_range(
+    tmp_path: Path, monkeypatch
+):
+    import io
+    import json
+
+    from termux_agent import cli
+
+    path = tmp_path / "notes..draft.txt"
+    path.write_text("local file", encoding="utf-8")
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_tokens(str(path), as_json=True) == 0
+    payload = json.loads(output.getvalue())
+    assert payload["chars"] == len("local file")
+    assert "git" not in payload
 
 
 def test_one_shot_no_save(tmp_path: Path, monkeypatch):
@@ -2928,6 +3235,22 @@ def test_cmd_cron(tmp_path: Path, monkeypatch):
     assert "cron.log" in line
 
 
+def test_main_cron_uses_positional_prompt(monkeypatch):
+    from termux_agent import cli
+
+    captured = {}
+    monkeypatch.setattr(cli, "load_config", lambda *_: _min_cfg())
+
+    def fake_cron(schedule, prompt, **kwargs):
+        captured.update(schedule=schedule, prompt=prompt)
+        return 0
+
+    monkeypatch.setattr(cli, "cmd_cron", fake_cron)
+
+    assert cli.main(["--cron", "*/5 * * * *", "check", "status"]) == 0
+    assert captured == {"schedule": "*/5 * * * *", "prompt": "check status"}
+
+
 # --- allow-dir / sessions/<id> endpoint / cleanup / screenshot-dir ---
 def test_build_agent_allow_dirs(tmp_path: Path, monkeypatch):
     from types import SimpleNamespace
@@ -3175,6 +3498,54 @@ def test_batch_fail_fast(tmp_path: Path, monkeypatch):
     import json as _json
 
     assert _json.loads(out.getvalue())["fail_fast"] is True
+
+
+def test_batch_partial_failure_sets_summary_and_exit(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    results = {"good": {"answer": "ok"}, "bad": {"answer": None, "error": "boom"}}
+    monkeypatch.setattr(cli, "_batch_run_one", lambda *args, **kwargs: results[args[-1]])
+    prompts = tmp_path / "prompts.txt"
+    prompts.write_text("good\nbad\n")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+
+    code = cli.cmd_batch(_min_cfg(), str(prompts), "zen", None, as_json=True)
+
+    payload = _json.loads(out.getvalue())
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["total"] == 2
+    assert payload["succeeded"] == 1
+    assert payload["failed"] == 1
+
+
+def test_watch_total_provider_failure_returns_nonzero(monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    agent = SimpleNamespace(
+        last_error="provider unavailable",
+        run=lambda *args, **kwargs: "Error: provider unavailable",
+    )
+    monkeypatch.setattr(cli, "build_agent", lambda *args, **kwargs: agent)
+    monkeypatch.setattr(cli, "_run_guarded", lambda current, *args, **kwargs: current.run())
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+
+    code = cli.cmd_watch(
+        _min_cfg(), "check", "zen", None, interval=1, max_rounds=1, as_json=True
+    )
+
+    payload = _json.loads(out.getvalue())
+    assert code == 1
+    assert payload == {"round": 1, "error": "provider unavailable"}
 
 
 def test_cmd_show_estimates_tokens(tmp_path: Path, monkeypatch):
@@ -3476,8 +3847,6 @@ def test_repl_attach(tmp_path: Path, monkeypatch):
 
 
 def test_repl_search(tmp_path: Path, monkeypatch):
-    import io
-
     from types import SimpleNamespace
 
     from termux_agent import session
@@ -3497,12 +3866,11 @@ def test_repl_search(tmp_path: Path, monkeypatch):
         ctx=SimpleNamespace(working_dir=tmp_path),
     )
     monkeypatch.setattr("termux_agent.ui.repl.Session", lambda **k: Session())
-    out = io.StringIO()
-    monkeypatch.setattr("termux_agent.ui.repl.console", SimpleNamespace(print=lambda *a, **k: out.write(" ".join(map(str, a)) + "\n")))
+    rows = []
+    monkeypatch.setattr("termux_agent.ui.repl.render_table", lambda title, columns, data: rows.extend(data))
     repl = Repl(agent, provider_name="zen", model="m")
     repl._handle_command("/search raccoons", None)
-    assert "20260820-000001" in out.getvalue()
-    assert "20260820-000002" not in out.getvalue()
+    assert rows == [["20260820-000001", "tell me about raccoons"]]
 
 
 def test_rerun_attach(tmp_path: Path, monkeypatch):
@@ -3860,7 +4228,7 @@ def test_server_batch_overrides(tmp_path: Path, monkeypatch):
     try:
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/batch",
-            data=_json.dumps({"prompts": ["a", "b"], "max_output_chars": 500, "readonly": True}).encode(),
+            data=_json.dumps({"prompts": ["a", "b"], "max_output_chars": 500, "readonly": True, "auto_accept": False}).encode(),
             headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -3869,6 +4237,7 @@ def test_server_batch_overrides(tmp_path: Path, monkeypatch):
             assert all(x["answer"] == "ok" for x in body["results"])
         assert seen["max_output_chars"] == 500
         assert seen["readonly"] is True
+        assert seen["auto_accept"] is False
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -4050,6 +4419,50 @@ def test_init_force(tmp_path: Path, monkeypatch):
     assert "zen" in cfg_file.read_text(encoding="utf-8")
 
 
+def test_init_force_noninteractive_replaces_existing_config(
+    tmp_path: Path, monkeypatch
+):
+    import io
+    import yaml
+
+    from termux_agent import cli
+    from termux_agent.config import DEFAULTS
+
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("obsolete: true\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cli, "CONFIG_FILE", cfg_file)
+    monkeypatch.setattr(cli, "DEFAULTS", DEFAULTS)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO())
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+
+    assert cli.cmd_init(force=True) == 0
+    saved = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
+    assert "obsolete" not in saved
+    assert saved["provider"] == DEFAULTS["provider"]
+    assert saved["model"] == DEFAULTS["model"]
+
+
+def test_main_init_honors_explicit_config_file(tmp_path: Path, monkeypatch):
+    import io
+    import yaml
+
+    from termux_agent import cli
+
+    global_config = tmp_path / "global.yaml"
+    custom_config = tmp_path / "nested" / "custom.yaml"
+    global_config.write_text("keep: global\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "CONFIG_FILE", global_config)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO())
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["--config", str(custom_config), "--init"]) == 0
+    saved = yaml.safe_load(custom_config.read_text(encoding="utf-8"))
+    assert saved["provider"] == "zen"
+    assert global_config.read_text(encoding="utf-8") == "keep: global\n"
+
+
 def test_watch_json(tmp_path: Path, monkeypatch):
     import io
     import json as _json
@@ -4132,6 +4545,9 @@ def test_bundle_stdout(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
     monkeypatch.setattr(cli, "CONFIG_FILE", tmp_path / "config.json")
     cli.CONFIG_FILE.write_text(_json.dumps({"provider": "zen"}))
+    (sdir / "stream-session.jsonl").write_text(
+        '{"role":"user","content":"hello"}\n'
+    )
     out = io.BytesIO()
 
     class FakeStdout:
@@ -4143,6 +4559,8 @@ def test_bundle_stdout(tmp_path: Path, monkeypatch):
     with tarfile.open(fileobj=out, mode="r:gz") as tf:
         names = tf.getnames()
     assert "config.json" in names
+    assert "manifest.json" in names
+    assert "sessions/stream-session.jsonl" in names
 
 
 # --- server DELETE session / markdown / prune keep ---
@@ -4641,7 +5059,7 @@ def test_image_url_download(tmp_path: Path, monkeypatch):
     class H(BaseHTTPRequestHandler):
         def do_GET(self):
             served["path"] = self.path
-            body = b"fakepng"
+            body = b"\x89PNG\r\n\x1a\n" + b"image-data"
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -4678,7 +5096,7 @@ def test_image_url_download(tmp_path: Path, monkeypatch):
         srv_http.server_close()
 
 
-def test_init_noninteractive(tmp_path: Path, monkeypatch):
+def test_init_noninteractive_custom_defaults(tmp_path: Path, monkeypatch):
     import io
 
     from termux_agent import cli, config
@@ -4767,7 +5185,7 @@ def test_server_chat_image_url(tmp_path: Path, monkeypatch):
 
     class H(BaseHTTPRequestHandler):
         def do_GET(self):
-            body = b"fakepng"
+            body = b"\x89PNG\r\n\x1a\nimage-data"
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -5038,10 +5456,806 @@ def test_doctor_update_check(monkeypatch):
     assert "9.9.9" in upd["detail"]
 
 
-def test_version_is_110():
+def test_doctor_treats_http_error_as_reachable(monkeypatch):
+    import io
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    from termux_agent import cli
+
+    def raise_http_error(*args, **kwargs):
+        raise urllib.error.HTTPError("https://example.test", 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", raise_http_error)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_doctor(_min_cfg(), network=True, as_json=True) == 0
+    checks = _json.loads(out.getvalue())["checks"]
+    connectivity = next(c for c in checks if c["label"] == "connectivity")
+    assert connectivity["ok"] is True
+    assert "HTTP 404" in connectivity["detail"]
+
+
+def test_doctor_reports_unpublished_pypi_package(monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "_latest_pypi_version", lambda: "")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    assert cli.cmd_doctor(_min_cfg(), update=True, as_json=True) == 0
+    checks = _json.loads(out.getvalue())["checks"]
+    update = next(c for c in checks if c["label"] == "update check")
+    assert update["ok"] is True
+    assert "not published" in update["detail"]
+
+
+def test_latest_pypi_version_maps_404_to_unpublished(monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    from termux_agent import cli
+
+    def raise_not_found(*args, **kwargs):
+        raise urllib.error.HTTPError("https://pypi.org", 404, "Not Found", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", raise_not_found)
+    assert cli._latest_pypi_version() == ""
+
+
+def test_plain_stream_preserves_line_breaks(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        width = 80
+
+        def print(self, value="", **kwargs):
+            calls.append((str(value), kwargs))
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    printer = renderer.PlainStreamPrinter()
+    printer.feed("first\nsecond\nthird")
+    printer.flush()
+
+    assert [text for text, _ in calls] == ["first", "second", "third"]
+    assert all(call.get("end") is None for _, call in calls)
+
+
+def test_rich_stream_has_assistant_heading_and_spacing(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append((str(value), kwargs))
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: False)
+    printer = renderer.PlainStreamPrinter()
+    printer.feed("")
+    printer.feed("hello")
+    printer.flush()
+
+    assert [text for text, _ in calls] == ["  assistant ", "hello", ""]
+    assert printer.streamed_chars == 5
+
+
+def test_tool_use_is_compact_and_truncated(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        width = 40
+
+        def print(self, value="", **kwargs):
+            calls.append(str(value))
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: False)
+    renderer.render_tool_use("read_file", "{\"path\": \"a-very-long-file-name-that-must-be-truncated.txt\"}")
+
+    assert len(calls) == 1
+    assert "read_file" in calls[0]
+    assert calls[0].endswith("…")
+
+
+def test_rich_info_uses_semantic_status_markers(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append(str(value))
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: False)
+
+    renderer.render_info("[OK] provider reachable")
+    renderer.render_info("Run: 1.20s | tools: 2")
+    renderer.render_error("request failed")
+
+    assert calls[0] == "  ✓ provider reachable"
+    assert calls[1].startswith("  › Run: 1.20s")
+    assert calls[2] == "  ✕ error  request failed"
+
+
+def test_plain_help_preserves_script_friendly_text(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append(str(value))
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: True)
+    renderer.render_help("Commands:\n  /help  show help\nType a message.")
+
+    assert calls == ["Commands:\n  /help  show help\nType a message."]
+
+
+def test_rich_help_builds_command_table_and_hint(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append(value)
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: False)
+    renderer.render_help("Commands:\n  /help  show help\nType a message.")
+
+    assert len(calls) == 2
+    assert calls[0].row_count == 1
+    assert str(calls[1]) == "  › Type a message."
+
+
+def test_activity_is_silent_outside_interactive_terminal(monkeypatch):
+    from termux_agent.ui import renderer
+
+    class FakeConsole:
+        is_terminal = False
+
+        def status(self, *args, **kwargs):
+            raise AssertionError("status must not run for non-interactive output")
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: False)
+    with renderer.activity("Thinking"):
+        pass
+
+
+def test_activity_uses_transient_rich_status(monkeypatch):
+    from termux_agent.ui import renderer
+
+    captured = {}
+
+    class Status:
+        def __enter__(self):
+            captured["entered"] = True
+
+        def __exit__(self, *_):
+            captured["exited"] = True
+
+    class FakeConsole:
+        is_terminal = True
+
+        def status(self, label, **kwargs):
+            captured.update(label=str(label), kwargs=kwargs)
+            return Status()
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: False)
+    with renderer.activity("Thinking"):
+        pass
+
+    assert captured["label"] == " Thinking Ctrl+C to cancel"
+    assert captured["kwargs"] == {"spinner": "dots", "spinner_style": "bright_cyan"}
+    assert captured["entered"] and captured["exited"]
+
+
+def test_plain_summary_aligns_key_values(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append(str(value))
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: True)
+    renderer.render_summary("session", [("model", "fast"), ("tokens", 42)])
+
+    assert calls == ["== session ==", "model   fast", "tokens  42"]
+
+
+def test_rich_summary_builds_titled_panel(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append(value)
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: False)
+    renderer.render_summary("configuration", [("model", "fast")])
+
+    assert len(calls) == 1
+    assert str(calls[0].title) == " configuration "
+
+
+def test_plain_table_aligns_rows(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append(str(value))
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: True)
+    renderer.render_table("sessions", ["id", "size"], [["abc", "2 KiB"], ["d", "9 B"]])
+
+    assert calls == ["== sessions ==", "id   size ", "abc  2 KiB", "d    9 B  "]
+
+
+def test_rich_table_treats_markup_as_literal(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append(value)
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: False)
+    renderer.render_table("search", ["session", "match"], [["one", "[red]literal[/red]"]])
+
+    assert len(calls) == 1
+    assert calls[0].row_count == 1
+
+
+def test_repl_confirmation_is_explicit_and_defaults_to_no(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    import prompt_toolkit
+
+    from termux_agent.ui.repl import Repl
+
+    captured = {}
+
+    def fake_prompt(message, **kwargs):
+        captured.update(message=message, kwargs=kwargs)
+        return "yes"
+
+    monkeypatch.setattr(prompt_toolkit, "prompt", fake_prompt)
+    agent = SimpleNamespace(system_prompt="BASE", ctx=SimpleNamespace(working_dir=tmp_path))
+    repl = Repl(agent, provider_name="zen", model="m")
+
+    assert repl._confirm("pkg update") is True
+    assert "confirm shell command" in "".join(text for _, text in captured["message"])
+    assert "pkg update" in "".join(text for _, text in captured["message"])
+    assert captured["kwargs"]["default"] == "n"
+
+
+def test_repl_confirmation_refuses_eof(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    import prompt_toolkit
+
+    from termux_agent.ui.repl import Repl
+
+    monkeypatch.setattr(prompt_toolkit, "prompt", lambda *a, **k: (_ for _ in ()).throw(EOFError))
+    agent = SimpleNamespace(system_prompt="BASE", ctx=SimpleNamespace(working_dir=tmp_path))
+    repl = Repl(agent, provider_name="zen", model="m")
+
+    assert repl._confirm("pkg update") is False
+
+
+def test_repl_status_dashboard_includes_runtime_metrics(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import Repl
+
+    captured = {}
+    monkeypatch.setattr(
+        "termux_agent.ui.repl.render_summary",
+        lambda title, items: captured.update(title=title, items=dict(items)),
+    )
+    agent = SimpleNamespace(
+        system_prompt="BASE",
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        messages=[
+            {"role": "system", "content": "BASE"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ],
+        usage={"total_tokens": 12},
+        elapsed_seconds=1.25,
+        first_token_seconds=0.4,
+        tool_call_count=2,
+        retry_count=1,
+        fallback_count=0,
+    )
+    repl = Repl(agent, provider_name="zen", model="fast", agent_name="coder")
+
+    assert repl._handle_command("/status", None) is False
+    assert captured["title"] == "agent status"
+    assert captured["items"]["provider / model"] == "zen / fast"
+    assert captured["items"]["messages"] == 2
+    assert captured["items"]["tokens"] == "12"
+    assert captured["items"]["last run"] == "1.25s · first token 0.40s"
+    assert captured["items"]["tool calls"] == 2
+    assert captured["items"]["retries / fallbacks"] == "1 / 0"
+
+
+def test_slash_command_completion_stays_in_sync_with_help():
+    from termux_agent.ui.repl import HELP, _slash_commands
+
+    commands = _slash_commands()
+
+    assert len(commands) == len(set(commands))
+    assert {"/help", "/status", "/provider", "/exit", "/quit"} <= set(commands)
+    assert all(command in HELP for command in commands)
+
+
+def test_prompt_session_has_history_suggestions_and_completion(tmp_path: Path, monkeypatch):
+    from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    from termux_agent.ui import repl
+
+    monkeypatch.setattr(repl, "CONFIG_DIR", tmp_path)
+    session = repl.make_prompt_session("zen")
+    completions = list(
+        session.completer.get_completions(Document("/sta", cursor_position=4), CompleteEvent())
+    )
+
+    assert isinstance(session.auto_suggest, AutoSuggestFromHistory)
+    assert {item.text for item in completions} >= {"/stats", "/status"}
+
+
+def test_command_completion_suggests_live_sessions(tmp_path: Path, monkeypatch):
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    from termux_agent import session
+    from termux_agent.ui.repl import _command_completer
+
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sessions)
+    (sessions / "session-one.jsonl").write_text("{}\n")
+    completer = _command_completer()
+
+    found = completer.get_completions(Document("/resume ses", cursor_position=11), CompleteEvent())
+
+    assert {item.text for item in found} == {"session-one"}
+
+
+def test_command_completion_suggests_paths(tmp_path: Path, monkeypatch):
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    from termux_agent.ui.repl import _command_completer
+
+    (tmp_path / "notes.txt").write_text("hello")
+    monkeypatch.chdir(tmp_path)
+    completer = _command_completer()
+
+    found = completer.get_completions(Document("/attach not", cursor_position=11), CompleteEvent())
+
+    assert {item.display_text for item in found} == {"notes.txt"}
+
+
+def test_command_completion_reads_provider_model_and_agent_config(monkeypatch):
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    from termux_agent import config
+    from termux_agent.ui.repl import _command_completer
+
+    monkeypatch.setattr(
+        config,
+        "load_config",
+        lambda: {
+            "providers": {
+                "local": {"models": ["tiny-model"], "fallback_models": ["backup-model"]}
+            },
+            "agents": {"coder": {}},
+        },
+    )
+    completer = _command_completer()
+
+    def choices(text):
+        return {
+            item.text
+            for item in completer.get_completions(
+                Document(text, cursor_position=len(text)), CompleteEvent()
+            )
+        }
+
+    assert choices("/provider loc") == {"local"}
+    assert choices("/model tiny") == {"tiny-model"}
+    assert choices("/model back") == {"backup-model"}
+    assert choices("/agent cod") == {"coder"}
+
+
+def test_repl_bottom_toolbar_tracks_live_state(tmp_path: Path):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import Repl
+
+    agent = SimpleNamespace(
+        system_prompt="BASE",
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        messages=[{"role": "system", "content": "BASE"}, {"role": "user", "content": "hi"}],
+    )
+    repl = Repl(agent, provider_name="zen", model="fast", agent_name="coder")
+
+    toolbar = "".join(text for _, text in repl._bottom_toolbar())
+    assert toolbar == " zen/fast  ·  STREAM  ·  coder  ·  1 msgs  ·  /help "
+
+    repl.plan_mode = True
+    repl.provider_name = "local"
+    toolbar = "".join(text for _, text in repl._bottom_toolbar())
+    assert "local/fast" in toolbar
+    assert "PLAN" in toolbar
+
+
+def test_help_filter_searches_commands_and_descriptions():
+    from termux_agent.ui.repl import _filtered_help
+
+    result = _filtered_help("session")
+
+    assert result.startswith("Help results for 'session':")
+    assert "/sessions" in result
+    assert "/resume" in result
+    assert "/maxrounds" not in result
+    assert _filtered_help("does-not-exist") == ""
+
+
+def test_unknown_repl_command_suggests_nearest_match(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import Repl
+
+    errors = []
+    monkeypatch.setattr("termux_agent.ui.repl.render_error", errors.append)
+    agent = SimpleNamespace(system_prompt="BASE", ctx=SimpleNamespace(working_dir=tmp_path))
+    repl = Repl(agent, provider_name="zen", model="fast")
+
+    assert repl._handle_command("/statsu", None) is False
+    assert errors == ["Unknown command: /statsu. Did you mean /stats, /status?"]
+
+
+def test_repl_history_is_limited_compact_and_safe(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import Repl
+
+    captured = {}
+    monkeypatch.setattr(
+        "termux_agent.ui.repl.render_table",
+        lambda title, columns, rows: captured.update(title=title, columns=columns, rows=rows),
+    )
+    agent = SimpleNamespace(
+        system_prompt="BASE",
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        messages=[
+            {"role": "system", "content": "BASE"},
+            {"role": "user", "content": "old"},
+            {"role": "assistant", "content": "[red]" + "x" * 130},
+            {"role": "tool", "content": "hidden"},
+            {"role": "user", "content": "new\nquestion"},
+        ],
+    )
+    repl = Repl(agent, provider_name="zen", model="fast")
+
+    repl._show_history("2")
+
+    assert captured["title"] == "conversation history"
+    assert captured["columns"] == ["role", "message"]
+    assert [row[0] for row in captured["rows"]] == ["assistant", "user"]
+    assert captured["rows"][0][1].endswith("…")
+    assert captured["rows"][1][1] == "new question"
+
+
+def test_repl_history_rejects_invalid_limit(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import Repl
+
+    errors = []
+    monkeypatch.setattr("termux_agent.ui.repl.render_error", errors.append)
+    agent = SimpleNamespace(system_prompt="BASE", ctx=SimpleNamespace(working_dir=tmp_path), messages=[])
+    repl = Repl(agent, provider_name="zen", model="fast")
+
+    repl._show_history("100")
+
+    assert errors == ["History count must be an integer between 1 and 50."]
+
+
+def test_repl_clear_keeps_session_state(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import Repl
+
+    cleared = []
+    monkeypatch.setattr("termux_agent.ui.repl.console", SimpleNamespace(clear=lambda: cleared.append(True)))
+    messages = [{"role": "system", "content": "BASE"}, {"role": "user", "content": "keep"}]
+    agent = SimpleNamespace(
+        system_prompt="BASE", ctx=SimpleNamespace(working_dir=tmp_path), messages=messages
+    )
+    repl = Repl(agent, provider_name="zen", model="fast")
+
+    assert repl._handle_command("/clear", None) is False
+    assert cleared == [True]
+    assert agent.messages == messages
+
+
+def test_repl_attach_supports_quoted_paths(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.ui.repl import Repl
+
+    attachment = tmp_path / "project notes.txt"
+    attachment.write_text("quoted path works")
+    captured = {}
+    agent = SimpleNamespace(
+        system_prompt="BASE",
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        run=lambda prompt, **kwargs: captured.update(prompt=prompt) or "ok",
+    )
+    monkeypatch.setattr("termux_agent.ui.repl.PlainStreamPrinter", lambda: SimpleNamespace(feed=lambda x: None, flush=lambda: None, streamed_chars=0))
+    monkeypatch.setattr("termux_agent.ui.repl.render_answer", lambda answer: None)
+    repl = Repl(agent, provider_name="zen", model="fast")
+
+    assert repl._handle_command(f'/attach "{attachment}"', None) is False
+    assert "quoted path works" in captured["prompt"]
+    assert str(attachment) in captured["prompt"]
+
+
+def test_repl_attach_rejects_large_files_before_reading(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent.attachments import ATTACH_MAX_BYTES
+    from termux_agent.ui.repl import Repl
+
+    attachment = tmp_path / "large.txt"
+    attachment.write_bytes(b"x")
+    monkeypatch.setattr(Path, "stat", lambda self: SimpleNamespace(st_size=ATTACH_MAX_BYTES + 1))
+    errors = []
+    monkeypatch.setattr("termux_agent.ui.repl.render_error", errors.append)
+    agent = SimpleNamespace(system_prompt="BASE", ctx=SimpleNamespace(working_dir=tmp_path))
+    repl = Repl(agent, provider_name="zen", model="fast")
+
+    assert repl._handle_command(f"/attach {attachment}", None) is False
+    assert errors == [f"Attachment exceeds 2 MiB limit: {attachment}"]
+
+
+def test_attachment_loader_rejects_binary_content(tmp_path: Path):
+    from termux_agent.attachments import AttachmentError, load_attachment
+
+    binary = tmp_path / "image.bin"
+    binary.write_bytes(b"header\x00payload")
+
+    with pytest.raises(AttachmentError, match="appears to be binary"):
+        load_attachment(str(binary))
+
+
+def test_attachment_loader_enforces_combined_limit(tmp_path: Path, monkeypatch):
+    from termux_agent import attachments
+
+    monkeypatch.setattr(attachments, "ATTACH_MAX_BYTES", 10)
+    monkeypatch.setattr(attachments, "ATTACH_TOTAL_MAX_BYTES", 12)
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("1234567")
+    second.write_text("abcdefg")
+
+    with pytest.raises(attachments.AttachmentError, match="4 MiB combined limit"):
+        attachments.append_attachments("prompt", [str(first), str(second)])
+
+
+def test_one_shot_attachment_error_is_valid_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    missing = tmp_path / "missing.txt"
+
+    code = cli.cmd_one_shot(
+        _min_cfg(), "read this", "zen", None, attach=[str(missing)], as_json=True
+    )
+
+    assert code == 1
+    payload = _json.loads(out.getvalue())
+    assert payload["ok"] is False
+    assert str(missing) in payload["error"]
+
+
+def test_one_shot_provider_failure_is_not_reported_as_success(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    agent = SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="broken"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        messages=[],
+        last_error="zen: HTTP 503 - unavailable",
+        model_attempts=["broken"],
+        elapsed_seconds=0.2,
+        run=lambda *args, **kwargs: "Error: zen: HTTP 503 - unavailable",
+    )
+    monkeypatch.setattr(cli, "build_agent", lambda *args, **kwargs: agent)
+    monkeypatch.setattr(cli, "_run_guarded", lambda current, *args, **kwargs: current.run())
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+
+    code = cli.cmd_one_shot(_min_cfg(), "hello", "zen", None, as_json=True, no_save=True)
+
+    payload = _json.loads(out.getvalue())
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["error"] == "zen: HTTP 503 - unavailable"
+
+
+def test_batch_provider_failure_becomes_result_error(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    agent = SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="broken"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        last_error="provider unavailable",
+        run=lambda *args, **kwargs: "Error: provider unavailable",
+    )
+    monkeypatch.setattr(cli, "build_agent", lambda *args, **kwargs: agent)
+    monkeypatch.setattr(cli, "_run_guarded", lambda current, *args, **kwargs: current.run())
+
+    result = cli._batch_run_one(
+        _min_cfg(), "zen", None, False, None, None, None, None, None, None, None, None, "hello"
+    )
+
+    assert result["answer"] is None
+    assert result["error"] == "provider unavailable"
+
+
+def test_resume_provider_failure_is_valid_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    session_path = tmp_path / "session.jsonl"
+    session_path.write_text("")
+    monkeypatch.setattr(
+        cli,
+        "find_session",
+        lambda ref: (session_path, {"provider": "zen", "model": "broken"}, []),
+    )
+    agent = SimpleNamespace(
+        system_prompt="BASE",
+        provider=SimpleNamespace(name="zen", model="broken"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        messages=[],
+        last_error="provider unavailable",
+        model_attempts=["broken"],
+        elapsed_seconds=0.1,
+        run=lambda *args, **kwargs: "Error: provider unavailable",
+    )
+    monkeypatch.setattr(cli, "build_agent", lambda *args, **kwargs: agent)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+
+    code = cli.cmd_resume(_min_cfg(), "session", "continue", as_json=True)
+
+    payload = _json.loads(out.getvalue())
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["error"] == "provider unavailable"
+
+
+@pytest.mark.parametrize("kind", ["clipboard", "rules", "system_prompt"])
+def test_one_shot_preflight_errors_are_valid_json(tmp_path: Path, monkeypatch, kind: str):
+    import io
+    import json as _json
+
+    from termux_agent import cli, notify
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    kwargs = {"as_json": True}
+    prompt = "hello"
+    if kind == "clipboard":
+        prompt = ""
+        kwargs["clip"] = True
+        monkeypatch.setattr(notify, "clipboard_get", lambda: "")
+    elif kind == "rules":
+        kwargs["rules_file"] = str(tmp_path / "missing-rules.md")
+    else:
+        kwargs["system_prompt_file"] = str(tmp_path / "missing-system.md")
+
+    code = cli.cmd_one_shot(_min_cfg(), prompt, "zen", None, **kwargs)
+
+    assert code in (1, 2)
+    payload = _json.loads(out.getvalue())
+    assert payload["ok"] is False
+    assert payload["error"]
+
+
+@pytest.mark.parametrize(
+    "argv, expected_code",
+    [
+        (["--json"], 2),
+        (["--json", "--prompt-file", "/definitely/missing/prompt.txt"], 1),
+        (["--json", "--cron", "*/5 * * * *"], 2),
+    ],
+)
+def test_main_preflight_errors_are_valid_json(monkeypatch, argv, expected_code):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    monkeypatch.setattr(cli.sys, "stdin", type("TTY", (), {"isatty": lambda self: True})())
+
+    assert cli.main(argv) == expected_code
+    payload = _json.loads(out.getvalue())
+    assert payload["ok"] is False
+    assert payload["error"]
+
+
+def test_plain_banner_is_two_compact_lines(monkeypatch):
+    from termux_agent.ui import renderer
+
+    calls = []
+
+    class FakeConsole:
+        def print(self, value="", **kwargs):
+            calls.append(str(value))
+
+    monkeypatch.setattr(renderer, "_console_instance", FakeConsole())
+    monkeypatch.setattr(renderer, "prefer_plain", lambda: True)
+    renderer.render_banner("zen", "model", "root", "/work")
+
+    assert calls == ["termux-agent  zen / model  [root]", "cwd: /work  ·  /help for commands"]
+
+
+def test_version_is_120():
     import termux_agent
 
-    assert termux_agent.__version__ == "1.1.0"
+    assert termux_agent.__version__ == "1.2.0"
 
 
 # --- repl maxrounds / server mct+cors / serve cors ---
@@ -5237,6 +6451,78 @@ def test_config_set(tmp_path: Path, monkeypatch):
     assert cli.cmd_config_set("providers.zen.model", "gpt-4o-mini") == 0
     saved = _yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
     assert saved["providers"]["zen"]["model"] == "gpt-4o-mini"
+
+
+@pytest.mark.parametrize("content", ["- one\n- two\n", "plain-string\n"])
+def test_load_and_config_set_reject_non_mapping_yaml(
+    tmp_path: Path, monkeypatch, content
+):
+    import io
+    import json
+
+    from termux_agent import cli, config
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(content, encoding="utf-8")
+
+    with pytest.raises(config.ConfigError, match="expected a YAML mapping"):
+        config.load_config(str(config_file))
+
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+    assert cli.cmd_config_set(
+        "temperature",
+        "0.2",
+        as_json=True,
+        config_file=str(config_file),
+    ) == 1
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is False
+    assert "expected a YAML mapping" in payload["error"]
+    assert config_file.read_text(encoding="utf-8") == content
+
+
+def test_load_config_reports_invalid_utf8(tmp_path: Path):
+    from termux_agent import config
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_bytes(b"provider: zen\n\xff")
+
+    with pytest.raises(config.ConfigError, match="Failed to read config"):
+        config.load_config(str(config_file))
+
+
+@pytest.mark.parametrize("unset", [False, True])
+def test_config_set_write_failure_is_reported_and_preserves_file(
+    tmp_path: Path, monkeypatch, unset
+):
+    import io
+    import json
+
+    from termux_agent import cli, storage
+
+    config_file = tmp_path / "config.yaml"
+    original = "temperature: 0.7\n"
+    config_file.write_text(original, encoding="utf-8")
+
+    def fail_write(*args, **kwargs):
+        raise OSError("disk is read-only")
+
+    monkeypatch.setattr(storage, "atomic_write_text", fail_write)
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_config_set(
+        "temperature",
+        "0.2",
+        as_json=True,
+        unset=unset,
+        config_file=str(config_file),
+    ) == 1
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is False
+    assert "disk is read-only" in payload["error"]
+    assert config_file.read_text(encoding="utf-8") == original
 
 
 def test_repl_usage(tmp_path: Path, monkeypatch):
@@ -6597,21 +7883,21 @@ def test_cmd_tokens_git_diff(tmp_path: Path, monkeypatch):
 
     from termux_agent import cli
 
-    def git(*args):
+    def run_git(*args):
         return subprocess.run(
             ["git", "-C", str(tmp_path), *args], capture_output=True, text=True, check=True
         )
 
-    git("init", "-q")
-    git("config", "user.email", "t@example.com")
-    git("config", "user.name", "t")
+    run_git("init", "-q")
+    run_git("config", "user.email", "t@example.com")
+    run_git("config", "user.name", "t")
     (tmp_path / "a.txt").write_text("hello world\n")
-    git("add", "-A")
-    git("commit", "-qm", "init")
+    run_git("add", "-A")
+    run_git("commit", "-qm", "init")
     (tmp_path / "a.txt").write_text("hello world\nchanged line\n")
     (tmp_path / "b.txt").write_text("brand new file\n")
-    git("add", "-A")
-    git("commit", "-qm", "second")
+    run_git("add", "-A")
+    run_git("commit", "-qm", "second")
     (tmp_path / "a.txt").write_text("hello world\nchanged line\neven more\n")
 
     monkeypatch.setattr(cli.os, "getcwd", lambda: str(tmp_path))
@@ -6680,6 +7966,39 @@ def test_cmd_config_set_unset(tmp_path: Path, monkeypatch):
     assert "c: 7" in cfg_file.read_text()
     assert cli.cmd_config_set("a.b.c", "", unset=True) == 0
     assert "c: 7" not in cfg_file.read_text()
+
+
+def test_main_config_set_and_unset_honor_explicit_config(tmp_path: Path, monkeypatch):
+    from termux_agent import cli
+
+    global_config = tmp_path / "global.yaml"
+    custom_config = tmp_path / "custom.yaml"
+    global_config.write_text("temperature: 0.7\n", encoding="utf-8")
+    custom_config.write_text("temperature: 0.2\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "CONFIG_FILE", global_config)
+
+    assert cli.main(
+        [
+            "--config",
+            str(custom_config),
+            "--config-set",
+            "temperature",
+            "0.3",
+        ]
+    ) == 0
+    assert "temperature: 0.3" in custom_config.read_text(encoding="utf-8")
+    assert global_config.read_text(encoding="utf-8") == "temperature: 0.7\n"
+
+    assert cli.main(
+        [
+            "--config",
+            str(custom_config),
+            "--config-unset",
+            "temperature",
+        ]
+    ) == 0
+    assert "temperature" not in custom_config.read_text(encoding="utf-8")
+    assert global_config.read_text(encoding="utf-8") == "temperature: 0.7\n"
 
 
 # --- rerun/summarize --append ---
@@ -6988,6 +8307,45 @@ def test_cmd_summarize_all(tmp_path: Path, monkeypatch):
     assert payload["summarized"] == 2
     assert payload["failed"] == 0
     assert any(r["summary"].startswith("SUMMARY:") for r in payload["results"])
+
+
+@pytest.mark.parametrize("operation", ["summarize", "rerun"])
+def test_all_session_provider_failures_set_json_status_and_exit(
+    tmp_path: Path, monkeypatch, operation: str
+):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages(
+        [{"role": "user", "content": "question"}, {"role": "assistant", "content": "old"}],
+        "zen",
+        "broken",
+        session_id="failed-session",
+    )
+    agent = SimpleNamespace(last_error="provider unavailable")
+    monkeypatch.setattr(cli, "build_agent", lambda *args, **kwargs: agent)
+    monkeypatch.setattr(
+        cli, "_run_guarded", lambda *args, **kwargs: "Error: provider unavailable"
+    )
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+
+    if operation == "summarize":
+        code = cli.cmd_summarize({}, None, None, None, all_sessions=True, as_json=True)
+    else:
+        code = cli.cmd_rerun({}, None, None, None, all_sessions=True, as_json=True)
+
+    payload = _json.loads(out.getvalue())
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["failed"] == 1
+    assert payload["results"][0]["error"] == "provider unavailable"
 
 
 def test_cmd_health(tmp_path: Path, monkeypatch):
@@ -7364,6 +8722,11 @@ def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     out = (tmp_path / "ta" / "config.yaml").read_text()
     assert "provider: zen" in out
     assert "m-model" in out
+    import yaml
+
+    saved = yaml.safe_load(out)
+    assert saved["model"] == "m-model"
+    assert "m-model" in saved["providers"]["zen"]["models"]
 
 
 # --- web_search ---

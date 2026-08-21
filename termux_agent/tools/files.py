@@ -52,9 +52,11 @@ def write_file(args: dict, ctx: ToolContext) -> str:
     content = str(args.get("content", ""))
     ctx._snapshot(path)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        from termux_agent.storage import atomic_write_text
+
+        atomic_write_text(path, content)
     except OSError as e:
+        ctx.undo_stack.pop()
         return f"Error: cannot write file: {e}"
     return f"OK: wrote {len(content)} characters to {path}"
 
@@ -90,8 +92,11 @@ def edit_file(args: dict, ctx: ToolContext) -> str:
     content = content.replace(old, new, 1)
     ctx._snapshot(path)
     try:
-        path.write_text(content, encoding="utf-8")
+        from termux_agent.storage import atomic_write_text
+
+        atomic_write_text(path, content)
     except OSError as e:
+        ctx.undo_stack.pop()
         return f"Error: cannot write file: {e}"
     return f"OK: 1 replacement in {path}"
 

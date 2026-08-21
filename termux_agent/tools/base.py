@@ -59,15 +59,18 @@ class ToolContext:
         """Restore the most recently modified file to its previous state."""
         if not self.undo_stack:
             return "Nothing to undo."
-        entry = self.undo_stack.pop()
+        entry = self.undo_stack[-1]
         path: Path = entry["path"]
         try:
             if entry["existed"]:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(entry["content"], encoding="utf-8")
+                from termux_agent.storage import atomic_write_text
+
+                atomic_write_text(path, entry["content"])
+                self.undo_stack.pop()
                 return f"Undid: restored original content of {path}"
             if path.exists():
                 path.unlink()
+            self.undo_stack.pop()
             return f"Undid: removed {path} (it did not exist before)"
         except OSError as e:
             return f"Error: cannot undo {path}: {e}"

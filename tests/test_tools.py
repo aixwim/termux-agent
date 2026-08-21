@@ -50,6 +50,60 @@ def test_write_read_edit_roundtrip(ctx: ToolContext, tmp_work: Path):
     assert "c=3" in r and "b=2" not in r
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("write_file", {"path": "sample.txt", "content": "replacement"}),
+        (
+            "edit_file",
+            {
+                "path": "sample.txt",
+                "old_string": "ini isi sample",
+                "new_string": "replacement",
+            },
+        ),
+    ],
+)
+def test_file_mutations_preserve_target_when_atomic_write_fails(
+    ctx: ToolContext,
+    tmp_work: Path,
+    monkeypatch,
+    tool_name,
+    arguments,
+):
+    from termux_agent import storage
+
+    original = (tmp_work / "sample.txt").read_text(encoding="utf-8")
+
+    def fail_write(*args, **kwargs):
+        raise OSError("simulated storage failure")
+
+    monkeypatch.setattr(storage, "atomic_write_text", fail_write)
+    result = run_tool(tool_name, arguments, ctx)
+
+    assert "simulated storage failure" in result
+    assert (tmp_work / "sample.txt").read_text(encoding="utf-8") == original
+    assert ctx.undo_stack == []
+
+
+def test_failed_undo_remains_retryable(ctx: ToolContext, tmp_work: Path, monkeypatch):
+    from termux_agent import storage
+
+    assert "OK" in run_tool(
+        "write_file",
+        {"path": "sample.txt", "content": "changed"},
+        ctx,
+    )
+
+    def fail_write(*args, **kwargs):
+        raise OSError("simulated undo failure")
+
+    monkeypatch.setattr(storage, "atomic_write_text", fail_write)
+    assert "simulated undo failure" in ctx.undo()
+    assert len(ctx.undo_stack) == 1
+    assert (tmp_work / "sample.txt").read_text(encoding="utf-8") == "changed"
+
+
 def test_edit_non_unique_rejected(ctx: ToolContext, tmp_work: Path):
     (tmp_work / "dup.txt").write_text("x\nx\n")
     r = run_tool("edit_file", {"path": "dup.txt", "old_string": "x", "new_string": "y"}, ctx)
@@ -117,6 +171,62 @@ def test_list_dir(ctx: ToolContext):
 def test_run_command_safe_no_confirm(ctx: ToolContext):
     r = run_tool("run_command", {"command": "echo halo"}, ctx)
     assert "exit 0" in r and "halo" in r
+
+
+def test_safe_command_with_shell_control_needs_confirmation(tmp_work: Path):
+    destination = tmp_work / "altered"
+    context = ToolContext(
+        working_dir=tmp_work,
+        confirm_commands=True,
+        confirm=None,
+    )
+    result = run_tool(
+        "run_command",
+        {"command": "echo unsafe > altered"},
+        context,
+    )
+    assert "not in the whitelist" in result
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git clean -fdx",
+        "find . -delete",
+        "python -c pass",
+        "curl -o download https://example.com",
+        "termux-volume music 0",
+    ],
+)
+def test_mutating_safe_named_commands_need_confirmation(tmp_work: Path, command):
+    context = ToolContext(
+        working_dir=tmp_work,
+        confirm_commands=True,
+        confirm=None,
+    )
+
+    result = run_tool("run_command", {"command": command}, context)
+
+    assert "not in the whitelist" in result
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["find . -name '*.txt'", "git status", "git diff", "termux-volume"],
+)
+def test_argument_checked_read_only_commands_skip_confirmation(
+    tmp_work: Path, command
+):
+    context = ToolContext(
+        working_dir=tmp_work,
+        confirm_commands=True,
+        confirm=None,
+    )
+
+    result = run_tool("run_command", {"command": command}, context)
+
+    assert "not in the whitelist" not in result
 
 
 def test_run_command_non_whitelist_confirmed(tmp_work: Path):

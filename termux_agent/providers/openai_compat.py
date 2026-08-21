@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import base64
 import json
-import mimetypes
 import os
 import re
-from pathlib import Path
 from typing import Any, Iterable
 
 import httpx
@@ -27,11 +25,13 @@ _IMAGE_PATTERN = re.compile(r"\[image:\s*([^\]]+)\]")
 
 def _read_image_data_uri(path: str) -> str | None:
     """Read an image file into a data: URI for vision-capable models."""
-    p = Path(path).expanduser()
-    if not p.is_file():
+    from termux_agent.images import ImageDownloadError, read_image
+
+    try:
+        data, mime = read_image(path)
+    except ImageDownloadError:
         return None
-    mime = mimetypes.guess_type(str(p))[0] or "image/png"
-    return f"data:{mime};base64,{base64.b64encode(p.read_bytes()).decode()}"
+    return f"data:{mime};base64,{base64.b64encode(data).decode()}"
 
 
 def _embed_images(content: str) -> list[dict] | str:
