@@ -4,6 +4,8 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Make HTTP batch jobs respect the server's confirmation mode unless `auto_accept` is explicitly overridden.
+- Emit an OpenAI-compatible SSE error object when streaming execution fails instead of reporting a successful `stop`.
 - Send native chat SSE headers exactly once so event bodies remain protocol-compliant across multi-event streams.
 - Return structured HTTP 500 responses when non-stream chat execution fails instead of dropping the client connection.
 - Cap HTTP batches at 100 prompts, limit individual prompts to 200,000 characters, and support an explicit safe `workers` range of 1-4.

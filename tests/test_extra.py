@@ -3958,7 +3958,7 @@ def test_server_batch_overrides(tmp_path: Path, monkeypatch):
     try:
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/batch",
-            data=_json.dumps({"prompts": ["a", "b"], "max_output_chars": 500, "readonly": True}).encode(),
+            data=_json.dumps({"prompts": ["a", "b"], "max_output_chars": 500, "readonly": True, "auto_accept": False}).encode(),
             headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=10) as r:
@@ -3967,6 +3967,7 @@ def test_server_batch_overrides(tmp_path: Path, monkeypatch):
             assert all(x["answer"] == "ok" for x in body["results"])
         assert seen["max_output_chars"] == 500
         assert seen["readonly"] is True
+        assert seen["auto_accept"] is False
     finally:
         httpd.shutdown()
         httpd.server_close()

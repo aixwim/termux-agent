@@ -445,8 +445,18 @@ class _AgentHandler(BaseHTTPRequestHandler):
             _chunk({"role": "assistant"})
             try:
                 answer = agent.run(prompt, on_text_delta=lambda d: _chunk({"content": d}))
-            except Exception:  # noqa: BLE001
-                _chunk({}, finish="stop")
+            except Exception as e:  # noqa: BLE001
+                error = {
+                    "error": {
+                        "message": str(e),
+                        "type": "server_error",
+                    }
+                }
+                self.wfile.write(
+                    b"data: "
+                    + json.dumps(error, ensure_ascii=False).encode("utf-8")
+                    + b"\n\n"
+                )
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
                 return
@@ -811,7 +821,9 @@ class _AgentHandler(BaseHTTPRequestHandler):
                         self.cfg,
                         provider,
                         model,
-                        auto_accept=True,
+                        auto_accept=bool(
+                            data.get("auto_accept", self.auto_accept)
+                        ),
                         temperature=float(temp) if isinstance(temp, (int, float)) else None,
                         max_tool_rounds=int(mtr) if isinstance(mtr, int) else None,
                         max_context_tokens=int(mct) if isinstance(mct, int) else None,

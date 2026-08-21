@@ -146,3 +146,46 @@ def test_non_stream_chat_returns_json_when_agent_fails(
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_openai_stream_reports_agent_failure_before_done():
+    import json
+    import threading
+    import urllib.request
+
+    from termux_agent.server import build_server
+
+    def build_agent(*args, **kwargs):
+        def fail(prompt, **run_kwargs):
+            raise RuntimeError("stream provider unavailable")
+
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="test", model="m"),
+            messages=[],
+            usage={},
+            run=fail,
+        )
+
+    server = build_server(build_agent, {"provider": "test"}, "test", "m")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = {
+            "model": "m",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": True,
+        }
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/v1/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = response.read().decode()
+        assert '"type": "server_error"' in body
+        assert '"message": "stream provider unavailable"' in body
+        assert body.rstrip().endswith("data: [DONE]")
+        assert '"finish_reason": "stop"' not in body
+    finally:
+        server.shutdown()
+        server.server_close()
