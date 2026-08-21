@@ -3229,6 +3229,54 @@ def test_batch_fail_fast(tmp_path: Path, monkeypatch):
     assert _json.loads(out.getvalue())["fail_fast"] is True
 
 
+def test_batch_partial_failure_sets_summary_and_exit(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    results = {"good": {"answer": "ok"}, "bad": {"answer": None, "error": "boom"}}
+    monkeypatch.setattr(cli, "_batch_run_one", lambda *args, **kwargs: results[args[-1]])
+    prompts = tmp_path / "prompts.txt"
+    prompts.write_text("good\nbad\n")
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+
+    code = cli.cmd_batch(_min_cfg(), str(prompts), "zen", None, as_json=True)
+
+    payload = _json.loads(out.getvalue())
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["total"] == 2
+    assert payload["succeeded"] == 1
+    assert payload["failed"] == 1
+
+
+def test_watch_total_provider_failure_returns_nonzero(monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    agent = SimpleNamespace(
+        last_error="provider unavailable",
+        run=lambda *args, **kwargs: "Error: provider unavailable",
+    )
+    monkeypatch.setattr(cli, "build_agent", lambda *args, **kwargs: agent)
+    monkeypatch.setattr(cli, "_run_guarded", lambda current, *args, **kwargs: current.run())
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+
+    code = cli.cmd_watch(
+        _min_cfg(), "check", "zen", None, interval=1, max_rounds=1, as_json=True
+    )
+
+    payload = _json.loads(out.getvalue())
+    assert code == 1
+    assert payload == {"round": 1, "error": "provider unavailable"}
+
+
 def test_cmd_show_estimates_tokens(tmp_path: Path, monkeypatch):
     import io
 
@@ -5756,6 +5804,65 @@ def test_one_shot_provider_failure_is_not_reported_as_success(tmp_path: Path, mo
     assert payload["error"] == "zen: HTTP 503 - unavailable"
 
 
+def test_batch_provider_failure_becomes_result_error(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    agent = SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="broken"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        last_error="provider unavailable",
+        run=lambda *args, **kwargs: "Error: provider unavailable",
+    )
+    monkeypatch.setattr(cli, "build_agent", lambda *args, **kwargs: agent)
+    monkeypatch.setattr(cli, "_run_guarded", lambda current, *args, **kwargs: current.run())
+
+    result = cli._batch_run_one(
+        _min_cfg(), "zen", None, False, None, None, None, None, None, None, None, None, "hello"
+    )
+
+    assert result["answer"] is None
+    assert result["error"] == "provider unavailable"
+
+
+def test_resume_provider_failure_is_valid_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    session_path = tmp_path / "session.jsonl"
+    session_path.write_text("")
+    monkeypatch.setattr(
+        cli,
+        "find_session",
+        lambda ref: (session_path, {"provider": "zen", "model": "broken"}, []),
+    )
+    agent = SimpleNamespace(
+        system_prompt="BASE",
+        provider=SimpleNamespace(name="zen", model="broken"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        messages=[],
+        last_error="provider unavailable",
+        model_attempts=["broken"],
+        elapsed_seconds=0.1,
+        run=lambda *args, **kwargs: "Error: provider unavailable",
+    )
+    monkeypatch.setattr(cli, "build_agent", lambda *args, **kwargs: agent)
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+
+    code = cli.cmd_resume(_min_cfg(), "session", "continue", as_json=True)
+
+    payload = _json.loads(out.getvalue())
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["error"] == "provider unavailable"
+
+
 @pytest.mark.parametrize("kind", ["clipboard", "rules", "system_prompt"])
 def test_one_shot_preflight_errors_are_valid_json(tmp_path: Path, monkeypatch, kind: str):
     import io
@@ -7774,6 +7881,45 @@ def test_cmd_summarize_all(tmp_path: Path, monkeypatch):
     assert payload["summarized"] == 2
     assert payload["failed"] == 0
     assert any(r["summary"].startswith("SUMMARY:") for r in payload["results"])
+
+
+@pytest.mark.parametrize("operation", ["summarize", "rerun"])
+def test_all_session_provider_failures_set_json_status_and_exit(
+    tmp_path: Path, monkeypatch, operation: str
+):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli, session
+
+    sdir = tmp_path / "sessions"
+    sdir.mkdir()
+    monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
+    session.record_messages(
+        [{"role": "user", "content": "question"}, {"role": "assistant", "content": "old"}],
+        "zen",
+        "broken",
+        session_id="failed-session",
+    )
+    agent = SimpleNamespace(last_error="provider unavailable")
+    monkeypatch.setattr(cli, "build_agent", lambda *args, **kwargs: agent)
+    monkeypatch.setattr(
+        cli, "_run_guarded", lambda *args, **kwargs: "Error: provider unavailable"
+    )
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+
+    if operation == "summarize":
+        code = cli.cmd_summarize({}, None, None, None, all_sessions=True, as_json=True)
+    else:
+        code = cli.cmd_rerun({}, None, None, None, all_sessions=True, as_json=True)
+
+    payload = _json.loads(out.getvalue())
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["failed"] == 1
+    assert payload["results"][0]["error"] == "provider unavailable"
 
 
 def test_cmd_health(tmp_path: Path, monkeypatch):

@@ -4,7 +4,8 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
-- Report exhausted provider/model failures as `ok: false` with a nonzero one-shot exit code.
+- Make batch, watch, aggregate summarize, and aggregate rerun status/exit codes reflect partial and total failures accurately.
+- Report exhausted provider/model failures as real workflow failures across one-shot, batch, watch, summarize, rerun, and resume.
 - Preserve valid machine-readable output across one-shot and dispatcher preflight failures in `--json` workflows.
 - Share quoted-path, URL, safe-decoding, binary rejection, and 2 MiB-per-file/4 MiB-total memory protection across all attachment modes.
 - Add `/history [N]` for a safe compact conversation view and `/clear` for resetting the terminal viewport without losing context.

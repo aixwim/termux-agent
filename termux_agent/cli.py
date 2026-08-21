@@ -487,6 +487,12 @@ def _render_or_json_error(message: str, as_json: bool) -> None:
         render_error(message)
 
 
+def _raise_agent_error(agent: "Agent") -> None:
+    """Turn Agent.run's REPL-friendly error state into a workflow failure."""
+    if getattr(agent, "last_error", None):
+        raise RuntimeError(agent.last_error)
+
+
 def _maybe_notify(cfg: dict, title: str, answer: str, as_json: bool = False) -> None:
     if not (cfg.get("notify_on_done") or os.environ.get("TERMUX_AGENT_NOTIFY") == "1"):
         return
@@ -721,6 +727,7 @@ def _batch_run_one(cfg, provider, model, auto_accept, timeout, disabled_groups, 
 
             p = append_attachments(p, attach, bracket=True)
         answer = _run_guarded(agent, p, lambda *a, **k: None, timeout)
+        _raise_agent_error(agent)
     except Exception as e:  # noqa: BLE001
         return {"prompt": p, "answer": None, "error": str(e)}
     return {"prompt": p, "answer": answer}
@@ -809,9 +816,10 @@ def cmd_batch(
                     if fail_fast:
                         if output:
                             Path(output).write_text(_json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-                            render_info(f"Partial results written to {output}")
+                            if not as_json:
+                                render_info(f"Partial results written to {output}")
                         elif as_json:
-                            print(_json.dumps({"results": results, "fail_fast": True}, ensure_ascii=False))
+                            print(_json.dumps({"ok": False, "results": results, "failed": 1, "fail_fast": True}, ensure_ascii=False))
                         if notify:
                             from termux_agent.notify import notify as _notify
 
@@ -822,15 +830,17 @@ def cmd_batch(
                         render_info(f"  -> {name}: {r['answer'][:80]}")
         if output:
             Path(output).write_text(_json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-            render_info(f"Results written to {output}")
+            if not as_json:
+                render_info(f"Results written to {output}")
         elif as_json:
-            print(_json.dumps({"results": results}, ensure_ascii=False))
+            failed = sum(1 for r in results if r.get("error"))
+            print(_json.dumps({"ok": failed == 0, "total": len(results), "succeeded": len(results) - failed, "failed": failed, "results": results}, ensure_ascii=False))
         if notify:
             from termux_agent.notify import notify as _notify
 
             failed = sum(1 for r in results if r.get("error"))
             _notify(f"Batch done: {len(results) - failed}/{len(results)} succeeded" + (f", {failed} failed" if failed else ""))
-        return 0
+        return 1 if any(r.get("error") for r in results) else 0
 
     if prompts_file == "-":
         import sys as _sys
@@ -884,9 +894,10 @@ def cmd_batch(
                 if fail_fast:
                     if output:
                         Path(output).write_text(_json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-                        render_info(f"Partial results written to {output}")
+                        if not as_json:
+                            render_info(f"Partial results written to {output}")
                     elif as_json:
-                        print(_json.dumps({"results": results, "fail_fast": True}, ensure_ascii=False))
+                        print(_json.dumps({"ok": False, "results": results, "failed": 1, "fail_fast": True}, ensure_ascii=False))
                     if notify:
                         from termux_agent.notify import notify as _notify
 
@@ -897,15 +908,17 @@ def cmd_batch(
                     render_info(f"  -> {r['answer'][:80]}")
     if output:
         Path(output).write_text(_json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
-        render_info(f"Results written to {output}")
+        if not as_json:
+            render_info(f"Results written to {output}")
     elif as_json:
-        print(_json.dumps({"results": results}, ensure_ascii=False))
+        failed = sum(1 for r in results if r.get("error"))
+        print(_json.dumps({"ok": failed == 0, "total": len(results), "succeeded": len(results) - failed, "failed": failed, "results": results}, ensure_ascii=False))
     if notify:
         from termux_agent.notify import notify as _notify
 
         failed = sum(1 for r in results if r.get("error"))
         _notify(f"Batch done: {len(results) - failed}/{len(results)} succeeded" + (f", {failed} failed" if failed else ""))
-    return 0
+    return 1 if any(r.get("error") for r in results) else 0
 
 
 def cmd_watch(
@@ -972,6 +985,8 @@ def cmd_watch(
             render_info(f"Watching every {interval}s — press Ctrl+C to stop.")
     round_no = 0
     last_answer: str | None = None
+    successful_rounds = 0
+    failed_rounds = 0
     try:
         while max_rounds is None or round_no < max_rounds:
             if deadline is not None and time.monotonic() >= deadline:
@@ -1001,7 +1016,9 @@ def cmd_watch(
                     render_error("Screenshot failed this round — continuing without it.")
             try:
                 answer = _run_guarded(agent, p, render_tool_use, timeout)
+                _raise_agent_error(agent)
             except TimeoutError:
+                failed_rounds += 1
                 if diff and not as_json:
                     render_info(f"\n--- round {round_no} (timed out) ---")
                 if as_json:
@@ -1015,6 +1032,7 @@ def cmd_watch(
             except KeyboardInterrupt:
                 raise
             except Exception as e:  # noqa: BLE001
+                failed_rounds += 1
                 if diff and not as_json:
                     render_info(f"\n--- round {round_no} (failed) ---")
                 if as_json:
@@ -1026,6 +1044,7 @@ def cmd_watch(
 
                     _notify(f"Round {round_no} failed: {e}")
             else:
+                successful_rounds += 1
                 if diff and last_answer is not None and answer == last_answer:
                     if not as_json:
                         render_info(f"round {round_no}: answer unchanged — skipping.")
@@ -1090,7 +1109,7 @@ def cmd_watch(
         if not as_json:
             render_info("\nStopped.")
         return 0
-    return 0
+    return 1 if failed_rounds and not successful_rounds else 0
 
 
 def cmd_plan(
@@ -1959,6 +1978,7 @@ def cmd_summarize(
         try:
             agent = build_agent(cfg, provider, model, auto_accept=True, temperature=temperature)
             summary = _run_guarded(agent, prompt, lambda *a, **k: None, timeout)
+            _raise_agent_error(agent)
         except Exception as e:  # noqa: BLE001
             return {"session": data.get("id", sid), "error": str(e)}
         return {"session": data.get("id", sid), "summary": summary}
@@ -1973,10 +1993,11 @@ def cmd_summarize(
                 for r in results:
                     if "summary" in r:
                         f.write(f"[{r['session']}]\n{r['summary']}\n\n")
-            render_info(f"Summaries written to {output}")
+            if not as_json:
+                render_info(f"Summaries written to {output}")
         if as_json:
-            print(_json.dumps({"ok": True, "summarized": len(results), "failed": len(failed), "results": results}, ensure_ascii=False))
-            return 0
+            print(_json.dumps({"ok": not failed, "summarized": len(results), "failed": len(failed), "results": results}, ensure_ascii=False))
+            return 1 if failed else 0
         for r in results:
             if "error" in r:
                 render_error(f"{r['session']}: {r['error']}")
@@ -1989,7 +2010,7 @@ def cmd_summarize(
     try:
         data = export_session(ref)
     except FileNotFoundError:
-        render_error("Session not found.")
+        _render_or_json_error("Session not found.", as_json)
         return 1
     if redact:
         data = _redact_cfg(data)
@@ -2004,7 +2025,7 @@ def cmd_summarize(
             continue
         transcript.append(f"{role.upper()}: {content}")
     if not transcript:
-        render_error("Session has no usable messages to summarize.")
+        _render_or_json_error("Session has no usable messages to summarize.", as_json)
         return 1
     prompt = (
         "Summarize the following conversation in a clear, structured way: "
@@ -2015,13 +2036,15 @@ def cmd_summarize(
     try:
         agent = build_agent(cfg, provider, model, auto_accept=True, temperature=temperature)
         summary = _run_guarded(agent, prompt, lambda *a, **k: None, timeout)
+        _raise_agent_error(agent)
     except Exception as e:  # noqa: BLE001
-        render_error(f"Summarize failed: {e}")
+        _render_or_json_error(f"Summarize failed: {e}", as_json)
         return 1
     if output:
         with open(Path(output).expanduser(), "a" if append else "w", encoding="utf-8") as f:
             f.write(summary + "\n")
-        render_info(f"Summary written to {output}")
+        if not as_json:
+            render_info(f"Summary written to {output}")
     if notify:
         from termux_agent.notify import notify as _notify
 
@@ -2205,6 +2228,7 @@ def cmd_rerun(
         try:
             agent = build_agent(cfg, provider, model, auto_accept=True, temperature=temperature)
             answer = _run_guarded(agent, last_user, lambda *a, **k: None, timeout)
+            _raise_agent_error(agent)
         except Exception as e:  # noqa: BLE001
             return {"session": data.get("id", sid), "error": str(e)}
         res = {"session": data.get("id", sid), "answer": answer, "old": old_answer}
@@ -2234,10 +2258,11 @@ def cmd_rerun(
                 for r in results:
                     if "answer" in r:
                         f.write(r["answer"] + "\n")
-            render_info(f"Answers written to {output}")
+            if not as_json:
+                render_info(f"Answers written to {output}")
         if as_json:
-            print(_json.dumps({"ok": True, "ran": len(results), "failed": len(failed), "results": results}, ensure_ascii=False))
-            return 0
+            print(_json.dumps({"ok": not failed, "ran": len(results), "failed": len(failed), "results": results}, ensure_ascii=False))
+            return 1 if failed else 0
         for r in results:
             if "error" in r:
                 render_error(f"{r['session']}: {r['error']}")
@@ -2252,7 +2277,7 @@ def cmd_rerun(
     try:
         data = export_session(ref)
     except FileNotFoundError:
-        render_error("Session not found.")
+        _render_or_json_error("Session not found.", as_json)
         return 1
     if redact:
         data = _redact_cfg(data)
@@ -2265,7 +2290,7 @@ def cmd_rerun(
         "",
     )
     if not last_user.strip():
-        render_error("Session has no user prompt to re-run.")
+        _render_or_json_error("Session has no user prompt to re-run.", as_json)
         return 1
     if attach:
         from termux_agent.attachments import AttachmentError, append_attachments
@@ -2275,17 +2300,20 @@ def cmd_rerun(
         except AttachmentError as e:
             _render_or_json_error(str(e), as_json)
             return 1
-        render_info(f"Attached {len(attach)} file(s) to the re-run prompt.")
+        if not as_json:
+            render_info(f"Attached {len(attach)} file(s) to the re-run prompt.")
     try:
         agent = build_agent(cfg, provider, model, auto_accept=True, temperature=temperature)
         answer = _run_guarded(agent, last_user, lambda *a, **k: None, timeout)
+        _raise_agent_error(agent)
     except Exception as e:  # noqa: BLE001
-        render_error(f"Rerun failed: {e}")
+        _render_or_json_error(f"Rerun failed: {e}", as_json)
         return 1
     if output:
         with open(Path(output).expanduser(), "a" if append else "w", encoding="utf-8") as f:
             f.write(answer + "\n")
-        render_info(f"Answer written to {output}")
+        if not as_json:
+            render_info(f"Answer written to {output}")
     if notify:
         from termux_agent.notify import notify as _notify
 
@@ -2741,6 +2769,16 @@ def cmd_resume(
             printer.flush()
         else:
             answer = agent.run(prompt, on_tool_use=_log)
+        if getattr(agent, "last_error", None):
+            if as_json:
+                _emit_json(
+                    {"ok": False, "error": agent.last_error, "session": path.stem}, agent
+                )
+            elif quiet:
+                print(f"Error: {agent.last_error}")
+            else:
+                render_error(f"Error: {agent.last_error}")
+            return 1
         _maybe_notify(cfg, "Resume done", answer, as_json)
         if as_json:
             _emit_json({"ok": True, "answer": answer, "session": path.stem}, agent)
