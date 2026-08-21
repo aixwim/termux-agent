@@ -231,9 +231,13 @@ def test_detect_storage_roots():
 
 
 def test_allow_storage_adds_allowed_dirs(tmp_path: Path, monkeypatch):
+    from termux_agent import config as cfgmod
     from termux_agent.cli import build_agent
 
     cfg = _min_cfg(allow_storage=True)
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    monkeypatch.setattr(cfgmod, "detect_storage_roots", lambda: [storage])
     monkeypatch.chdir(tmp_path)
     agent = build_agent(cfg, "zen", None)
     allowed = [d for d in agent.ctx._allowed_dirs if "storage" in str(d)]
@@ -862,8 +866,6 @@ def test_build_agent_uses_public_provider_name(tmp_path: Path, monkeypatch):
 
 
 def test_project_config_overrides(tmp_path: Path, monkeypatch):
-    import os
-
     from termux_agent import config as cfgmod
 
     proj = tmp_path / "proj"
@@ -872,7 +874,7 @@ def test_project_config_overrides(tmp_path: Path, monkeypatch):
     (proj / ".termux-agent" / "config.yaml").write_text(
         "temperature: 0.1\nmax_tool_rounds: 5\nworking_dir: '~/proj'\n"
     )
-    monkeypatch.setattr(os, "getcwd", lambda: str(proj))
+    monkeypatch.chdir(proj)
     monkeypatch.setattr(cfgmod, "CONFIG_FILE", tmp_path / "nonexistent.yaml")
     cfg = cfgmod.load_config()
     assert cfg["temperature"] == 0.1
@@ -881,11 +883,9 @@ def test_project_config_overrides(tmp_path: Path, monkeypatch):
 
 
 def test_project_config_missing_is_ignored(tmp_path: Path, monkeypatch):
-    import os
-
     from termux_agent import config as cfgmod
 
-    monkeypatch.setattr(os, "getcwd", lambda: str(tmp_path))
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cfgmod, "CONFIG_FILE", tmp_path / "nonexistent.yaml")
     cfg = cfgmod.load_config()
     assert cfg["temperature"] == 0.7
@@ -1060,6 +1060,8 @@ def test_git_log_tool(tmp_path: Path):
     from termux_agent.tools.base import run_tool
 
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "termux-agent tests"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@termux-agent.invalid"], cwd=tmp_path, check=True)
     (tmp_path / "f.txt").write_text("x\n")
     subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "first commit"], cwd=tmp_path, check=True)
@@ -6041,7 +6043,14 @@ def test_repl_attach_rejects_large_files_before_reading(tmp_path: Path, monkeypa
 
     attachment = tmp_path / "large.txt"
     attachment.write_bytes(b"x")
-    monkeypatch.setattr(Path, "stat", lambda self: SimpleNamespace(st_size=ATTACH_MAX_BYTES + 1))
+    original_stat = Path.stat
+
+    def fake_stat(path, *args, **kwargs):
+        if path == attachment:
+            return SimpleNamespace(st_size=ATTACH_MAX_BYTES + 1)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
     errors = []
     monkeypatch.setattr("termux_agent.ui.repl.render_error", errors.append)
     agent = SimpleNamespace(system_prompt="BASE", ctx=SimpleNamespace(working_dir=tmp_path))

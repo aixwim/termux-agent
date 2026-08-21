@@ -118,6 +118,18 @@ def test_path_escape_blocked(ctx: ToolContext):
     outside.unlink(missing_ok=True)
 
 
+def test_allowed_roots_cache_invalidates_when_allow_list_changes(tmp_work: Path):
+    context = ToolContext(working_dir=tmp_work)
+    extra = tmp_work.parent / f"{tmp_work.name}-extra"
+    extra.mkdir()
+    target = extra / "allowed.txt"
+    target.write_text("ok", encoding="utf-8")
+
+    assert not context.is_allowed(target)
+    context._allowed_dirs.append(extra)
+    assert context.is_allowed(target)
+
+
 def test_missing_file_reports_error(ctx: ToolContext):
     assert "not found" in run_tool("read_file", {"path": "nope.txt"}, ctx)
 
@@ -125,6 +137,30 @@ def test_missing_file_reports_error(ctx: ToolContext):
 def test_grep_and_glob(ctx: ToolContext):
     assert "app.py" in run_tool("grep_file", {"pattern": "def main"}, ctx)
     assert "sub/app.py" in run_tool("glob_find", {"pattern": "**/*.py"}, ctx)
+
+
+def test_grep_prunes_generated_and_dependency_directories(ctx: ToolContext, tmp_work: Path):
+    for dirname in (".git", ".next", ".turbo", "node_modules", "__pycache__", ".venv", "build", "target"):
+        generated = tmp_work / dirname
+        generated.mkdir()
+        (generated / "noise.txt").write_text("expensive match\n", encoding="utf-8")
+
+    (tmp_work / "source.txt").write_text("useful match\n", encoding="utf-8")
+    result = run_tool("grep_file", {"pattern": "match"}, ctx)
+
+    assert "source.txt" in result
+    assert "noise.txt" not in result
+
+
+def test_glob_prunes_generated_and_dependency_directories(ctx: ToolContext, tmp_work: Path):
+    dependency = tmp_work / "node_modules"
+    dependency.mkdir()
+    (dependency / "ignored.py").write_text("pass\n", encoding="utf-8")
+
+    result = run_tool("glob_find", {"pattern": "**/*.py"}, ctx)
+
+    assert "sub/app.py" in result
+    assert "ignored.py" not in result
 
 
 def test_list_dir(ctx: ToolContext):

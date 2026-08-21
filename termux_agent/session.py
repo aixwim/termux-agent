@@ -6,6 +6,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from typing import Iterator
 
 from termux_agent.config import CONFIG_DIR
 
@@ -139,16 +140,23 @@ def list_sessions() -> list[Path]:
     return sorted(SESSIONS_DIR.glob("*.jsonl"), key=modified, reverse=True)
 
 
-def read_session(path: Path) -> list[dict]:
-    out = []
+def iter_session(path: Path) -> Iterator[dict]:
+    """Yield valid JSONL records without loading the whole session file."""
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
-            if line.strip():
-                try:
-                    out.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    return out
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                yield record
+
+
+def read_session(path: Path) -> list[dict]:
+    """Return session records as a list for backwards compatibility."""
+    return list(iter_session(path))
 
 
 def session_meta(path: Path) -> tuple[int, str, dict]:
@@ -160,13 +168,11 @@ def session_meta(path: Path) -> tuple[int, str, dict]:
     count = 0
     first_user = ""
     info: dict = {}
-    parsed = 0
     with path.open("r", encoding="utf-8", errors="replace") as handle:
         for line in handle:
             count += 1
-            if not line.strip() or parsed >= 200:
+            if not line.strip() or (info and first_user):
                 continue
-            parsed += 1
             try:
                 rec = json.loads(line)
             except json.JSONDecodeError:

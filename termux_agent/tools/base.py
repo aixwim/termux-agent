@@ -20,6 +20,8 @@ class ToolContext:
     _allowed_dirs: list[Path] = field(default_factory=list)
     undo_stack: list[dict] = field(default_factory=list)
     whitelisted_commands: list[str] = field(default_factory=list)
+    _roots_signature: tuple[str, ...] = field(default=(), init=False, repr=False)
+    _resolved_roots: tuple[Path, ...] = field(default=(), init=False, repr=False)
 
     def resolve(self, path: str) -> Path:
         p = Path(path).expanduser()
@@ -29,8 +31,15 @@ class ToolContext:
 
     def is_allowed(self, path: Path) -> bool:
         resolved = path.resolve()
-        allowed = [self.working_dir.resolve()] + [d.resolve() for d in self._allowed_dirs]
-        return any(resolved == a or a in resolved.parents for a in allowed)
+        # Resolving roots is comparatively expensive on Android filesystems.
+        # Cache roots, but always resolve the target so a symlink swap cannot
+        # bypass the boundary check. The signature invalidates automatically
+        # when callers replace or mutate the public allow-list.
+        signature = (str(self.working_dir), *(str(d) for d in self._allowed_dirs))
+        if signature != self._roots_signature:
+            self._resolved_roots = tuple(Path(root).resolve() for root in signature)
+            self._roots_signature = signature
+        return any(resolved == root or root in resolved.parents for root in self._resolved_roots)
 
     def require_allowed(self, path: Path) -> Path:
         if not self.is_allowed(path):
