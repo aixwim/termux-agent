@@ -6041,7 +6041,14 @@ def test_repl_attach_rejects_large_files_before_reading(tmp_path: Path, monkeypa
 
     attachment = tmp_path / "large.txt"
     attachment.write_bytes(b"x")
-    monkeypatch.setattr(Path, "stat", lambda self: SimpleNamespace(st_size=ATTACH_MAX_BYTES + 1))
+    original_stat = Path.stat
+
+    def fake_stat(path, *args, **kwargs):
+        if path == attachment:
+            return SimpleNamespace(st_size=ATTACH_MAX_BYTES + 1)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
     errors = []
     monkeypatch.setattr("termux_agent.ui.repl.render_error", errors.append)
     agent = SimpleNamespace(system_prompt="BASE", ctx=SimpleNamespace(working_dir=tmp_path))
