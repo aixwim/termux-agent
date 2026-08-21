@@ -1,6 +1,7 @@
 """Test provider: konversi pesan internal -> format wire OpenAI/Anthropic."""
 import json
 
+import httpx
 import pytest
 
 from termux_agent.providers.anthropic import AnthropicProvider
@@ -91,3 +92,40 @@ def test_tool_specs_build():
     openai_specs = AnthropicProvider.build_tool_specs(TOOLS)
     assert openai_specs[0]["type"] == "function"
     assert openai_specs[0]["function"]["name"] == "read_file"
+
+
+def test_anthropic_stream_preserves_tool_ids_and_indexes():
+    events = [
+        {
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": {"type": "tool_use", "id": "toolu_server_1", "name": "read_file"},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": '{"path":"a.txt"}'},
+        },
+        {
+            "type": "content_block_start",
+            "index": 2,
+            "content_block": {"type": "tool_use", "id": "toolu_server_2", "name": "list_files"},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 2,
+            "delta": {"type": "input_json_delta", "partial_json": "{}"},
+        },
+    ]
+    payload = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, text=payload))
+    ) as client:
+        provider = AnthropicProvider("https://example.test", "model", client=client)
+        streamed = list(provider.stream([{"role": "user", "content": "run tools"}]))
+
+    calls = next(event.tool_calls for event in streamed if event.kind == "tool_calls")
+    assert calls == [
+        {"id": "toolu_server_1", "name": "read_file", "arguments": '{"path":"a.txt"}'},
+        {"id": "toolu_server_2", "name": "list_files", "arguments": "{}"},
+    ]
