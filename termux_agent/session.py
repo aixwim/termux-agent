@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from pathlib import Path
@@ -11,6 +12,18 @@ from termux_agent.config import CONFIG_DIR
 SESSIONS_DIR = CONFIG_DIR / "sessions"
 NOTES_FILE = CONFIG_DIR / "notes.json"
 _NOTES_LOCK = threading.RLock()
+_SESSION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+
+
+def validate_session_id(session_id: object) -> str:
+    """Return a safe session id or reject path separators and special paths."""
+    if not isinstance(session_id, str) or not _SESSION_ID_PATTERN.fullmatch(
+        session_id
+    ):
+        raise ValueError(
+            "invalid session id (use 1-128 letters, numbers, '.', '_' or '-')"
+        )
+    return session_id
 
 
 def _write_notes(notes: dict[str, str]) -> None:
@@ -73,7 +86,11 @@ def prune_notes(valid_ids: set[str]) -> int:
 class Session:
     def __init__(self, session_id: str | None = None, provider_name: str = "openai", model: str = "") -> None:
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        sid = session_id or time.strftime("%Y%m%d-%H%M%S")
+        sid = (
+            validate_session_id(session_id)
+            if session_id
+            else time.strftime("%Y%m%d-%H%M%S")
+        )
         if not session_id:
             i = 1
             while (SESSIONS_DIR / f"{sid}.jsonl").exists():
@@ -230,9 +247,19 @@ def import_session(data: dict, session_id: str | None = None) -> str:
         provider_name=str(data.get("provider") or ""),
         model=str(data.get("model") or ""),
     )
-    s.path.write_text("", encoding="utf-8")
-    for m in clean:
-        s.append(m)
+    now = time.time()
+    records = []
+    for offset, message in enumerate(clean):
+        record = {
+            "ts": now + offset * 0.000001,
+            "provider": s.provider_name,
+            "model": s.model,
+            **message,
+        }
+        records.append(json.dumps(record, ensure_ascii=False))
+    from termux_agent.storage import atomic_write_text
+
+    atomic_write_text(s.path, "\n".join(records) + "\n")
     return s.session_id
 
 
