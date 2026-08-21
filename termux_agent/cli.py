@@ -2148,26 +2148,72 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
     return 0
 
 
+MAX_BUNDLE_ARCHIVE_BYTES = 64 * 1024 * 1024
+MAX_BUNDLE_EXTRACTED_BYTES = 256 * 1024 * 1024
+MAX_BUNDLE_ENTRIES = 10_000
+
+
+def _extract_bundle_archive(
+    raw: bytes,
+    destination: Path,
+    *,
+    max_archive_bytes: int = MAX_BUNDLE_ARCHIVE_BYTES,
+    max_extracted_bytes: int = MAX_BUNDLE_EXTRACTED_BYTES,
+    max_entries: int = MAX_BUNDLE_ENTRIES,
+) -> None:
+    """Validate and extract a bounded bundle archive."""
+    import io
+    import tarfile
+
+    if len(raw) > max_archive_bytes:
+        raise ValueError(
+            f"archive exceeds the {max_archive_bytes // (1024 * 1024)} MiB limit"
+        )
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:gz") as archive:
+        members = []
+        for member in archive:
+            members.append(member)
+            if len(members) > max_entries:
+                raise ValueError(
+                    f"archive exceeds the {max_entries:,}-entry limit"
+                )
+        total_size = 0
+        for member in members:
+            if not (member.isfile() or member.isdir()):
+                raise ValueError(
+                    f"archive contains unsupported entry: {member.name}"
+                )
+            if member.isfile():
+                total_size += member.size
+                if total_size > max_extracted_bytes:
+                    raise ValueError(
+                        "archive expands beyond the "
+                        f"{max_extracted_bytes // (1024 * 1024)} MiB limit"
+                    )
+            # Run the standard path-safety filter for every entry before the
+            # first extraction so a late traversal cannot leave partial data.
+            tarfile.data_filter(member, destination)
+        archive.extractall(destination, members=members, filter="data")
+
+
 def cmd_restore(bundle_dir: str, dry_run: bool = False, as_json: bool = False, merge: bool = False) -> int:
     """Restore config, memory, and sessions from a bundle directory (or a gzipped tar on stdin with '-')."""
-    import json as _json
-    import shutil
-
-    from termux_agent.agent import MEMORY_FILE
-    from termux_agent.session import SESSIONS_DIR
-
     if bundle_dir == "-":
-        import io
         import tarfile
         import sys as _sys
         import tempfile
 
-        buf = io.BytesIO(_sys.stdin.buffer.read())
-        with tempfile.TemporaryDirectory() as tmp:
-            with tarfile.open(fileobj=buf, mode="r:gz") as tf:
-                tf.extractall(tmp, filter="data")
-            src = Path(tmp)
-            return _restore_from_dir(src, dry_run=dry_run, as_json=as_json, merge=merge)
+        raw = _sys.stdin.buffer.read(MAX_BUNDLE_ARCHIVE_BYTES + 1)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                _extract_bundle_archive(raw, Path(tmp))
+                src = Path(tmp)
+                return _restore_from_dir(
+                    src, dry_run=dry_run, as_json=as_json, merge=merge
+                )
+        except (tarfile.TarError, OSError, ValueError) as e:
+            render_error(f"Invalid bundle archive: {e}")
+            return 1
 
     return _restore_from_dir(Path(bundle_dir), dry_run=dry_run, as_json=as_json, merge=merge)
 
@@ -2175,29 +2221,73 @@ def cmd_restore(bundle_dir: str, dry_run: bool = False, as_json: bool = False, m
 def _restore_from_dir(src: Path, dry_run: bool = False, as_json: bool = False, merge: bool = False) -> int:
     """Restore config, memory, and sessions from an extracted bundle directory."""
     import json as _json
-    import shutil
 
-    from termux_agent.agent import MEMORY_FILE
-    from termux_agent.session import NOTES_FILE, SESSIONS_DIR
+    from termux_agent.session import SESSIONS_DIR
+    from termux_agent.storage import atomic_write_text
 
     if not (src / "manifest.json").is_file():
         render_error(f"No manifest.json found in {src} — not a termux-agent bundle.")
         return 1
-    manifest = _json.loads((src / "manifest.json").read_text(encoding="utf-8"))
-    if not dry_run:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    restored = []
+    try:
+        manifest = _json.loads(
+            (src / "manifest.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, _json.JSONDecodeError) as e:
+        render_error(f"Invalid bundle manifest: {e}")
+        return 1
+    if not isinstance(manifest, dict) or manifest.get("app") != "termux-agent":
+        render_error("Invalid bundle manifest: expected app 'termux-agent'.")
+        return 1
+    text_files: list[tuple[str, str]] = []
     for name in ("config.yaml", "memory.md", "notes.json"):
         f = src / name
         if f.is_file():
-            if not dry_run and not (merge and (CONFIG_DIR / name).exists()):
-                shutil.copy2(f, CONFIG_DIR / name)
-            restored.append(name)
-    for f in sorted((src / "sessions").glob("*.jsonl")) if (src / "sessions").is_dir() else []:
-        if not dry_run and not (merge and (SESSIONS_DIR / f.name).exists()):
-            shutil.copy2(f, SESSIONS_DIR / f.name)
-        restored.append(f"session/{f.name}")
+            try:
+                text_files.append((name, f.read_text(encoding="utf-8")))
+            except (OSError, UnicodeDecodeError) as e:
+                render_error(f"Invalid bundle file {name}: {e}")
+                return 1
+
+    session_files: list[tuple[Path, str]] = []
+    candidates = (
+        sorted((src / "sessions").glob("*.jsonl"))
+        if (src / "sessions").is_dir()
+        else []
+    )
+    from termux_agent.session import validate_session_id
+
+    for f in candidates:
+        try:
+            validate_session_id(f.stem)
+            session_files.append((f, f.read_text(encoding="utf-8")))
+        except ValueError as e:
+            render_error(f"Invalid session file {f.name}: {e}")
+            return 1
+        except (OSError, UnicodeDecodeError) as e:
+            render_error(f"Invalid session file {f.name}: {e}")
+            return 1
+
+    restored = [name for name, _ in text_files]
+    restored.extend(f"session/{path.name}" for path, _ in session_files)
+    if not dry_run:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        for name, content in text_files:
+            if merge and (CONFIG_DIR / name).exists():
+                continue
+            try:
+                atomic_write_text(CONFIG_DIR / name, content)
+            except OSError as e:
+                render_error(f"Failed to restore {name}: {e}")
+                return 1
+        for path, content in session_files:
+            if merge and (SESSIONS_DIR / path.name).exists():
+                continue
+            try:
+                atomic_write_text(SESSIONS_DIR / path.name, content)
+            except OSError as e:
+                render_error(f"Failed to restore session {path.name}: {e}")
+                return 1
     if as_json:
         print(_json.dumps({"app": manifest.get("app"), "version": manifest.get("version"), "items": restored, "dry_run": dry_run}, ensure_ascii=False))
         return 0

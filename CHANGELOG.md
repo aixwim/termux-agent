@@ -4,6 +4,8 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Bound stdin backup archives to 64 MiB compressed, 256 MiB extracted, and 10,000 regular entries while rejecting links and special files.
+- Validate backup manifests and session filenames before restore, and restore text files through atomic replacement.
 - Reject unsafe session IDs that could escape the sessions directory and replace imported session files atomically.
 - Write session notes, memory, and configuration through flushed atomic replacement, and serialize concurrent note mutations to prevent corruption or lost updates.
 - Preserve successful `/chat` answers when session or note persistence fails, report degradation through warnings, and return structured storage errors from memory/note endpoints.
