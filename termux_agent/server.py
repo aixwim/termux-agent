@@ -669,7 +669,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
 
                 self._send(200, {"memory": load_memory()})
             elif self.path == "/stats":
-                from termux_agent.session import SESSIONS_DIR, list_sessions
+                from termux_agent.session import list_sessions
 
                 sess = list_sessions()
                 total = sum(s.stat().st_size for s in sess)

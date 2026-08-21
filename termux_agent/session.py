@@ -86,20 +86,32 @@ def prune_notes(valid_ids: set[str]) -> int:
 class Session:
     def __init__(self, session_id: str | None = None, provider_name: str = "openai", model: str = "") -> None:
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-        sid = (
-            validate_session_id(session_id)
-            if session_id
-            else time.strftime("%Y%m%d-%H%M%S")
-        )
-        if not session_id:
-            i = 1
-            while (SESSIONS_DIR / f"{sid}.jsonl").exists():
-                sid = f"{time.strftime('%Y%m%d-%H%M%S')}-{i}"
-                i += 1
+        if session_id:
+            sid = validate_session_id(session_id)
+            path = SESSIONS_DIR / f"{sid}.jsonl"
+            reservation = None
+        else:
+            base = time.strftime("%Y%m%d-%H%M%S")
+            index = 0
+            while True:
+                sid = base if index == 0 else f"{base}-{index}"
+                path = SESSIONS_DIR / f"{sid}.jsonl"
+                reservation = SESSIONS_DIR / f".{sid}.reserve"
+                try:
+                    if path.exists():
+                        raise FileExistsError
+                    reservation.touch(exist_ok=False)
+                    if path.exists():
+                        reservation.unlink(missing_ok=True)
+                        raise FileExistsError
+                    break
+                except FileExistsError:
+                    index += 1
         self.session_id = sid
         self.provider_name = provider_name
         self.model = model
-        self.path = SESSIONS_DIR / f"{self.session_id}.jsonl"
+        self.path = path
+        self._reservation = reservation
 
     def append(self, entry: dict) -> None:
         record = {
@@ -110,6 +122,9 @@ class Session:
         record.update(entry)
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        if self._reservation is not None:
+            self._reservation.unlink(missing_ok=True)
+            self._reservation = None
 
 
 def list_sessions() -> list[Path]:
@@ -197,8 +212,12 @@ def record_messages(messages: list[dict], provider_name: str, model: str, sessio
 def resolve_session(ref: str | None = None) -> Path | None:
     """Resolve a session ref (id prefix or 'latest') to a path."""
     if ref and ref not in ("latest", ""):
-        matches = [s for s in list_sessions() if s.stem.startswith(ref)]
-        return matches[-1] if matches else None
+        sessions = list_sessions()
+        exact = next((path for path in sessions if path.stem == ref), None)
+        if exact:
+            return exact
+        matches = [path for path in sessions if path.stem.startswith(ref)]
+        return matches[0] if len(matches) == 1 else None
     return latest_session()
 
 

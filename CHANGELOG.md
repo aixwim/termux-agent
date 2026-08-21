@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Reject config files whose YAML root is not a mapping and convert YAML, UTF-8, read, and atomic-write failures into clean config errors for load/set/unset operations.
+- Report zero tokens for empty files, directories, sessions, stats, and REPL histories instead of inventing a one-token minimum.
+- Prefer existing filesystem paths in `--tokens` so names containing `..` are not misclassified as Git revision ranges.
+- Stream `--tokens` file and directory scans in bounded chunks and return a clean error for binary or invalid UTF-8 single-file input.
+- Keep provider and model selections consistent during init: provider-only setup now chooses that provider's default, and wizard custom models are added to its preset list.
+- Make non-interactive `--init --force` actually replace an existing configuration and make every init mode honor `--config FILE`.
+- Restore a silently shadowed initialization regression test and clear remaining duplicate-definition diagnostics.
+- Reserve generated session IDs atomically across concurrent processes and reject ambiguous session prefixes instead of selecting the wrong transcript.
+- Require confirmation for mutating commands that previously hid behind safe executable names, including `git clean`, `find -delete`, interpreters, and downloader output flags.
+- Make agent file writes, edits, and undo restores atomic without stripping existing executable permissions, so interrupted operations cannot leave truncated target files.
+- Preserve exceptions raised inside timeout worker threads, make config set/unset honor `--config FILE`, and report `--bench --all` output-file failures without a traceback.
 - Report configured provider names such as `zen` in JSON, diagnostics, and sessions instead of leaking the internal `openai_compat` backend label.
 - Fall back immediately when a model promotion has ended or a model is explicitly missing, while keeping generic authentication failures fatal.
 - Run model benchmarks concurrently with a bounded worker pool, fail reliably on provider/empty-response errors, include safe per-model diagnostics and summary counts, and return a nonzero status when any model fails.

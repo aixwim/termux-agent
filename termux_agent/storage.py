@@ -11,6 +11,10 @@ from pathlib import Path
 def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
     """Replace a text file atomically after flushing its temporary file."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        existing_mode = path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        existing_mode = None
     fd, temporary = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
     )
@@ -20,6 +24,8 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
+        if existing_mode is not None:
+            os.chmod(temporary_path, existing_mode)
         os.replace(temporary_path, path)
     except Exception:
         try:

@@ -130,6 +130,25 @@ def test_session_messages(tmp_path: Path, monkeypatch):
     ]
 
 
+def test_generated_session_ids_are_reserved_immediately(tmp_path: Path, monkeypatch):
+    import termux_agent.session as sess
+
+    monkeypatch.setattr(sess, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(sess.time, "strftime", lambda pattern: "20260821-120000")
+
+    first = sess.Session()
+    second = sess.Session()
+
+    assert first.session_id == "20260821-120000"
+    assert second.session_id == "20260821-120000-1"
+    assert sess.list_sessions() == []
+    assert len(list(tmp_path.glob(".*.reserve"))) == 2
+
+    first.append({"role": "user", "content": "hello"})
+    assert sess.list_sessions() == [first.path]
+    assert not (tmp_path / ".20260821-120000.reserve").exists()
+
+
 # --- compact ---
 class FakeSummarizer:
     name = "fake"
@@ -611,8 +630,6 @@ def test_cmd_one_shot_json(tmp_path: Path, monkeypatch):
 
     from termux_agent import cli
 
-    calls = {}
-
     def fake_build(*a, **k):
         return SimpleNamespace(
             provider=SimpleNamespace(name="zen", model="m"),
@@ -746,6 +763,26 @@ def test_delete_session_nonexistent(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(session, "SESSIONS_DIR", tmp_path / "empty")
     assert session.delete_session("nope") is None
+
+
+def test_resolve_session_rejects_ambiguous_prefix_but_prefers_exact(
+    tmp_path: Path, monkeypatch
+):
+    from termux_agent import session
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    exact = sessions_dir / "shared.jsonl"
+    longer = sessions_dir / "shared-extra.jsonl"
+    exact.write_text("{}\n")
+    longer.write_text("{}\n")
+    monkeypatch.setattr(session, "SESSIONS_DIR", sessions_dir)
+
+    assert session.resolve_session("shared") == exact
+    assert session.resolve_session("sha") is None
+    assert session.delete_session("sha") is None
+    assert exact.exists()
+    assert longer.exists()
 
 
 # --- --quiet / --copy ---
@@ -1469,6 +1506,25 @@ def test_run_guarded_no_timeout(monkeypatch):
     assert cli._run_guarded(agent, "p", None, timeout=None) == "FAST"
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+def test_run_guarded_preserves_worker_exception(streaming):
+    from termux_agent import cli
+
+    class BrokenAgent:
+        def run(self, prompt, on_tool_use=None, on_text_delta=None):
+            raise ValueError("original provider failure")
+
+    callback = (lambda text: None) if streaming else None
+    with pytest.raises(ValueError, match="original provider failure"):
+        cli._run_guarded(
+            BrokenAgent(),
+            "p",
+            None,
+            timeout=1,
+            on_text_delta=callback,
+        )
+
+
 def test_record_messages(tmp_path: Path, monkeypatch):
     from termux_agent import session
 
@@ -1779,6 +1835,26 @@ def test_cmd_bench_all_providers(tmp_path: Path, monkeypatch):
     assert payload["failed"] == 0
 
 
+def test_cmd_bench_all_providers_handles_output_error(tmp_path: Path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    monkeypatch.setattr(cli, "build_agent", lambda *args, **kwargs: object())
+    monkeypatch.setattr(cli, "_run_guarded", lambda *args, **kwargs: "ok")
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    cfg = _min_cfg()
+    cfg["providers"]["zen"]["models"] = ["m1"]
+
+    assert cli.cmd_bench(
+        cfg,
+        as_json=True,
+        all_providers=True,
+        output=str(tmp_path),
+    ) == 1
+    assert "Cannot write output file" in cli.sys.stdout.getvalue()
+
+
 def test_cmd_bench_reports_agent_errors_and_returns_nonzero(
     tmp_path: Path, monkeypatch
 ):
@@ -1979,19 +2055,40 @@ def test_load_config_explicit_file(tmp_path: Path, monkeypatch):
     assert seen == {"provider": "anthropic", "model": "claude-x"}
 
 
-def test_init_noninteractive(tmp_path: Path, monkeypatch):
+def test_init_noninteractive_explicit_provider_model(tmp_path: Path, monkeypatch):
     import io
 
-    from termux_agent import cli, config
+    from termux_agent import cli
 
     fake_cf = tmp_path / "config.yaml"
     monkeypatch.setattr(cli, "CONFIG_FILE", fake_cf)
     monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
     assert cli.cmd_init("openai", "gpt-test") == 0
-    cfg = config.load_config(str(fake_cf))
+    import yaml
+
+    cfg = yaml.safe_load(fake_cf.read_text(encoding="utf-8"))
     assert cfg["provider"] == "openai"
     assert cfg["providers"]["openai"]["models"] == ["gpt-test"]
+
+
+def test_init_provider_without_model_uses_that_provider_default(
+    tmp_path: Path, monkeypatch
+):
+    import io
+    import yaml
+
+    from termux_agent import cli
+
+    fake_cf = tmp_path / "config.yaml"
+    monkeypatch.setattr(cli, "CONFIG_FILE", fake_cf)
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+
+    assert cli.cmd_init("openai") == 0
+    cfg = yaml.safe_load(fake_cf.read_text(encoding="utf-8"))
+    assert cfg["provider"] == "openai"
+    assert cfg["model"] == cfg["providers"]["openai"]["models"][0]
+    assert cfg["model"] != "nemotron-3-ultra-free"
 
 
 def test_init_unknown_provider(monkeypatch):
@@ -2564,6 +2661,73 @@ def test_cmd_tokens_file(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(cli.sys, "stdout", out)
     assert cli.cmd_tokens(str(f)) == 0
     assert "800 characters, ~200 tokens" in out.getvalue()
+
+
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_cmd_tokens_empty_input_reports_zero_tokens(tmp_path: Path, monkeypatch, kind):
+    import io
+    import json
+
+    from termux_agent import cli
+
+    target = tmp_path / kind
+    if kind == "file":
+        target.write_text("", encoding="utf-8")
+    else:
+        target.mkdir()
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_tokens(str(target), as_json=True) == 0
+    payload = json.loads(output.getvalue())
+    assert payload["chars"] == 0
+    assert payload["tokens"] == 0
+
+
+def test_count_utf8_file_streams_across_multibyte_boundary(tmp_path: Path):
+    from termux_agent import cli
+
+    size = 1024 * 1024
+    path = tmp_path / "large.txt"
+    path.write_bytes((b"a" * (size - 1)) + "😀".encode("utf-8"))
+
+    assert cli._count_utf8_file(path) == size
+
+
+def test_cmd_tokens_binary_file_returns_clean_json_error(tmp_path: Path, monkeypatch):
+    import io
+    import json
+
+    from termux_agent import cli
+
+    path = tmp_path / "binary.dat"
+    path.write_bytes(b"prefix\x00payload")
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_tokens(str(path), as_json=True) == 1
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is False
+    assert "binary file" in payload["error"]
+
+
+def test_cmd_tokens_existing_double_dot_path_is_not_a_git_range(
+    tmp_path: Path, monkeypatch
+):
+    import io
+    import json
+
+    from termux_agent import cli
+
+    path = tmp_path / "notes..draft.txt"
+    path.write_text("local file", encoding="utf-8")
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_tokens(str(path), as_json=True) == 0
+    payload = json.loads(output.getvalue())
+    assert payload["chars"] == len("local file")
+    assert "git" not in payload
 
 
 def test_one_shot_no_save(tmp_path: Path, monkeypatch):
@@ -4255,6 +4419,50 @@ def test_init_force(tmp_path: Path, monkeypatch):
     assert "zen" in cfg_file.read_text(encoding="utf-8")
 
 
+def test_init_force_noninteractive_replaces_existing_config(
+    tmp_path: Path, monkeypatch
+):
+    import io
+    import yaml
+
+    from termux_agent import cli
+    from termux_agent.config import DEFAULTS
+
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("obsolete: true\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(cli, "CONFIG_FILE", cfg_file)
+    monkeypatch.setattr(cli, "DEFAULTS", DEFAULTS)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO())
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+
+    assert cli.cmd_init(force=True) == 0
+    saved = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
+    assert "obsolete" not in saved
+    assert saved["provider"] == DEFAULTS["provider"]
+    assert saved["model"] == DEFAULTS["model"]
+
+
+def test_main_init_honors_explicit_config_file(tmp_path: Path, monkeypatch):
+    import io
+    import yaml
+
+    from termux_agent import cli
+
+    global_config = tmp_path / "global.yaml"
+    custom_config = tmp_path / "nested" / "custom.yaml"
+    global_config.write_text("keep: global\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "CONFIG_FILE", global_config)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO())
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["--config", str(custom_config), "--init"]) == 0
+    saved = yaml.safe_load(custom_config.read_text(encoding="utf-8"))
+    assert saved["provider"] == "zen"
+    assert global_config.read_text(encoding="utf-8") == "keep: global\n"
+
+
 def test_watch_json(tmp_path: Path, monkeypatch):
     import io
     import json as _json
@@ -4888,7 +5096,7 @@ def test_image_url_download(tmp_path: Path, monkeypatch):
         srv_http.server_close()
 
 
-def test_init_noninteractive(tmp_path: Path, monkeypatch):
+def test_init_noninteractive_custom_defaults(tmp_path: Path, monkeypatch):
     import io
 
     from termux_agent import cli, config
@@ -6243,6 +6451,78 @@ def test_config_set(tmp_path: Path, monkeypatch):
     assert cli.cmd_config_set("providers.zen.model", "gpt-4o-mini") == 0
     saved = _yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
     assert saved["providers"]["zen"]["model"] == "gpt-4o-mini"
+
+
+@pytest.mark.parametrize("content", ["- one\n- two\n", "plain-string\n"])
+def test_load_and_config_set_reject_non_mapping_yaml(
+    tmp_path: Path, monkeypatch, content
+):
+    import io
+    import json
+
+    from termux_agent import cli, config
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(content, encoding="utf-8")
+
+    with pytest.raises(config.ConfigError, match="expected a YAML mapping"):
+        config.load_config(str(config_file))
+
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+    assert cli.cmd_config_set(
+        "temperature",
+        "0.2",
+        as_json=True,
+        config_file=str(config_file),
+    ) == 1
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is False
+    assert "expected a YAML mapping" in payload["error"]
+    assert config_file.read_text(encoding="utf-8") == content
+
+
+def test_load_config_reports_invalid_utf8(tmp_path: Path):
+    from termux_agent import config
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_bytes(b"provider: zen\n\xff")
+
+    with pytest.raises(config.ConfigError, match="Failed to read config"):
+        config.load_config(str(config_file))
+
+
+@pytest.mark.parametrize("unset", [False, True])
+def test_config_set_write_failure_is_reported_and_preserves_file(
+    tmp_path: Path, monkeypatch, unset
+):
+    import io
+    import json
+
+    from termux_agent import cli, storage
+
+    config_file = tmp_path / "config.yaml"
+    original = "temperature: 0.7\n"
+    config_file.write_text(original, encoding="utf-8")
+
+    def fail_write(*args, **kwargs):
+        raise OSError("disk is read-only")
+
+    monkeypatch.setattr(storage, "atomic_write_text", fail_write)
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_config_set(
+        "temperature",
+        "0.2",
+        as_json=True,
+        unset=unset,
+        config_file=str(config_file),
+    ) == 1
+    payload = json.loads(output.getvalue())
+    assert payload["ok"] is False
+    assert "disk is read-only" in payload["error"]
+    assert config_file.read_text(encoding="utf-8") == original
 
 
 def test_repl_usage(tmp_path: Path, monkeypatch):
@@ -7603,21 +7883,21 @@ def test_cmd_tokens_git_diff(tmp_path: Path, monkeypatch):
 
     from termux_agent import cli
 
-    def git(*args):
+    def run_git(*args):
         return subprocess.run(
             ["git", "-C", str(tmp_path), *args], capture_output=True, text=True, check=True
         )
 
-    git("init", "-q")
-    git("config", "user.email", "t@example.com")
-    git("config", "user.name", "t")
+    run_git("init", "-q")
+    run_git("config", "user.email", "t@example.com")
+    run_git("config", "user.name", "t")
     (tmp_path / "a.txt").write_text("hello world\n")
-    git("add", "-A")
-    git("commit", "-qm", "init")
+    run_git("add", "-A")
+    run_git("commit", "-qm", "init")
     (tmp_path / "a.txt").write_text("hello world\nchanged line\n")
     (tmp_path / "b.txt").write_text("brand new file\n")
-    git("add", "-A")
-    git("commit", "-qm", "second")
+    run_git("add", "-A")
+    run_git("commit", "-qm", "second")
     (tmp_path / "a.txt").write_text("hello world\nchanged line\neven more\n")
 
     monkeypatch.setattr(cli.os, "getcwd", lambda: str(tmp_path))
@@ -7686,6 +7966,39 @@ def test_cmd_config_set_unset(tmp_path: Path, monkeypatch):
     assert "c: 7" in cfg_file.read_text()
     assert cli.cmd_config_set("a.b.c", "", unset=True) == 0
     assert "c: 7" not in cfg_file.read_text()
+
+
+def test_main_config_set_and_unset_honor_explicit_config(tmp_path: Path, monkeypatch):
+    from termux_agent import cli
+
+    global_config = tmp_path / "global.yaml"
+    custom_config = tmp_path / "custom.yaml"
+    global_config.write_text("temperature: 0.7\n", encoding="utf-8")
+    custom_config.write_text("temperature: 0.2\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "CONFIG_FILE", global_config)
+
+    assert cli.main(
+        [
+            "--config",
+            str(custom_config),
+            "--config-set",
+            "temperature",
+            "0.3",
+        ]
+    ) == 0
+    assert "temperature: 0.3" in custom_config.read_text(encoding="utf-8")
+    assert global_config.read_text(encoding="utf-8") == "temperature: 0.7\n"
+
+    assert cli.main(
+        [
+            "--config",
+            str(custom_config),
+            "--config-unset",
+            "temperature",
+        ]
+    ) == 0
+    assert "temperature" not in custom_config.read_text(encoding="utf-8")
+    assert global_config.read_text(encoding="utf-8") == "temperature: 0.7\n"
 
 
 # --- rerun/summarize --append ---
@@ -8409,6 +8722,11 @@ def test_init_wizard_writes_config(tmp_path: Path, monkeypatch):
     out = (tmp_path / "ta" / "config.yaml").read_text()
     assert "provider: zen" in out
     assert "m-model" in out
+    import yaml
+
+    saved = yaml.safe_load(out)
+    assert saved["model"] == "m-model"
+    assert "m-model" in saved["providers"]["zen"]["models"]
 
 
 # --- web_search ---

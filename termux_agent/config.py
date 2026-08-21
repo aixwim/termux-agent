@@ -162,6 +162,21 @@ class ConfigError(Exception):
     pass
 
 
+def read_config_mapping(path: Path) -> dict[str, Any]:
+    """Read one YAML config file and require a mapping at its root."""
+    import yaml
+
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
+        raise ConfigError(f"Failed to read config {path}: {error}") from error
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ConfigError(f"Invalid config {path}: expected a YAML mapping at root")
+    return loaded
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     out = copy.deepcopy(base)
     for k, v in override.items():
@@ -196,21 +211,13 @@ def load_config(config_file: str | None = None) -> dict[str, Any]:
 
     When an explicit --config FILE is given, project files are still merged on top.
     """
-    import yaml
-
     file = Path(config_file).expanduser() if config_file else CONFIG_FILE
     cfg = copy.deepcopy(DEFAULTS)
     if file.exists():
-        try:
-            user = yaml.safe_load(file.read_text()) or {}
-        except yaml.YAMLError as e:
-            raise ConfigError(f"Failed to parse {file}: {e}")
+        user = read_config_mapping(file)
         cfg = _deep_merge(cfg, user)
     for p in _find_project_configs():
-        try:
-            proj = yaml.safe_load(p.read_text()) or {}
-        except yaml.YAMLError as e:
-            raise ConfigError(f"Failed to parse {p}: {e}")
+        proj = read_config_mapping(p)
         cfg = _deep_merge(cfg, proj)
     return cfg
 

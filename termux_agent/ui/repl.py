@@ -510,7 +510,8 @@ class Repl:
             return False
         elif c == "/tokens":
             chars = sum(len(str(m.get("content", ""))) for m in self.agent.messages)
-            render_info(f"{chars} characters, ~{max(1, chars // 4)} tokens in the current conversation (rough heuristic: chars/4).")
+            estimated = 0 if chars <= 0 else max(1, chars // 4)
+            render_info(f"{chars} characters, ~{estimated} tokens in the current conversation (rough heuristic: chars/4).")
             return False
         elif c == "/memory":
             from termux_agent.agent import MEMORY_FILE, load_memory

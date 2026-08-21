@@ -17,6 +17,7 @@ from termux_agent.config import (
     ConfigError,
     ensure_config_file,
     load_config,
+    read_config_mapping,
     resolve_working_dir,
 )
 from termux_agent.providers import create_provider
@@ -131,21 +132,33 @@ def build_agent(
     return agent
 
 
-def cmd_init(provider: str | None = None, model: str | None = None, force: bool = False) -> int:
-    if CONFIG_FILE.exists() and not force:
+def cmd_init(
+    provider: str | None = None,
+    model: str | None = None,
+    force: bool = False,
+    config_file: str | None = None,
+) -> int:
+    target = Path(config_file).expanduser() if config_file else CONFIG_FILE
+    if target.exists() and not force:
         render_error("Configuration already exists. Use --force to overwrite it.")
         return 1
     if provider or model:
-        return _init_noninteractive(provider, model)
+        return _init_noninteractive(provider, model, target)
     if sys.stdin.isatty():
-        return _init_wizard()
+        return _init_wizard(target)
+    if force or config_file:
+        return _init_noninteractive(None, None, target)
     path = ensure_config_file()
     render_info(f"Configuration created: {path}\n")
     render_info("Next steps:\n  1. Set the API key in an env var (e.g. export OPENAI_API_KEY=...)\n  2. Run: termux-agent")
     return 0
 
 
-def _init_noninteractive(provider: str | None, model: str | None) -> int:
+def _init_noninteractive(
+    provider: str | None,
+    model: str | None,
+    target: Path = CONFIG_FILE,
+) -> int:
     """Create ~/.termux-agent/config.yaml with the chosen provider/model (no wizard)."""
     cfg = copy.deepcopy(DEFAULTS)
     if provider:
@@ -157,17 +170,20 @@ def _init_noninteractive(provider: str | None, model: str | None) -> int:
     if model:
         cfg["providers"][pname]["models"] = [model]
         cfg["model"] = model
+    elif provider:
+        provider_models = cfg["providers"][pname].get("models") or []
+        cfg["model"] = provider_models[0] if provider_models else ""
     import yaml as _yaml
 
     from termux_agent.storage import atomic_write_text
 
-    atomic_write_text(CONFIG_FILE, _yaml.safe_dump(cfg, sort_keys=False))
-    render_info(f"Configuration created: {CONFIG_FILE}")
-    render_info(f"Provider: {pname} | Model: {model or cfg['providers'][pname]['models'][0]}")
+    atomic_write_text(target, _yaml.safe_dump(cfg, sort_keys=False))
+    render_info(f"Configuration created: {target}")
+    render_info(f"Provider: {pname} | Model: {cfg.get('model') or '(none)'}")
     return 0
 
 
-def _init_wizard() -> int:
+def _init_wizard(target: Path = CONFIG_FILE) -> int:
     render_info("termux-agent setup (press Enter to keep the default)")
     providers = sorted(DEFAULTS.get("providers", {}))
     p = input(f"Provider [{'/'.join(providers)}] (default: zen) > ").strip() or "zen"
@@ -182,14 +198,17 @@ def _init_wizard() -> int:
     cfg["provider"] = p
     if m:
         cfg["model"] = m
+        configured_models = cfg["providers"][p].get("models") or []
+        if m not in configured_models:
+            cfg["providers"][p]["models"] = [m, *configured_models]
     import yaml as _yaml
     from termux_agent.storage import atomic_write_text
 
     atomic_write_text(
-        CONFIG_FILE,
+        target,
         _yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True),
     )
-    render_info(f"Configuration created: {CONFIG_FILE}")
+    render_info(f"Configuration created: {target}")
     key_env = pc.get("api_key_env")
     if key_env:
         render_info(
@@ -529,32 +548,36 @@ def _attach_agent_context(agent: Agent, context_text: str) -> None:
 
 def _run_guarded(agent: Agent, prompt: str, on_tool_use, timeout: int | None, on_text_delta=None):
     """Run the agent, aborting with TimeoutError after `timeout` seconds (0 = unlimited)."""
-    if on_text_delta is None:
-        if not timeout:
-            return agent.run(prompt, on_tool_use=on_tool_use)
-        result: dict = {}
-
-        def _worker() -> None:
-            result["answer"] = agent.run(prompt, on_tool_use=on_tool_use)
-
-        t = threading.Thread(target=_worker, daemon=True)
-        t.start()
-        t.join(timeout)
-        if t.is_alive():
-            raise TimeoutError
-        return result["answer"]
     if not timeout:
-        return agent.run(prompt, on_tool_use=on_tool_use, on_text_delta=on_text_delta)
+        if on_text_delta is None:
+            return agent.run(prompt, on_tool_use=on_tool_use)
+        return agent.run(
+            prompt,
+            on_tool_use=on_tool_use,
+            on_text_delta=on_text_delta,
+        )
     result: dict = {}
 
     def _worker() -> None:
-        result["answer"] = agent.run(prompt, on_tool_use=on_tool_use, on_text_delta=on_text_delta)
+        try:
+            if on_text_delta is None:
+                result["answer"] = agent.run(prompt, on_tool_use=on_tool_use)
+            else:
+                result["answer"] = agent.run(
+                    prompt,
+                    on_tool_use=on_tool_use,
+                    on_text_delta=on_text_delta,
+                )
+        except BaseException as error:  # propagate failures from the worker
+            result["error"] = error
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
     t.join(timeout)
     if t.is_alive():
         raise TimeoutError
+    if "error" in result:
+        raise result["error"]
     return result["answer"]
 
 
@@ -645,8 +668,15 @@ def cmd_bench(cfg: dict, provider_name: str | None = None, timeout: int = 60, as
                 "failed": total - total_ok,
             }
             if output:
-                Path(output).expanduser().write_text(_json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-                render_info(f"Benchmark written to {output}")
+                try:
+                    Path(output).expanduser().write_text(
+                        _json.dumps(payload, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                    render_info(f"Benchmark written to {output}")
+                except OSError as e:
+                    render_error(f"Cannot write output file {output}: {e}")
+                    return 1
                 return 0 if payload["ok"] else 1
             if as_json:
                 print(_json.dumps(payload, ensure_ascii=False))
@@ -1423,8 +1453,43 @@ def cmd_show(ref: str | None, as_json: bool = False, output: str | None = None, 
         return 0
     print(_session_to_markdown(data))
     chars = sum(len(str(m.get("content", ""))) for m in data.get("messages", []))
-    render_info(f"\n~{max(1, chars // 4)} tokens estimated ({chars} message characters, chars/4 heuristic).")
+    render_info(f"\n~{_estimate_tokens(chars)} tokens estimated ({chars} message characters, chars/4 heuristic).")
     return 0
+
+
+def _estimate_tokens(chars: int) -> int:
+    """Apply the chars/4 heuristic without inventing a token for empty input."""
+    return 0 if chars <= 0 else max(1, chars // 4)
+
+
+def _count_utf8_file(path: Path, *, errors: str = "strict") -> int | None:
+    """Count decoded characters incrementally; return None for binary files."""
+    import codecs
+
+    decoder = codecs.getincrementaldecoder("utf-8")(errors=errors)
+    total = 0
+    first = True
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            if first:
+                first = False
+                if b"\x00" in chunk[:4096]:
+                    return None
+            total += len(decoder.decode(chunk))
+    total += len(decoder.decode(b"", final=True))
+    return total
+
+
+def _is_git_diff_ref(value: str) -> bool:
+    """Recognize documented HEAD refs and explicit two-ref Git ranges."""
+    import re
+
+    if re.fullmatch(r"HEAD(?:[~^]\d+)*", value):
+        return True
+    return re.fullmatch(
+        r"[A-Za-z0-9_./-]+\.\.\.?[A-Za-z0-9_./-]+",
+        value,
+    ) is not None
 
 
 def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False, session_ref: str | None = None, output: str | None = None, exclude: list[str] | None = None, all_sessions: bool = False) -> int:
@@ -1445,7 +1510,7 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
             per.append({"session": p.stem, "chars": chars})
         extra = {"sessions": len(per), "all": per}
         chars = total
-        estimated = max(1, chars // 4)
+        estimated = _estimate_tokens(chars)
         if as_json or output:
             import json as _json
 
@@ -1463,7 +1528,8 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
         render_info(f"{chars} characters, ~{estimated} tokens across {len(per)} session(s) (rough heuristic: chars/4).")
         return 0
 
-    if path and (path == "HEAD" or path.startswith("HEAD~") or ".." in path or "..." in path):
+    token_path = Path(path).expanduser() if path else None
+    if path and token_path is not None and not token_path.exists() and _is_git_diff_ref(path):
         import os as _os
         import subprocess
 
@@ -1505,8 +1571,6 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
             return 1
         chars = sum(len(str(m.get("content", ""))) for m in data.get("messages", []))
     elif path and Path(path).expanduser().is_dir():
-        import re as _re
-
         root = Path(path).expanduser()
         skip = {".git", ".hg", ".svn", "__pycache__", "node_modules", ".venv", "venv", ".tox", "build", "dist", ".termux-agent"}
         total = 0
@@ -1522,22 +1586,21 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
                     if any(_fnmatch.fnmatch(rel, pat) or _fnmatch.fnmatch(p.name, pat) for pat in exclude):
                         continue
                 try:
-                    raw = p.read_bytes()
+                    count = _count_utf8_file(p, errors="ignore")
                 except OSError:
                     continue
-                if b"\x00" in raw[:4096]:
+                if count is None:
                     continue
-                try:
-                    total += len(raw.decode("utf-8", errors="ignore"))
-                    files += 1
-                except Exception:  # noqa: BLE001
-                    continue
+                total += count
+                files += 1
         chars = total
         extra = {"files": files}
     elif path:
         try:
-            text = Path(path).expanduser().read_text(encoding="utf-8")
-        except OSError as e:
+            count = _count_utf8_file(Path(path).expanduser())
+            if count is None:
+                raise UnicodeDecodeError("utf-8", b"\x00", 0, 1, "binary file")
+        except (OSError, UnicodeDecodeError) as e:
             if as_json:
                 import json as _json
 
@@ -1545,7 +1608,7 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
             else:
                 render_error(f"Cannot read file: {e}")
             return 1
-        chars = len(text)
+        chars = count
         extra = {}
     elif not text:
         text = _sys.stdin.read() if not _sys.stdin.isatty() else ""
@@ -1554,7 +1617,7 @@ def cmd_tokens(path: str | None, text: str | None = None, as_json: bool = False,
     else:
         chars = len(text)
         extra = {}
-    estimated = max(1, chars // 4)
+    estimated = _estimate_tokens(chars)
     if as_json or output:
         import json as _json
 
@@ -1646,7 +1709,7 @@ def cmd_import(path: str, dry_run: bool = False, as_json: bool = False, markdown
                 if not dry_run:
                     import_session(data)
                 imported += 1
-            except Exception as e:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 failed.append(f.name)
         if as_json:
             print(_json.dumps({"ok": True, "dry_run": dry_run, "imported": imported, "failed": failed, "total": len(files)}, ensure_ascii=False))
@@ -1757,15 +1820,29 @@ def cmd_config_show(cfg: dict, as_json: bool = False, redact: bool = False, outp
     return 0
 
 
-def cmd_config_set(key: str, value: str, as_json: bool = False, unset: bool = False) -> int:
+def cmd_config_set(
+    key: str,
+    value: str,
+    as_json: bool = False,
+    unset: bool = False,
+    config_file: str | None = None,
+) -> int:
     """Set a config key and save it back to the config file. Dot paths navigate nested keys."""
     import json as _json
     import yaml as _yaml
 
-    if not CONFIG_FILE.exists():
-        render_error("No config file. Run 'termux-agent --init' first.")
+    target = Path(config_file).expanduser() if config_file else CONFIG_FILE
+    if not target.exists():
+        render_error(f"No config file at {target}. Run 'termux-agent --init' first.")
         return 1
-    cfg = _yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
+    try:
+        cfg = read_config_mapping(target)
+    except ConfigError as error:
+        if as_json:
+            print(_json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False))
+        else:
+            render_error(str(error))
+        return 1
 
     parts = key.split(".")
     node = cfg
@@ -1789,10 +1866,18 @@ def cmd_config_set(key: str, value: str, as_json: bool = False, unset: bool = Fa
             return 1
         from termux_agent.storage import atomic_write_text
 
-        atomic_write_text(
-            CONFIG_FILE,
-            _yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True),
-        )
+        try:
+            atomic_write_text(
+                target,
+                _yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True),
+            )
+        except OSError as error:
+            message = f"Cannot write config {target}: {error}"
+            if as_json:
+                print(_json.dumps({"ok": False, "error": message}, ensure_ascii=False))
+            else:
+                render_error(message)
+            return 1
         if as_json:
             print(_json.dumps({"ok": True, "key": key, "removed": removed_val}, ensure_ascii=False))
         else:
@@ -1820,10 +1905,18 @@ def cmd_config_set(key: str, value: str, as_json: bool = False, unset: bool = Fa
 
     from termux_agent.storage import atomic_write_text
 
-    atomic_write_text(
-        CONFIG_FILE,
-        _yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True),
-    )
+    try:
+        atomic_write_text(
+            target,
+            _yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True),
+        )
+    except OSError as error:
+        message = f"Cannot write config {target}: {error}"
+        if as_json:
+            print(_json.dumps({"ok": False, "error": message}, ensure_ascii=False))
+        else:
+            render_error(message)
+        return 1
     if as_json:
         print(_json.dumps({"key": key, "value": parsed}, ensure_ascii=False))
     else:
@@ -2760,7 +2853,7 @@ def cmd_stats_all(as_json: bool = False, output: str | None = None) -> int:
         "sessions": len(sessions),
         "messages": total_messages,
         "chars": total_chars,
-        "tokens": max(1, total_chars // 4),
+        "tokens": _estimate_tokens(total_chars),
         "notes": len(all_notes()),
         "by_provider": dict(sorted(by_provider.items(), key=lambda kv: -kv[1])),
         "by_day": dict(sorted(by_day.items(), reverse=True)),
@@ -3294,7 +3387,7 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
     except OSError as e:
         add("free disk (/)", False, str(e))
     try:
-        from termux_agent.session import SESSIONS_DIR, list_sessions
+        from termux_agent.session import list_sessions
 
         sess = list_sessions()
         total = sum(s.stat().st_size for s in sess)
@@ -3788,7 +3881,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.init:
-        return cmd_init(args.provider, args.model, force=args.force)
+        return cmd_init(
+            args.provider,
+            args.model,
+            force=args.force,
+            config_file=args.config,
+        )
     if args.bench:
         return cmd_bench(cfg, None if args.bench == "__default__" else args.bench, args.timeout or 60, as_json=args.json, output=args.output, prompt=args.bench_prompt or "Reply with exactly: ok", all_providers=args.all, workers=args.bench_workers)
     if args.export:
@@ -3867,9 +3965,20 @@ def main(argv: list[str] | None = None) -> int:
                 args.json,
             )
             return 1
-        return cmd_config_set(args.config_set[0], args.config_set[1], as_json=args.json)
+        return cmd_config_set(
+            args.config_set[0],
+            args.config_set[1],
+            as_json=args.json,
+            config_file=args.config,
+        )
     if args.config_unset:
-        return cmd_config_set(args.config_unset, "", as_json=args.json, unset=True)
+        return cmd_config_set(
+            args.config_unset,
+            "",
+            as_json=args.json,
+            unset=True,
+            config_file=args.config,
+        )
     if args.list_tools:
         return cmd_list_tools(as_json=args.json, output=args.output)
     if args.sessions:

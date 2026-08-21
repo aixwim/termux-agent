@@ -17,6 +17,16 @@ def test_atomic_write_text_replaces_content_without_temp_files(tmp_path):
     assert list(tmp_path.glob(".notes.json.*.tmp")) == []
 
 
+def test_atomic_write_text_preserves_existing_permissions(tmp_path):
+    target = tmp_path / "script.sh"
+    target.write_text("#!/bin/sh\necho old\n")
+    target.chmod(0o751)
+
+    atomic_write_text(target, "#!/bin/sh\necho new\n")
+
+    assert target.stat().st_mode & 0o777 == 0o751
+
+
 def test_atomic_write_failure_preserves_existing_file(tmp_path, monkeypatch):
     target = tmp_path / "notes.json"
     target.write_text("old")
