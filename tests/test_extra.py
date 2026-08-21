@@ -1744,8 +1744,10 @@ def test_server_token_auth(tmp_path: Path, monkeypatch):
         req = urllib.request.Request(f"http://127.0.0.1:{port}/sessions", headers={"Authorization": "Bearer sekret"})
         with urllib.request.urlopen(req, timeout=10) as r:
             sids = _json.loads(r.read())["sessions"]
-        assert sids and sids[0]["id"] == "20260820-000001"
-        assert sids[0]["first"] == "hello"
+        assert any(item["id"] == "20260820-000001" for item in sids)
+        assert any(item["first"] == "x" for item in sids)
+        seeded = next(item for item in sids if item["id"] == "20260820-000001")
+        assert seeded["first"] == "hello"
 
         try:
             urllib.request.urlopen(f"http://127.0.0.1:{port}/sessions", timeout=10)
@@ -3447,6 +3449,7 @@ def test_serve_background_spawn(tmp_path: Path, monkeypatch):
 
     def fake_popen(cmd, **kw):
         seen["cmd"] = cmd
+        seen["env"] = kw.get("env", {})
         return FakeProc()
 
     monkeypatch.setattr("subprocess.Popen", fake_popen)
@@ -3455,7 +3458,8 @@ def test_serve_background_spawn(tmp_path: Path, monkeypatch):
     code = cli.cmd_serve(_min_cfg(), "127.0.0.1", 8787, "zen", "m", True, "tok", background=True)
     assert code == 0
     assert (tmp_path / "server.pid").read_text() == "999"
-    assert "--token" in seen["cmd"] and "tok" in seen["cmd"]
+    assert "--token" not in seen["cmd"] and "tok" not in seen["cmd"]
+    assert seen["env"]["TERMUX_AGENT_SERVER_TOKEN"] == "tok"
     assert "background" in out.getvalue()
 
 

@@ -156,7 +156,18 @@ class AnthropicProvider(Provider):
                     except json.JSONDecodeError:
                         continue
                     etype = ev.get("type")
-                    if etype == "content_block_start":
+                    if etype == "message_start":
+                        usage = (ev.get("message") or {}).get("usage") or {}
+                        input_tokens = int(usage.get("input_tokens", 0) or 0)
+                        if input_tokens:
+                            yield StreamEvent(
+                                kind="usage",
+                                usage={
+                                    "prompt_tokens": input_tokens,
+                                    "total_tokens": input_tokens,
+                                },
+                            )
+                    elif etype == "content_block_start":
                         cb = ev.get("content_block", {})
                         if cb.get("type") == "tool_use":
                             idx = ev.get("index", 0)
@@ -173,7 +184,16 @@ class AnthropicProvider(Provider):
                             tool_inputs[idx] = tool_inputs.get(idx, "") + delta.get("partial_json", "")
                     elif etype == "message_delta":
                         if ev.get("usage"):
-                            yield StreamEvent(kind="usage", usage=ev["usage"])
+                            output_tokens = int(
+                                ev["usage"].get("output_tokens", 0) or 0
+                            )
+                            yield StreamEvent(
+                                kind="usage",
+                                usage={
+                                    "completion_tokens": output_tokens,
+                                    "total_tokens": output_tokens,
+                                },
+                            )
             tool_calls = []
             for idx, raw in tool_inputs.items():
                 tool_calls.append(

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+import os
+import signal
 
 from termux_agent.tools.base import ToolContext, tool
 
@@ -84,23 +86,36 @@ def run_command(args: dict, ctx: ToolContext) -> str:
             return "Cancelled by user."
     timeout = int(args.get("timeout", ctx.command_timeout))
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             command,
             shell=True,
             cwd=str(ctx.working_dir),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
+            start_new_session=True,
         )
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (OSError, UnboundLocalError):
+            try:
+                proc.kill()
+            except (OSError, UnboundLocalError):
+                pass
+        try:
+            proc.communicate()
+        except (OSError, ValueError):
+            pass
         return f"Error: command exceeded timeout of {timeout}s"
     except OSError as e:
         return f"Error: failed to run: {e}"
     out = ""
-    if proc.stdout:
-        out += proc.stdout
-    if proc.stderr:
-        out += "\n[stderr]\n" + proc.stderr
+    if stdout:
+        out += stdout
+    if stderr:
+        out += "\n[stderr]\n" + stderr
     out = out.strip()
     if not out:
         out = f"(done, exit {proc.returncode}, no output)"

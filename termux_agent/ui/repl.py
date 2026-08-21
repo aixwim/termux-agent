@@ -221,13 +221,18 @@ class Repl:
         model: str,
         agent_name: str = "root",
         log_file: str | None = None,
+        session_id: str | None = None,
     ) -> None:
         self.agent = agent
         self.provider_name = provider_name
         self.model = model
         self.agent_name = agent_name
         self.log_file = log_file
-        self.session = Session(provider_name=provider_name, model=model)
+        self.session = Session(
+            session_id=session_id,
+            provider_name=provider_name,
+            model=model,
+        )
         self._last_answer = ""
         self._last_user_input = ""
         self._base_prompt = getattr(self.agent, "system_prompt", "")
@@ -942,7 +947,11 @@ class Repl:
         self.model = provider.model
         self.agent.provider = provider
         self.agent.messages = [{"role": "system", "content": self.agent.system_prompt}] + history
-        self.session = Session(provider_name=provider_name, model=provider.model)
+        self.session = Session(
+            session_id=path.stem,
+            provider_name=provider_name,
+            model=provider.model,
+        )
         render_info(f"Resuming session {path.stem} ({len(history)} messages)")
 
     def _switch_provider(self, name: str) -> None:

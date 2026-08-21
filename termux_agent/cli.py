@@ -2942,6 +2942,11 @@ def cmd_serve(
     max_context_tokens: int | None = None,
 ) -> int:
     """Run the HTTP API server, optionally detached in the background."""
+    if host not in ("127.0.0.1", "::1", "localhost") and not token:
+        render_error(
+            "A bearer token is required when binding the server outside localhost."
+        )
+        return 2
     if background:
         import subprocess
         import sys
@@ -2958,8 +2963,9 @@ def cmd_serve(
             cmd += ["--model", model]
         if auto_accept:
             cmd += ["--yes"]
+        child_env = os.environ.copy()
         if token:
-            cmd += ["--token", token]
+            child_env["TERMUX_AGENT_SERVER_TOKEN"] = token
         if log_file:
             cmd += ["--log", log_file]
         if cors_origin and cors_origin != "*":
@@ -2979,6 +2985,7 @@ def cmd_serve(
                 stderr=logf,
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
+                env=child_env,
             )
         pid_file = Path(pidfile) if pidfile else CONFIG_DIR / "server.pid"
         pid_file.write_text(str(proc.pid), encoding="utf-8")
@@ -3152,18 +3159,12 @@ def cmd_search(term: str, as_json: bool = False, limit: int = 20, output: str | 
 
 def find_session(session_ref: str | None) -> "tuple[Path, dict, list[dict]] | None":
     """Find a session file + provider info + message history."""
-    from termux_agent.session import latest_session, list_sessions, read_session, session_messages
+    from termux_agent.session import iter_session, resolve_session, session_messages
 
-    path: Path | None = None
-    if session_ref and session_ref not in ("latest", ""):
-        matches = [s for s in list_sessions() if s.stem.startswith(session_ref)]
-        path = matches[-1] if matches else None
-    else:
-        path = latest_session()
+    path = resolve_session(session_ref)
     if not path:
         return None
-    recs = read_session(path)
-    info = next((r for r in recs if r.get("provider")), {})
+    info = next((record for record in iter_session(path) if record.get("provider")), {})
     return path, info, session_messages(path)
 
 
@@ -3243,6 +3244,15 @@ def cmd_resume(
             else:
                 render_error(f"Error: {agent.last_error}")
             return 1
+        from termux_agent.session import Session
+
+        resumed = Session(
+            session_id=path.stem,
+            provider_name=agent.provider.name,
+            model=agent.provider.model,
+        )
+        resumed.append({"role": "user", "content": prompt})
+        resumed.append({"role": "assistant", "content": answer})
         _maybe_notify(cfg, "Resume done", answer, as_json)
         if as_json:
             _emit_json({"ok": True, "answer": answer, "session": path.stem}, agent)
@@ -3256,7 +3266,13 @@ def cmd_resume(
         return 2
     from termux_agent.ui.repl import Repl
 
-    Repl(agent, provider_name=provider_name, model=agent.provider.model, agent_name=agent_name).run()
+    Repl(
+        agent,
+        provider_name=provider_name,
+        model=agent.provider.model,
+        agent_name=agent_name,
+        session_id=path.stem,
+    ).run()
     return 0
 
 
@@ -4043,7 +4059,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.serve_stop:
         return cmd_serve_stop(args.serve_pidfile)
     if args.serve:
-        token = args.token
+        token = args.token or os.environ.get("TERMUX_AGENT_SERVER_TOKEN")
         if not token and args.token_file:
             try:
                 token = Path(args.token_file).expanduser().read_text(encoding="utf-8").strip()

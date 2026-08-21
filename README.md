@@ -291,6 +291,11 @@ curl -X POST http://127.0.0.1:8787/chat \
   -d '{"prompt":"hello","stream":true}'
 ```
 
+The server may run without a token only on localhost for command-line clients.
+Browser-originated requests and non-local bind addresses require a bearer token.
+Remote requests cannot enable automatic tool approval unless the server itself was
+started with `--yes`.
+
 | Endpoint | Description |
 |---|---|
 | `GET /health` | version, pid, uptime |

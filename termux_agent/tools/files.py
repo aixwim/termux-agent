@@ -23,16 +23,31 @@ def read_file(args: dict, ctx: ToolContext) -> str:
     path = ctx.require_allowed(ctx.resolve(str(args["path"])))
     if not path.is_file():
         return f"Error: file not found: {path}"
+    start = int(args.get("start_line", 1))
+    start = max(1, start)
+    requested_end = args.get("end_line")
+    end = max(start, int(requested_end)) if requested_end is not None else None
+    selected: list[str] = []
+    selected_chars = 0
+    total = 0
+    truncated = False
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for total, raw_line in enumerate(handle, 1):
+                if total < start or (end is not None and total > end):
+                    continue
+                rendered = f"{total}: {raw_line.rstrip(chr(10) + chr(13))}"
+                if selected_chars + len(rendered) + 1 <= ctx.max_output_chars:
+                    selected.append(rendered)
+                    selected_chars += len(rendered) + 1
+                else:
+                    truncated = True
     except OSError as e:
         return f"Error: cannot read file: {e}"
-    start = int(args.get("start_line", 1))
-    end = int(args.get("end_line", len(lines)))
-    start = max(1, start)
-    end = min(len(lines), max(start, end))
-    body = "\n".join(f"{i}: {lines[i-1]}" for i in range(start, end + 1))
-    return f"{path} ({len(lines)} lines total)\n{body}"
+    body = "\n".join(selected)
+    if truncated:
+        body += "\n... [selected lines truncated]"
+    return f"{path} ({total} lines total)\n{body}"
 
 
 @tool(

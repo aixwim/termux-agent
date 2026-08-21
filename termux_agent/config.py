@@ -196,13 +196,15 @@ def _find_project_configs() -> list[Path]:
     found: list[Path] = []
     home = Path.home()
     start = Path.cwd().resolve()
-    chain = [start, *start.parents]
+    chain: list[Path] = []
+    for directory in (start, *start.parents):
+        chain.append(directory)
+        if directory == home:
+            break
     for directory in reversed(chain):
         f = directory / ".termux-agent" / "config.yaml"
         if f.is_file() and f.resolve() != CONFIG_FILE.resolve():
             found.append(f)
-        if directory == home:
-            break
     return found
 
 

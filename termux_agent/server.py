@@ -142,7 +142,10 @@ def _authorized(handler: BaseHTTPRequestHandler, body: dict[str, Any] | None = N
 
     token = getattr(handler, "token", None)
     if not token:
-        return True
+        # Command-line clients do not send Origin. Browsers do, so require a
+        # token for browser-originated requests to prevent drive-by localhost
+        # prompts from writing files through the agent.
+        return not bool(handler.headers.get("Origin"))
     auth = handler.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         supplied = auth[len("Bearer ") :].strip()
@@ -153,6 +156,27 @@ def _authorized(handler: BaseHTTPRequestHandler, body: dict[str, Any] | None = N
     return bool(supplied) and hmac.compare_digest(
         supplied.encode("utf-8"), str(token).encode("utf-8")
     )
+
+
+def _request_auto_accept(handler: BaseHTTPRequestHandler, data: dict[str, Any]) -> bool:
+    """Allow clients to reduce, but never elevate, server tool permissions."""
+    return bool(getattr(handler, "auto_accept", False)) and bool(
+        data.get("auto_accept", True)
+    )
+
+
+def _turn_records(agent: Any, start: int, prompt: str, answer: str) -> list[dict]:
+    """Return newly-added conversation records, with a fallback for adapters."""
+    records = [
+        record
+        for record in list(getattr(agent, "messages", []))[start:]
+        if record.get("role") in ("user", "assistant")
+    ]
+    if not any(record.get("role") == "user" for record in records):
+        records.insert(0, {"role": "user", "content": prompt})
+    if not any(record.get("role") == "assistant" for record in records):
+        records.append({"role": "assistant", "content": answer})
+    return records
 
 
 def _send_unauthorized(handler: BaseHTTPRequestHandler) -> None:
@@ -283,7 +307,14 @@ class _AgentHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def _stream_chat(self, agent, prompt: str, session_ref, note: str | None = None) -> None:
+    def _stream_chat(
+        self,
+        agent,
+        prompt: str,
+        session_ref,
+        note: str | None = None,
+        persisted_from: int = 1,
+    ) -> None:
         """Stream POST /chat responses as Server-Sent Events."""
         self.send_response(200)
         _start_sse(self)
@@ -301,7 +332,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
             from termux_agent.session import record_messages
 
             session_id = record_messages(
-                agent.messages,
+                _turn_records(agent, persisted_from, prompt, answer),
                 agent.provider.name,
                 agent.provider.model,
                 session_id=session_ref if (isinstance(session_ref, str) and session_ref) else None,
@@ -413,7 +444,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 self.cfg,
                 data.get("provider") or self.provider,
                 model or None,
-                auto_accept=True,
+                auto_accept=self.auto_accept,
                 temperature=float(data["temperature"]) if isinstance(data.get("temperature"), (int, float)) else None,
                 max_tool_rounds=int(data["max_tool_rounds"]) if isinstance(data.get("max_tool_rounds"), int) else None,
                 max_context_tokens=int(mct) if isinstance(mct, int) else None,
@@ -584,7 +615,12 @@ class _AgentHandler(BaseHTTPRequestHandler):
             + "\n\n".join(transcript)
         )
         try:
-            agent = self.build_agent(self.cfg, self.provider, self.model, auto_accept=True)
+            agent = self.build_agent(
+                self.cfg,
+                self.provider,
+                self.model,
+                auto_accept=self.auto_accept,
+            )
             summary = _run_guarded(agent, prompt, lambda *a, **k: None, None)
         except Exception as e:  # noqa: BLE001
             self._send(500, {"ok": False, "error": str(e)})
@@ -617,7 +653,12 @@ class _AgentHandler(BaseHTTPRequestHandler):
             "",
         )
         try:
-            agent = self.build_agent(self.cfg, self.provider, self.model, auto_accept=True)
+            agent = self.build_agent(
+                self.cfg,
+                self.provider,
+                self.model,
+                auto_accept=self.auto_accept,
+            )
             answer = _run_guarded(agent, last_user, lambda *a, **k: None, None)
         except Exception as e:  # noqa: BLE001
             self._send(500, {"ok": False, "error": str(e)})
@@ -839,9 +880,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                         self.cfg,
                         provider,
                         model,
-                        auto_accept=bool(
-                            data.get("auto_accept", self.auto_accept)
-                        ),
+                        auto_accept=_request_auto_accept(self, data),
                         temperature=float(temp) if isinstance(temp, (int, float)) else None,
                         max_tool_rounds=int(mtr) if isinstance(mtr, int) else None,
                         max_context_tokens=int(mct) if isinstance(mct, int) else None,
@@ -937,7 +976,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 self.cfg,
                 data.get("provider") or self.provider,
                 data.get("model") or self.model,
-                auto_accept=bool(data.get("auto_accept", self.auto_accept)),
+                auto_accept=_request_auto_accept(self, data),
                 agent_name=data.get("agent"),
                 working_dir=data.get("cwd"),
                 extra_rules=data.get("rules"),
@@ -968,14 +1007,24 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 agent.messages = [agent.messages[0]] + seeded
         session_ref = data.get("session")
         if isinstance(session_ref, str) and session_ref:
-            from termux_agent.session import list_sessions, session_messages
+            from termux_agent.session import resolve_session, session_messages
 
-            matches = [s for s in list_sessions() if s.stem.startswith(session_ref)]
-            if matches:
-                agent.messages = [agent.messages[0]] + session_messages(matches[-1])
+            resumed_path = resolve_session(session_ref)
+            if resumed_path is None:
+                self._send(404, {"ok": False, "error": "session not found or ambiguous"})
+                return
+            agent.messages = [agent.messages[0]] + session_messages(resumed_path)
+            session_ref = resumed_path.stem
+        persisted_from = len(agent.messages)
         if data.get("stream"):
             note = data.get("note")
-            self._stream_chat(agent, prompt, session_ref, note=str(note).strip() if isinstance(note, str) else None)
+            self._stream_chat(
+                agent,
+                prompt,
+                session_ref,
+                note=str(note).strip() if isinstance(note, str) else None,
+                persisted_from=persisted_from,
+            )
             return
         try:
             answer = agent.run(prompt)
@@ -995,7 +1044,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
             from termux_agent.session import record_messages
 
             session_id = record_messages(
-                agent.messages,
+                _turn_records(agent, persisted_from, prompt, answer),
                 agent.provider.name,
                 agent.provider.model,
                 session_id=(

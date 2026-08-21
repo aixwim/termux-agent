@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Prevent HTTP clients from elevating tool approval, reject unauthenticated browser-originated requests, and require a bearer token for non-local server binds.
+- Keep background-server tokens out of process arguments by passing them through the child environment.
+- Load project configuration through the working directory correctly when a project lives below the user's home directory.
+- Resolve exact or unique session references consistently, persist resumed turns without duplicating history, and keep interactive resumes in the selected session.
+- Kill the full shell process group on timeout so background descendants do not survive an aborted command.
+- Normalize Anthropic input/output usage for accurate statistics and context compaction.
+- Stream ranged file reads with bounded retained output instead of loading an entire file into memory.
+- Pin CI actions by commit, document the security policy and expected branch protections, assign control-plane ownership, and enable dependency updates and structured bug reports.
 - Reject config files whose YAML root is not a mapping and convert YAML, UTF-8, read, and atomic-write failures into clean config errors for load/set/unset operations.
 - Report zero tokens for empty files, directories, sessions, stats, and REPL histories instead of inventing a one-token minimum.
 - Prefer existing filesystem paths in `--tokens` so names containing `..` are not misclassified as Git revision ranges.
@@ -32,7 +40,7 @@ All notable changes to this project are documented here.
 - Preserve successful `/chat` answers when session or note persistence fails, report degradation through warnings, and return structured storage errors from memory/note endpoints.
 - Isolate handler configuration per HTTP server instance so concurrent servers cannot overwrite each other's token, provider, or model.
 - Compare HTTP bearer tokens in constant time and include consistent authentication, CORS, and request-log metadata on 401 responses.
-- Make HTTP batch jobs respect the server's confirmation mode unless `auto_accept` is explicitly overridden.
+- Make HTTP batch jobs respect the server's confirmation mode; clients may reduce but cannot elevate automatic approval.
 - Emit an OpenAI-compatible SSE error object when streaming execution fails instead of reporting a successful `stop`.
 - Send native chat SSE headers exactly once so event bodies remain protocol-compliant across multi-event streams.
 - Return structured HTTP 500 responses when non-stream chat execution fails instead of dropping the client connection.
