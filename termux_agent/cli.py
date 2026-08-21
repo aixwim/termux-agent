@@ -2084,7 +2084,11 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
 
     from termux_agent.agent import MEMORY_FILE
     from termux_agent.session import NOTES_FILE, list_sessions
-    from termux_agent.storage import atomic_copy_file, atomic_write_text
+    from termux_agent.storage import (
+        atomic_copy_file,
+        atomic_write_text,
+        sha256_file,
+    )
 
     def _collect() -> list[tuple[Path, str]]:
         files: list[tuple[Path, str]] = []
@@ -2100,6 +2104,7 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
         return files
 
     if target_dir == "-":
+        import hashlib
         import io
         import tarfile
         import sys as _sys
@@ -2115,13 +2120,29 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
             "memory": MEMORY_FILE.name if MEMORY_FILE.is_file() else None,
             "notes": NOTES_FILE.name if NOTES_FILE.is_file() else None,
             "sessions": session_count,
+            "checksums": {},
         }
-        manifest_data = _json.dumps(
-            manifest, ensure_ascii=False, indent=2
-        ).encode("utf-8")
+
+        class _HashingReader:
+            def __init__(self, handle, digest):
+                self.handle = handle
+                self.digest = digest
+
+            def read(self, size=-1):
+                chunk = self.handle.read(size)
+                self.digest.update(chunk)
+                return chunk
+
         with tarfile.open(fileobj=_sys.stdout.buffer, mode="w|gz") as archive:
             for source, archive_name in files:
-                archive.add(source, arcname=archive_name)
+                info = archive.gettarinfo(str(source), arcname=archive_name)
+                digest = hashlib.sha256()
+                with source.open("rb") as handle:
+                    archive.addfile(info, _HashingReader(handle, digest))
+                manifest["checksums"][archive_name] = digest.hexdigest()
+            manifest_data = _json.dumps(
+                manifest, ensure_ascii=False, indent=2
+            ).encode("utf-8")
             info = tarfile.TarInfo("manifest.json")
             info.size = len(manifest_data)
             archive.addfile(info, io.BytesIO(manifest_data))
@@ -2170,6 +2191,16 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
         "memory": MEMORY_FILE.name if MEMORY_FILE.is_file() else None,
         "notes": NOTES_FILE.name if NOTES_FILE.is_file() else None,
         "sessions": n_sessions,
+        "checksums": {},
+    }
+    managed_paths = [
+        (out / name, name) for name in current_top_level
+    ] + [
+        (ses_dir / name, f"sessions/{name}") for name in current_sessions
+    ]
+    manifest["checksums"] = {
+        archive_name: sha256_file(path)
+        for path, archive_name in managed_paths
     }
     atomic_write_text(
         out / "manifest.json",
@@ -2257,7 +2288,7 @@ def _restore_from_dir(src: Path, dry_run: bool = False, as_json: bool = False, m
     import json as _json
 
     from termux_agent.session import SESSIONS_DIR
-    from termux_agent.storage import atomic_write_text
+    from termux_agent.storage import atomic_write_text, sha256_file
 
     if not (src / "manifest.json").is_file():
         render_error(f"No manifest.json found in {src} — not a termux-agent bundle.")
@@ -2322,6 +2353,34 @@ def _restore_from_dir(src: Path, dry_run: bool = False, as_json: bool = False, m
             return 1
         except (OSError, UnicodeDecodeError) as e:
             render_error(f"Invalid session file {f.name}: {e}")
+            return 1
+
+    checksums = manifest.get("checksums")
+    if checksums is not None:
+        if not isinstance(checksums, dict) or not all(
+            isinstance(name, str) and isinstance(digest, str)
+            for name, digest in checksums.items()
+        ):
+            render_error("Invalid bundle manifest: malformed checksums.")
+            return 1
+        expected_paths = {
+            name: src / name for name, _ in text_files
+        }
+        expected_paths.update(
+            {f"sessions/{path.name}": path for path, _ in session_files}
+        )
+        if set(checksums) != set(expected_paths):
+            render_error("Invalid bundle manifest: checksum file list mismatch.")
+            return 1
+        try:
+            for name, path in expected_paths.items():
+                if sha256_file(path) != checksums[name].lower():
+                    render_error(
+                        f"Invalid bundle: checksum mismatch for {name}."
+                    )
+                    return 1
+        except OSError as e:
+            render_error(f"Invalid bundle: checksum verification failed: {e}")
             return 1
 
     restored = [name for name, _ in text_files]

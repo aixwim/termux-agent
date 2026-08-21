@@ -1,6 +1,7 @@
 """Small durable-storage helpers shared by local persistence modules."""
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import tempfile
@@ -49,3 +50,12 @@ def atomic_copy_file(source: Path, destination: Path) -> None:
             pass
         temporary_path.unlink(missing_ok=True)
         raise
+
+
+def sha256_file(path: Path) -> str:
+    """Return a SHA-256 digest while reading a file in bounded chunks."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

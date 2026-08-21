@@ -4,6 +4,7 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Add streaming SHA-256 checksums to new bundles and reject tampered or incomplete files before restore while accepting legacy manifests.
 - Remove stale managed artifacts when refreshing a directory bundle, preserve unrelated files, and verify manifest contents/counts before restore.
 - Create directory backups with streaming atomic file copies and publish their manifest through atomic replacement.
 - Stream stdout backups without buffering the full archive and include the manifest/session layout required for a successful piped restore.

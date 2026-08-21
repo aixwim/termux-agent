@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from termux_agent.storage import atomic_copy_file, atomic_write_text
+from termux_agent.storage import atomic_copy_file, atomic_write_text, sha256_file
 
 
 def test_atomic_write_text_replaces_content_without_temp_files(tmp_path):
@@ -59,6 +59,16 @@ def test_atomic_copy_failure_preserves_existing_file(tmp_path, monkeypatch):
 
     assert destination.read_bytes() == b"old"
     assert list(tmp_path.glob(".destination.bin.*.tmp")) == []
+
+
+def test_sha256_file_reads_large_files_in_chunks(tmp_path):
+    import hashlib
+
+    path = tmp_path / "large.bin"
+    content = (b"digest-data" * 200_000) + b"end"
+    path.write_bytes(content)
+
+    assert sha256_file(path) == hashlib.sha256(content).hexdigest()
 
 
 def test_concurrent_note_updates_do_not_overwrite_each_other(tmp_path, monkeypatch):
@@ -433,3 +443,32 @@ def test_no_sessions_removes_sessions_from_reused_bundle(tmp_path, monkeypatch):
 
     assert cli.cmd_bundle(str(bundle), include_sessions=False) == 0
     assert list((bundle / "sessions").glob("*.jsonl")) == []
+
+
+def test_restore_rejects_tampered_bundle_file(tmp_path, monkeypatch):
+    import io
+
+    from termux_agent import agent, cli, session
+
+    source = tmp_path / "source"
+    source.mkdir()
+    config = source / "config.yaml"
+    config.write_text("provider: original\n")
+    sessions = source / "sessions"
+    sessions.mkdir()
+    monkeypatch.setattr(cli, "CONFIG_FILE", config)
+    monkeypatch.setattr(session, "SESSIONS_DIR", sessions)
+    monkeypatch.setattr(session, "NOTES_FILE", source / "notes.json")
+    monkeypatch.setattr(agent, "MEMORY_FILE", source / "memory.md")
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+
+    bundle = tmp_path / "bundle"
+    assert cli.cmd_bundle(str(bundle)) == 0
+    (bundle / "config.yaml").write_text("provider: tampered\n")
+
+    destination = tmp_path / "destination"
+    monkeypatch.setattr(cli, "CONFIG_DIR", destination)
+    monkeypatch.setattr(session, "SESSIONS_DIR", destination / "sessions")
+    assert cli.cmd_restore(str(bundle)) == 1
+    assert "checksum mismatch for config.yaml" in cli.sys.stdout.getvalue()
+    assert not destination.exists()
