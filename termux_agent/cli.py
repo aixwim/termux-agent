@@ -2086,30 +2086,45 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
     from termux_agent.agent import MEMORY_FILE
     from termux_agent.session import NOTES_FILE, SESSIONS_DIR, list_sessions
 
-    def _collect() -> list[Path]:
-        files = []
+    def _collect() -> list[tuple[Path, str]]:
+        files: list[tuple[Path, str]] = []
         if CONFIG_FILE.is_file():
-            files.append(CONFIG_FILE)
+            files.append((CONFIG_FILE, CONFIG_FILE.name))
         if MEMORY_FILE.is_file():
-            files.append(MEMORY_FILE)
+            files.append((MEMORY_FILE, MEMORY_FILE.name))
         if NOTES_FILE.is_file():
-            files.append(NOTES_FILE)
+            files.append((NOTES_FILE, NOTES_FILE.name))
         if include_sessions:
             for s in list_sessions():
-                files.append(s)
+                files.append((s, f"sessions/{s.name}"))
         return files
 
     if target_dir == "-":
         import io
         import tarfile
-
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-            for f in _collect():
-                tf.add(f, arcname=f.name)
         import sys as _sys
 
-        _sys.stdout.buffer.write(buf.getvalue())
+        files = _collect()
+        session_count = sum(
+            1 for _, archive_name in files if archive_name.startswith("sessions/")
+        )
+        manifest = {
+            "app": "termux-agent",
+            "version": __version__,
+            "config": CONFIG_FILE.name if CONFIG_FILE.is_file() else None,
+            "memory": MEMORY_FILE.name if MEMORY_FILE.is_file() else None,
+            "notes": NOTES_FILE.name if NOTES_FILE.is_file() else None,
+            "sessions": session_count,
+        }
+        manifest_data = _json.dumps(
+            manifest, ensure_ascii=False, indent=2
+        ).encode("utf-8")
+        with tarfile.open(fileobj=_sys.stdout.buffer, mode="w|gz") as archive:
+            for source, archive_name in files:
+                archive.add(source, arcname=archive_name)
+            info = tarfile.TarInfo("manifest.json")
+            info.size = len(manifest_data)
+            archive.addfile(info, io.BytesIO(manifest_data))
         _sys.stdout.buffer.flush()
         return 0
 

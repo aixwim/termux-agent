@@ -250,3 +250,59 @@ def test_bundle_archive_preflight_rejects_traversal_without_partial_write(
 
     assert list(tmp_path.iterdir()) == []
     assert not (tmp_path.parent / "escape.txt").exists()
+
+
+def test_streamed_bundle_round_trips_through_restore(tmp_path, monkeypatch):
+    import io
+    import json
+
+    from termux_agent import agent, cli, session
+
+    source = tmp_path / "source"
+    source.mkdir()
+    config = source / "config.yaml"
+    config.write_text("provider: test\n")
+    sessions = source / "sessions"
+    sessions.mkdir()
+    (sessions / "stream-id.jsonl").write_text(
+        '{"role":"user","content":"hello"}\n'
+    )
+    monkeypatch.setattr(cli, "CONFIG_FILE", config)
+    monkeypatch.setattr(session, "SESSIONS_DIR", sessions)
+    monkeypatch.setattr(session, "NOTES_FILE", source / "notes.json")
+    monkeypatch.setattr(agent, "MEMORY_FILE", source / "memory.md")
+
+    class WriteOnlyBuffer:
+        def __init__(self):
+            self.data = bytearray()
+
+        def write(self, chunk):
+            self.data.extend(chunk)
+            return len(chunk)
+
+        def flush(self):
+            pass
+
+    archive = WriteOnlyBuffer()
+
+    class Output:
+        buffer = archive
+
+    monkeypatch.setattr(cli.sys, "stdout", Output())
+    assert cli.cmd_bundle("-") == 0
+
+    destination = tmp_path / "destination"
+    monkeypatch.setattr(cli, "CONFIG_DIR", destination)
+    monkeypatch.setattr(cli, "CONFIG_FILE", destination / "config.yaml")
+    monkeypatch.setattr(session, "SESSIONS_DIR", destination / "sessions")
+    archive_input = io.BytesIO(bytes(archive.data))
+
+    class Input:
+        buffer = archive_input
+
+    monkeypatch.setattr(cli.sys, "stdin", Input())
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+    assert cli.cmd_restore("-") == 0
+    assert (destination / "config.yaml").read_text() == "provider: test\n"
+    restored = destination / "sessions" / "stream-id.jsonl"
+    assert json.loads(restored.read_text())["content"] == "hello"

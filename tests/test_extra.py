@@ -4233,6 +4233,9 @@ def test_bundle_stdout(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(session, "SESSIONS_DIR", sdir)
     monkeypatch.setattr(cli, "CONFIG_FILE", tmp_path / "config.json")
     cli.CONFIG_FILE.write_text(_json.dumps({"provider": "zen"}))
+    (sdir / "stream-session.jsonl").write_text(
+        '{"role":"user","content":"hello"}\n'
+    )
     out = io.BytesIO()
 
     class FakeStdout:
@@ -4244,6 +4247,8 @@ def test_bundle_stdout(tmp_path: Path, monkeypatch):
     with tarfile.open(fileobj=out, mode="r:gz") as tf:
         names = tf.getnames()
     assert "config.json" in names
+    assert "manifest.json" in names
+    assert "sessions/stream-session.jsonl" in names
 
 
 # --- server DELETE session / markdown / prune keep ---

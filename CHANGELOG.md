@@ -4,6 +4,7 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Stream stdout backups without buffering the full archive and include the manifest/session layout required for a successful piped restore.
 - Bound stdin backup archives to 64 MiB compressed, 256 MiB extracted, and 10,000 regular entries while rejecting links and special files.
 - Validate backup manifests and session filenames before restore, and restore text files through atomic replacement.
 - Reject unsafe session IDs that could escape the sessions directory and replace imported session files atomically.
