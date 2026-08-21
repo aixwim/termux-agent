@@ -239,18 +239,20 @@ def cmd_one_shot(
         try:
             prompt = append_attachments(prompt, attach)
         except AttachmentError as e:
-            render_error(str(e))
+            _render_or_json_error(str(e), as_json)
             return 1
-        render_info(f"Attached {len(attach)} file(s) to the prompt.")
+        if not as_json and not quiet:
+            render_info(f"Attached {len(attach)} file(s) to the prompt.")
 
     if clip and not prompt:
         from termux_agent.notify import clipboard_get
 
         prompt = clipboard_get() or prompt
         if not prompt:
-            render_error("Clipboard is empty (or termux-api is not installed).")
+            _render_or_json_error("Clipboard is empty (or termux-api is not installed).", as_json)
             return 2
-        render_info("Using clipboard as prompt.")
+        if not as_json and not quiet:
+            render_info("Using clipboard as prompt.")
     if screenshot:
         from termux_agent.notify import screenshot as _screenshot
 
@@ -261,20 +263,24 @@ def cmd_one_shot(
         else:
             img = _screenshot()
         if not img:
-            render_error("Could not take a screenshot (is termux-api installed and screen sharing granted?).")
+            _render_or_json_error(
+                "Could not take a screenshot (is termux-api installed and screen sharing granted?).",
+                as_json,
+            )
             return 2
         prompt = f"{prompt}\n\n[image: {img}]".strip() if prompt else f"Describe this screenshot:\n\n[image: {img}]"
-        render_info(f"Attached screenshot: {img}")
+        if not as_json and not quiet:
+            render_info(f"Attached screenshot: {img}")
 
     extra_rules = ""
     if rules_file:
         try:
             extra_rules = Path(rules_file).expanduser().read_text(encoding="utf-8").strip()
         except OSError as e:
-            render_error(f"Cannot read --rules file: {e}")
+            _render_or_json_error(f"Cannot read --rules file: {e}", as_json)
             return 1
         if not extra_rules:
-            render_error(f"--rules file is empty: {rules_file}")
+            _render_or_json_error(f"--rules file is empty: {rules_file}", as_json)
             return 1
     if git_context:
         cwd = Path(working_dir).expanduser().resolve() if working_dir else resolve_working_dir(cfg)
@@ -287,10 +293,10 @@ def cmd_one_shot(
         try:
             sys_prompt = Path(system_prompt_file).expanduser().read_text(encoding="utf-8").strip()
         except OSError as e:
-            render_error(f"Cannot read --system-prompt file: {e}")
+            _render_or_json_error(f"Cannot read --system-prompt file: {e}", as_json)
             return 1
         if not sys_prompt:
-            render_error(f"--system-prompt file is empty: {system_prompt_file}")
+            _render_or_json_error(f"--system-prompt file is empty: {system_prompt_file}", as_json)
             return 1
 
     def _make_agent(which_model: str | None = None) -> Agent:
@@ -385,6 +391,17 @@ def cmd_one_shot(
         from termux_agent.notify import wake_unlock
 
         wake_unlock()
+    agent_error = getattr(agent, "last_error", None)
+    if agent_error:
+        if logger:
+            logger("error", {"type": "provider", "message": agent_error})
+        if as_json:
+            _emit_json({"ok": False, "error": agent_error, "tool_calls": tool_log}, agent)
+        elif quiet:
+            print(f"Error: {agent_error}")
+        else:
+            render_error(f"Error: {agent_error}")
+        return 1
     if speak:
         from termux_agent.notify import speak as _speak
 
@@ -393,7 +410,8 @@ def cmd_one_shot(
         try:
             Path(output).write_text(answer + "\n", encoding="utf-8")
         except OSError as e:
-            render_error(f"Cannot write output file {output}: {e}")
+            _render_or_json_error(f"Cannot write output file {output}: {e}", as_json)
+            return 1
     if getattr(agent, "messages", None) and not no_save:
         from termux_agent.session import record_messages
 
@@ -405,9 +423,9 @@ def cmd_one_shot(
         from termux_agent.ui.repl import copy_to_clipboard
 
         if copy_to_clipboard(answer):
-            if not quiet:
+            if not as_json and not quiet:
                 render_info("Answer copied to the clipboard.")
-        elif not quiet:
+        elif not as_json and not quiet:
             render_error("Clipboard unavailable. Install termux-api (pkg install termux-api).")
     if as_json:
         _emit_json({"ok": True, "answer": answer, "tool_calls": tool_log}, agent, include_usage=bool(stats))
@@ -459,6 +477,14 @@ def _emit_json(payload: dict, agent: "Agent | None", include_usage: bool = False
                 "tool_call_count": int(getattr(agent, "tool_call_count", 0)),
             }
     print(json.dumps(payload, ensure_ascii=False))
+
+
+def _render_or_json_error(message: str, as_json: bool) -> None:
+    """Keep stdout machine-readable when a pre-agent CLI operation fails."""
+    if as_json:
+        _emit_json({"ok": False, "error": message}, None)
+    else:
+        render_error(message)
 
 
 def _maybe_notify(cfg: dict, title: str, answer: str, as_json: bool = False) -> None:
@@ -925,7 +951,7 @@ def cmd_watch(
         try:
             prompt = append_attachments(prompt, attach)
         except AttachmentError as e:
-            render_error(str(e))
+            _render_or_json_error(str(e), as_json)
             return 1
         if not as_json:
             render_info(f"Attached {len(attach)} file(s) to the prompt.")
@@ -2247,7 +2273,7 @@ def cmd_rerun(
         try:
             last_user = append_attachments(last_user, attach)
         except AttachmentError as e:
-            render_error(str(e))
+            _render_or_json_error(str(e), as_json)
             return 1
         render_info(f"Attached {len(attach)} file(s) to the re-run prompt.")
     try:
@@ -2696,7 +2722,7 @@ def cmd_resume(
             try:
                 prompt = append_attachments(prompt, attach)
             except AttachmentError as e:
-                render_error(str(e))
+                _render_or_json_error(str(e), as_json)
                 return 1
         if attach:
             if not as_json and not quiet:
@@ -3363,7 +3389,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cfg = load_config(args.config)
     except ConfigError as e:
-        render_error(str(e))
+        _render_or_json_error(str(e), args.json)
         return 1
 
     if args.init:
@@ -3426,7 +3452,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cron:
         cron_prompt = " ".join(args.prompt).strip()
         if not cron_prompt:
-            render_error("--cron requires a one-shot prompt.")
+            _render_or_json_error("--cron requires a one-shot prompt.", args.json)
             return 2
         return cmd_cron(args.cron, cron_prompt, as_json=args.json, notify=args.notify, output=args.output)
     if args.stats_all:
@@ -3441,7 +3467,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_config_show(cfg, as_json=args.json, redact=args.redact, output=args.output)
     if args.config_set:
         if len(args.config_set) != 2:
-            render_error("--config-set requires KEY and VALUE (e.g. --config-set temperature 0.2).")
+            _render_or_json_error(
+                "--config-set requires KEY and VALUE (e.g. --config-set temperature 0.2).",
+                args.json,
+            )
             return 1
         return cmd_config_set(args.config_set[0], args.config_set[1], as_json=args.json)
     if args.config_unset:
@@ -3488,7 +3517,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 token = Path(args.token_file).expanduser().read_text(encoding="utf-8").strip()
             except OSError as e:
-                render_error(f"Cannot read --token-file: {e}")
+                _render_or_json_error(f"Cannot read --token-file: {e}", args.json)
                 return 1
         return cmd_serve(
             cfg,
@@ -3520,7 +3549,7 @@ def main(argv: list[str] | None = None) -> int:
         pc = cfg.get("providers", {}).get(pname, {})
         env_name = pc.get("api_key_env", "")
         if not env_name:
-            render_error(f"Provider '{pname}' has no api_key_env to set.")
+            _render_or_json_error(f"Provider '{pname}' has no api_key_env to set.", args.json)
             return 1
         os.environ[env_name] = args.api_key
         if pname != "zen":
@@ -3595,12 +3624,12 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 file_prompt = _Path(args.prompt_file).expanduser().read_text(encoding="utf-8").strip()
         except OSError as e:
-            render_error(f"Cannot read --prompt-file: {e}")
+            _render_or_json_error(f"Cannot read --prompt-file: {e}", args.json)
             return 1
         prompt = (prompt + "\n\n" + file_prompt).strip() if prompt else file_prompt
     if args.image:
         if not prompt:
-            render_error("--image requires a one-shot prompt (or --prompt-file).")
+            _render_or_json_error("--image requires a one-shot prompt (or --prompt-file).", args.json)
             return 2
         img = args.image
         if img.startswith(("http://", "https://")):
@@ -3615,12 +3644,13 @@ def main(argv: list[str] | None = None) -> int:
                 tmp_img = Path(tempfile.gettempdir()) / f"termux-agent-img{ext}"
                 tmp_img.write_bytes(data)
                 img = str(tmp_img)
-                render_info(f"Downloaded image to {img} ({len(data)} bytes).")
+                if not args.json and not args.quiet:
+                    render_info(f"Downloaded image to {img} ({len(data)} bytes).")
             except Exception as e:  # noqa: BLE001
-                render_error(f"Failed to download image: {e}")
+                _render_or_json_error(f"Failed to download image: {e}", args.json)
                 return 1
         if not Path(img).expanduser().is_file():
-            render_error(f"Image not found: {img}")
+            _render_or_json_error(f"Image not found: {img}", args.json)
             return 1
         prompt = f"{prompt}\n[image: {img}]"
     if args.resume:
@@ -3647,7 +3677,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.watch:
         if not prompt:
-            render_error("--watch requires a one-shot prompt.")
+            _render_or_json_error("--watch requires a one-shot prompt.", args.json)
             return 2
         return cmd_watch(
             cfg,
@@ -3750,11 +3780,17 @@ def main(argv: list[str] | None = None) -> int:
                 rotate=args.rotate,
             )
         except ConfigError as e:
-            render_error(f"Configuration error: {e}\nRun 'termux-agent --init' first, or fix ~/.termux-agent/config.yaml.")
+            _render_or_json_error(
+                f"Configuration error: {e}\nRun 'termux-agent --init' first, or fix ~/.termux-agent/config.yaml.",
+                args.json,
+            )
             return 1
 
     if args.json:
-        render_error("--json requires a one-shot prompt (e.g. termux-agent --json 'summarize this repo').")
+        _render_or_json_error(
+            "--json requires a one-shot prompt (e.g. termux-agent --json 'summarize this repo').",
+            True,
+        )
         return 2
 
     provider_key = args.provider or cfg.get("provider", "zen")

@@ -5706,6 +5706,108 @@ def test_attachment_loader_enforces_combined_limit(tmp_path: Path, monkeypatch):
         attachments.append_attachments("prompt", [str(first), str(second)])
 
 
+def test_one_shot_attachment_error_is_valid_json(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    missing = tmp_path / "missing.txt"
+
+    code = cli.cmd_one_shot(
+        _min_cfg(), "read this", "zen", None, attach=[str(missing)], as_json=True
+    )
+
+    assert code == 1
+    payload = _json.loads(out.getvalue())
+    assert payload["ok"] is False
+    assert str(missing) in payload["error"]
+
+
+def test_one_shot_provider_failure_is_not_reported_as_success(tmp_path: Path, monkeypatch):
+    import io
+    import json as _json
+    from types import SimpleNamespace
+
+    from termux_agent import cli
+
+    agent = SimpleNamespace(
+        provider=SimpleNamespace(name="zen", model="broken"),
+        ctx=SimpleNamespace(working_dir=tmp_path),
+        usage={},
+        messages=[],
+        last_error="zen: HTTP 503 - unavailable",
+        model_attempts=["broken"],
+        elapsed_seconds=0.2,
+        run=lambda *args, **kwargs: "Error: zen: HTTP 503 - unavailable",
+    )
+    monkeypatch.setattr(cli, "build_agent", lambda *args, **kwargs: agent)
+    monkeypatch.setattr(cli, "_run_guarded", lambda current, *args, **kwargs: current.run())
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+
+    code = cli.cmd_one_shot(_min_cfg(), "hello", "zen", None, as_json=True, no_save=True)
+
+    payload = _json.loads(out.getvalue())
+    assert code == 1
+    assert payload["ok"] is False
+    assert payload["error"] == "zen: HTTP 503 - unavailable"
+
+
+@pytest.mark.parametrize("kind", ["clipboard", "rules", "system_prompt"])
+def test_one_shot_preflight_errors_are_valid_json(tmp_path: Path, monkeypatch, kind: str):
+    import io
+    import json as _json
+
+    from termux_agent import cli, notify
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    kwargs = {"as_json": True}
+    prompt = "hello"
+    if kind == "clipboard":
+        prompt = ""
+        kwargs["clip"] = True
+        monkeypatch.setattr(notify, "clipboard_get", lambda: "")
+    elif kind == "rules":
+        kwargs["rules_file"] = str(tmp_path / "missing-rules.md")
+    else:
+        kwargs["system_prompt_file"] = str(tmp_path / "missing-system.md")
+
+    code = cli.cmd_one_shot(_min_cfg(), prompt, "zen", None, **kwargs)
+
+    assert code in (1, 2)
+    payload = _json.loads(out.getvalue())
+    assert payload["ok"] is False
+    assert payload["error"]
+
+
+@pytest.mark.parametrize(
+    "argv, expected_code",
+    [
+        (["--json"], 2),
+        (["--json", "--prompt-file", "/definitely/missing/prompt.txt"], 1),
+        (["--json", "--cron", "*/5 * * * *"], 2),
+    ],
+)
+def test_main_preflight_errors_are_valid_json(monkeypatch, argv, expected_code):
+    import io
+    import json as _json
+
+    from termux_agent import cli
+
+    out = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    monkeypatch.setattr(cli.sys, "stdin", type("TTY", (), {"isatty": lambda self: True})())
+
+    assert cli.main(argv) == expected_code
+    payload = _json.loads(out.getvalue())
+    assert payload["ok"] is False
+    assert payload["error"]
+
+
 def test_plain_banner_is_two_compact_lines(monkeypatch):
     from termux_agent.ui import renderer
 

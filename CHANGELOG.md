@@ -4,6 +4,8 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Report exhausted provider/model failures as `ok: false` with a nonzero one-shot exit code.
+- Preserve valid machine-readable output across one-shot and dispatcher preflight failures in `--json` workflows.
 - Share quoted-path, URL, safe-decoding, binary rejection, and 2 MiB-per-file/4 MiB-total memory protection across all attachment modes.
 - Add `/history [N]` for a safe compact conversation view and `/clear` for resetting the terminal viewport without losing context.
 - Add searchable `/help [TERM]` output and typo-aware suggestions for unknown REPL commands.

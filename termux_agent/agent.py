@@ -118,6 +118,7 @@ class Agent:
         self.round_count = 0
         self.tool_call_count = 0
         self._run_started = 0.0
+        self.last_error: str | None = None
 
     def _add_usage(self, usage: dict) -> None:
         for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
@@ -200,11 +201,13 @@ class Agent:
         self.first_token_seconds = None
         self.round_count = 0
         self.tool_call_count = 0
+        self.last_error = None
         models = [self.provider.model, *self.provider.fallback_models]
         try:
             try:
                 return self._attempt(models, on_text_delta, on_tool_use)
             except ProviderError as e:
+                self.last_error = str(e)
                 self.messages.append({"role": "assistant", "content": f"[error] {e}"})
                 return f"Error: {e}"
         finally:

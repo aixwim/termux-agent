@@ -101,6 +101,7 @@ def test_agent_retries_empty_response_then_falls_back(tmp_path: Path):
     assert agent.round_count == 3
     assert agent.tool_call_count == 0
     assert agent.first_token_seconds is not None
+    assert agent.last_error is None
 
 
 def test_agent_max_rounds(tmp_path: Path):
