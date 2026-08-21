@@ -1638,6 +1638,8 @@ def test_server_token_auth(tmp_path: Path, monkeypatch):
             raise AssertionError("expected 401")
         except urllib.error.HTTPError as e:
             assert e.code == 401
+            assert e.headers["WWW-Authenticate"] == "Bearer"
+            assert e.headers["Access-Control-Allow-Origin"] == "*"
         with chat("sekret") as r:
             assert _json.loads(r.read())["ok"] is True
 

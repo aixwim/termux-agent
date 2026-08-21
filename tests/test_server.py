@@ -11,6 +11,7 @@ from termux_agent.server import (
     MAX_REQUEST_BODY_BYTES,
     RequestBodyError,
     _read_body,
+    _authorized,
     _validate_batch,
     _validate_prompt,
 )
@@ -189,3 +190,67 @@ def test_openai_stream_reports_agent_failure_before_done():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_authorized_supports_unicode_tokens_and_rejects_mismatch():
+    handler = SimpleNamespace(
+        token="rahasia-🔒",
+        headers={"Authorization": "Bearer rahasia-🔒"},
+    )
+    assert _authorized(handler) is True
+
+    handler.headers["Authorization"] = "Bearer rahasia-x"
+    assert _authorized(handler) is False
+
+
+def test_server_instances_keep_tokens_isolated():
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from termux_agent.server import build_server
+
+    def build_agent(*args, **kwargs):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="test", model="m"),
+            messages=[],
+            usage={},
+            run=lambda prompt, **run_kwargs: "ok",
+        )
+
+    first = build_server(build_agent, {"provider": "test"}, "test", "m", token="first")
+    second = build_server(build_agent, {"provider": "test"}, "test", "m", token="second")
+    threads = [
+        threading.Thread(target=server.serve_forever, daemon=True)
+        for server in (first, second)
+    ]
+    for thread in threads:
+        thread.start()
+
+    def request(server, token):
+        payload = json.dumps({"prompt": "hello"}).encode()
+        return urllib.request.urlopen(
+            urllib.request.Request(
+                f"http://127.0.0.1:{server.server_address[1]}/chat",
+                data=payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+            ),
+            timeout=10,
+        )
+
+    try:
+        with request(first, "first") as response:
+            assert json.loads(response.read())["ok"] is True
+        with request(second, "second") as response:
+            assert json.loads(response.read())["ok"] is True
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            request(first, "second")
+        assert caught.value.code == 401
+    finally:
+        for server in (first, second):
+            server.shutdown()
+            server.server_close()

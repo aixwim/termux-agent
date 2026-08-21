@@ -138,6 +138,8 @@ def _read_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
 def _authorized(handler: BaseHTTPRequestHandler, body: dict[str, Any] | None = None) -> bool:
     """Require a bearer token when the server was started with --token."""
+    import hmac
+
     token = getattr(handler, "token", None)
     if not token:
         return True
@@ -148,7 +150,9 @@ def _authorized(handler: BaseHTTPRequestHandler, body: dict[str, Any] | None = N
         supplied = body["token"].strip()
     else:
         supplied = ""
-    return bool(supplied) and supplied == token
+    return bool(supplied) and hmac.compare_digest(
+        supplied.encode("utf-8"), str(token).encode("utf-8")
+    )
 
 
 def _send_unauthorized(handler: BaseHTTPRequestHandler) -> None:
@@ -156,8 +160,16 @@ def _send_unauthorized(handler: BaseHTTPRequestHandler) -> None:
     handler.send_response(401)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("WWW-Authenticate", "Bearer")
+    handler.send_header(
+        "Access-Control-Allow-Origin", getattr(handler, "cors_origin", "*")
+    )
+    handler.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
     handler.end_headers()
     handler.wfile.write(body)
+    log_request = getattr(handler, "_log_request", None)
+    if callable(log_request):
+        log_request(401, 0)
 
 
 def _start_sse(handler: BaseHTTPRequestHandler) -> None:
@@ -184,14 +196,15 @@ def build_server(
     token: str | None = None,
     max_context_tokens: int | None = None,
 ) -> ThreadingHTTPServer:
-    _AgentHandler.build_agent = staticmethod(build_agent)
-    _AgentHandler.cfg = cfg
-    _AgentHandler.provider = provider
-    _AgentHandler.model = model
-    _AgentHandler.auto_accept = auto_accept
-    _AgentHandler.token = token
-    _AgentHandler.max_context_tokens = max_context_tokens
-    return BoundedThreadingHTTPServer(("", 0), _AgentHandler, max_workers=0)
+    handler = type("ConfiguredAgentHandler", (_AgentHandler,), {})
+    handler.build_agent = staticmethod(build_agent)
+    handler.cfg = cfg
+    handler.provider = provider
+    handler.model = model
+    handler.auto_accept = auto_accept
+    handler.token = token
+    handler.max_context_tokens = max_context_tokens
+    return BoundedThreadingHTTPServer(("", 0), handler, max_workers=0)
 
 
 class _AgentHandler(BaseHTTPRequestHandler):
@@ -1015,7 +1028,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
 def serve(cfg: dict, host: str = "127.0.0.1", port: int = 8787, provider: str | None = None, model: str | None = None, auto_accept: bool = False, token: str | None = None, log_file: str | None = None, cors_origin: str = "*", tls_cert: str | None = None, tls_key: str | None = None, max_workers: int = 0, max_context_tokens: int | None = None) -> int:
     from termux_agent.cli import build_agent as _build
 
-    handler = _AgentHandler
+    handler = type("ConfiguredAgentHandler", (_AgentHandler,), {})
     handler.build_agent = staticmethod(_build)
     handler.cfg = cfg
     handler.provider = provider
