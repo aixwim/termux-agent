@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -9,6 +10,16 @@ from termux_agent.config import CONFIG_DIR
 
 SESSIONS_DIR = CONFIG_DIR / "sessions"
 NOTES_FILE = CONFIG_DIR / "notes.json"
+_NOTES_LOCK = threading.RLock()
+
+
+def _write_notes(notes: dict[str, str]) -> None:
+    from termux_agent.storage import atomic_write_text
+
+    atomic_write_text(
+        NOTES_FILE,
+        json.dumps(notes, ensure_ascii=False, indent=2),
+    )
 
 
 def all_notes() -> dict[str, str]:
@@ -27,34 +38,36 @@ def get_note(session_id: str) -> str | None:
 
 
 def set_note(session_id: str, text: str) -> None:
-    notes = all_notes()
-    if text.strip():
-        notes[session_id] = text.strip()
-    else:
-        notes.pop(session_id, None)
-    NOTES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    NOTES_FILE.write_text(json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8")
+    with _NOTES_LOCK:
+        notes = all_notes()
+        if text.strip():
+            notes[session_id] = text.strip()
+        else:
+            notes.pop(session_id, None)
+        _write_notes(notes)
 
 
 def clear_note(session_id: str) -> bool:
-    notes = all_notes()
-    if session_id not in notes:
-        return False
-    notes.pop(session_id, None)
-    NOTES_FILE.write_text(json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8")
-    return True
+    with _NOTES_LOCK:
+        notes = all_notes()
+        if session_id not in notes:
+            return False
+        notes.pop(session_id, None)
+        _write_notes(notes)
+        return True
 
 
 def prune_notes(valid_ids: set[str]) -> int:
     """Drop notes for sessions that no longer exist. Returns number removed."""
-    notes = all_notes()
-    gone = [sid for sid in notes if sid not in valid_ids]
-    if not gone:
-        return 0
-    for sid in gone:
-        notes.pop(sid, None)
-    NOTES_FILE.write_text(json.dumps(notes, ensure_ascii=False, indent=2), encoding="utf-8")
-    return len(gone)
+    with _NOTES_LOCK:
+        notes = all_notes()
+        gone = [sid for sid in notes if sid not in valid_ids]
+        if not gone:
+            return 0
+        for sid in gone:
+            notes.pop(sid, None)
+        _write_notes(notes)
+        return len(gone)
 
 
 class Session:

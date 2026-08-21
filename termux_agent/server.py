@@ -805,10 +805,10 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 self._send(400, {"ok": False, "error": "missing 'content'"})
                 return
             from termux_agent.agent import MEMORY_FILE
+            from termux_agent.storage import atomic_write_text
 
             try:
-                MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-                MEMORY_FILE.write_text(content.strip(), encoding="utf-8")
+                atomic_write_text(MEMORY_FILE, content.strip())
             except OSError as e:
                 self._send(
                     500,

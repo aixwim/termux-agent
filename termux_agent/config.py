@@ -244,9 +244,16 @@ def ensure_config_file() -> Path:
     example = Path(__file__).resolve().parent.parent / "config.example.yaml"
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     if example.exists():
-        CONFIG_FILE.write_text(example.read_text())
+        from termux_agent.storage import atomic_write_text
+
+        atomic_write_text(CONFIG_FILE, example.read_text())
     else:
         import yaml
 
-        CONFIG_FILE.write_text(yaml.safe_dump(DEFAULTS, sort_keys=False, allow_unicode=True))
+        from termux_agent.storage import atomic_write_text
+
+        atomic_write_text(
+            CONFIG_FILE,
+            yaml.safe_dump(DEFAULTS, sort_keys=False, allow_unicode=True),
+        )
     return CONFIG_FILE

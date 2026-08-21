@@ -156,8 +156,9 @@ def _init_noninteractive(provider: str | None, model: str | None) -> int:
         cfg["model"] = model
     import yaml as _yaml
 
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(_yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    from termux_agent.storage import atomic_write_text
+
+    atomic_write_text(CONFIG_FILE, _yaml.safe_dump(cfg, sort_keys=False))
     render_info(f"Configuration created: {CONFIG_FILE}")
     render_info(f"Provider: {pname} | Model: {model or cfg['providers'][pname]['models'][0]}")
     return 0
@@ -178,10 +179,13 @@ def _init_wizard() -> int:
     cfg["provider"] = p
     if m:
         cfg["model"] = m
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     import yaml as _yaml
+    from termux_agent.storage import atomic_write_text
 
-    CONFIG_FILE.write_text(_yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True))
+    atomic_write_text(
+        CONFIG_FILE,
+        _yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True),
+    )
     render_info(f"Configuration created: {CONFIG_FILE}")
     key_env = pc.get("api_key_env")
     if key_env:
@@ -1727,8 +1731,12 @@ def cmd_config_set(key: str, value: str, as_json: bool = False, unset: bool = Fa
             else:
                 render_error(f"Config key {key!r} does not exist.")
             return 1
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        CONFIG_FILE.write_text(_yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        from termux_agent.storage import atomic_write_text
+
+        atomic_write_text(
+            CONFIG_FILE,
+            _yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True),
+        )
         if as_json:
             print(_json.dumps({"ok": True, "key": key, "removed": removed_val}, ensure_ascii=False))
         else:
@@ -1754,8 +1762,12 @@ def cmd_config_set(key: str, value: str, as_json: bool = False, unset: bool = Fa
 
     node[parts[-1]] = parsed
 
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(_yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    from termux_agent.storage import atomic_write_text
+
+    atomic_write_text(
+        CONFIG_FILE,
+        _yaml.safe_dump(cfg, sort_keys=False, allow_unicode=True),
+    )
     if as_json:
         print(_json.dumps({"key": key, "value": parsed}, ensure_ascii=False))
     else:
@@ -3031,16 +3043,22 @@ def cmd_doctor(cfg: dict, network: bool = False, as_json: bool = False, termux: 
 
     if fix:
         import yaml as _yaml
+        from termux_agent.storage import atomic_write_text
 
         if not CONFIG_FILE.exists():
-            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            CONFIG_FILE.write_text(_yaml.safe_dump({"provider": "zen"}, sort_keys=False), encoding="utf-8")
+            atomic_write_text(
+                CONFIG_FILE,
+                _yaml.safe_dump({"provider": "zen"}, sort_keys=False),
+            )
             fixes.append("created missing config file (~/.termux-agent/config.yaml) with provider: zen")
         if not cfg.get("model") and not cfg.get("providers", {}).get(cfg.get("provider", "zen"), {}).get("models"):
             loaded = _yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
             if "model" not in loaded:
                 loaded.setdefault("providers", {}).setdefault("zen", {})["models"] = ["opencode-zen-v4-flash-free"]
-                CONFIG_FILE.write_text(_yaml.safe_dump(loaded, sort_keys=False, allow_unicode=True), encoding="utf-8")
+                atomic_write_text(
+                    CONFIG_FILE,
+                    _yaml.safe_dump(loaded, sort_keys=False, allow_unicode=True),
+                )
                 fixes.append("added a default zen model list to the config")
         if fixes:
             add("auto-fix", True, "; ".join(fixes))

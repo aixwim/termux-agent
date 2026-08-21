@@ -4,6 +4,7 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Write session notes, memory, and configuration through flushed atomic replacement, and serialize concurrent note mutations to prevent corruption or lost updates.
 - Preserve successful `/chat` answers when session or note persistence fails, report degradation through warnings, and return structured storage errors from memory/note endpoints.
 - Isolate handler configuration per HTTP server instance so concurrent servers cannot overwrite each other's token, provider, or model.
 - Compare HTTP bearer tokens in constant time and include consistent authentication, CORS, and request-log metadata on 401 responses.
