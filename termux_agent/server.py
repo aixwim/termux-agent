@@ -806,8 +806,15 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 return
             from termux_agent.agent import MEMORY_FILE
 
-            MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-            MEMORY_FILE.write_text(content.strip(), encoding="utf-8")
+            try:
+                MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+                MEMORY_FILE.write_text(content.strip(), encoding="utf-8")
+            except OSError as e:
+                self._send(
+                    500,
+                    {"ok": False, "error": f"failed to save memory: {e}"},
+                )
+                return
             self._send(200, {"ok": True, "memory": content.strip()})
             return
         if self.path == "/batch":
@@ -877,6 +884,12 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 set_note(sid, note.strip())
             except FileNotFoundError:
                 self._send(404, {"ok": False, "error": "session not found"})
+                return
+            except OSError as e:
+                self._send(
+                    500,
+                    {"ok": False, "error": f"failed to save session note: {e}"},
+                )
                 return
             self._send(200, {"ok": True, "session": sid, "note": note.strip()})
             return
@@ -978,30 +991,45 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 _notify(f"Chat done: {answer[:120]}")
             except Exception:  # noqa: BLE001
                 pass
-        from termux_agent.session import record_messages
+        warnings: list[str] = []
+        session_id = ""
+        try:
+            from termux_agent.session import record_messages
 
-        session_id = record_messages(
-            agent.messages,
-            agent.provider.name,
-            agent.provider.model,
-            session_id=session_ref if (isinstance(session_ref, str) and session_ref) else None,
-        )
+            session_id = record_messages(
+                agent.messages,
+                agent.provider.name,
+                agent.provider.model,
+                session_id=(
+                    session_ref
+                    if isinstance(session_ref, str) and session_ref
+                    else None
+                ),
+            )
+        except Exception as e:  # noqa: BLE001
+            warnings.append(f"session was not saved: {e}")
         note = data.get("note")
-        if isinstance(note, str) and note.strip():
-            from termux_agent.session import set_note
+        if session_id and isinstance(note, str) and note.strip():
+            try:
+                from termux_agent.session import set_note
 
-            set_note(session_id, note.strip())
+                set_note(session_id, note.strip())
+            except Exception as e:  # noqa: BLE001
+                warnings.append(f"session note was not saved: {e}")
         usage = getattr(agent, "usage", {}) or {}
+        payload = {
+            "ok": True,
+            "answer": answer,
+            "provider": agent.provider.name,
+            "model": agent.provider.model,
+            "session": session_id,
+            "usage": usage,
+        }
+        if warnings:
+            payload["warnings"] = warnings
         self._send(
             200,
-            {
-                "ok": True,
-                "answer": answer,
-                "provider": agent.provider.name,
-                "model": agent.provider.model,
-                "session": session_id,
-                "usage": usage,
-            },
+            payload,
         )
 
     def do_DELETE(self) -> None:

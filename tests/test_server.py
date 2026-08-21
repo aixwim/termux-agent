@@ -254,3 +254,77 @@ def test_server_instances_keep_tokens_isolated():
         for server in (first, second):
             server.shutdown()
             server.server_close()
+
+
+def test_chat_returns_answer_when_session_save_fails(monkeypatch):
+    import json
+    import threading
+    import urllib.request
+
+    from termux_agent import session
+    from termux_agent.server import build_server
+
+    def fail_save(*args, **kwargs):
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(session, "record_messages", fail_save)
+
+    def build_agent(*args, **kwargs):
+        return SimpleNamespace(
+            provider=SimpleNamespace(name="test", model="m"),
+            messages=[{"role": "system", "content": "system"}],
+            usage={"total_tokens": 3},
+            run=lambda prompt, **run_kwargs: "completed answer",
+        )
+
+    server = build_server(build_agent, {"provider": "test"}, "test", "m")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/chat",
+            data=json.dumps({"prompt": "hello"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = json.loads(response.read())
+        assert body["ok"] is True
+        assert body["answer"] == "completed answer"
+        assert body["session"] == ""
+        assert body["warnings"] == ["session was not saved: storage unavailable"]
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_memory_endpoint_returns_json_when_storage_fails(tmp_path, monkeypatch):
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from termux_agent import agent
+    from termux_agent.server import build_server
+
+    memory_directory = tmp_path / "memory-as-directory"
+    memory_directory.mkdir()
+    monkeypatch.setattr(agent, "MEMORY_FILE", memory_directory)
+
+    server = build_server(lambda *a, **k: None, {}, None, None)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/memory",
+            data=json.dumps({"content": "remember"}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request, timeout=10)
+        assert caught.value.code == 500
+        body = json.loads(caught.value.read())
+        assert body["ok"] is False
+        assert body["error"].startswith("failed to save memory:")
+    finally:
+        server.shutdown()
+        server.server_close()
