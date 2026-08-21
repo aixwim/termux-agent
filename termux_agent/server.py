@@ -613,7 +613,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
                     },
                 )
             else:
-                from termux_agent.session import all_notes, list_sessions, read_session
+                from termux_agent.session import all_notes, list_sessions, session_meta
 
                 import urllib.parse
 
@@ -629,15 +629,13 @@ class _AgentHandler(BaseHTTPRequestHandler):
                     note = notes.get(s.stem, "")
                     if note_filter and note_filter not in note:
                         continue
-                    recs = read_session(s)
-                    info = next((r for r in recs if r.get("provider")), {})
-                    first_user = next((r["content"] for r in recs if r.get("role") == "user" and r.get("content")), "")
+                    message_count, first_user, info = session_meta(s)
                     sessions.append(
                         {
                             "id": s.stem,
                             "provider": info.get("provider") or "",
                             "model": info.get("model") or "",
-                            "messages": len(recs),
+                            "messages": message_count,
                             "first": str(first_user)[:100],
                             "note": note[:100],
                         }

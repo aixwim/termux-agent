@@ -163,7 +163,7 @@ class OpenAICompatProvider(Provider):
         url = f"{self.base_url}/chat/completions"
         try:
             with self._client.stream(
-                "POST", url, headers=self._headers(), json=self._body(messages, tools, temperature, max_tokens)
+                "POST", url, headers=self._headers(), json=body
             ) as resp:
                 if resp.status_code != 200:
                     body = resp.read().decode("utf-8", errors="replace")

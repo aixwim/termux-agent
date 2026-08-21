@@ -97,6 +97,10 @@ class Agent:
         self.retry_backoff = retry_backoff
         self._compacted_this_turn = False
         self.agent_spec = agent_spec or {}
+        # Tool definitions are process-static after the built-ins are imported.
+        # Cache the sorted ToolSpec objects once instead of rebuilding the full
+        # JSON schema on every model/tool round.
+        self._available_tools = tuple(tool_specs())
         self.allowed_tools: set[str] | None = None
         spec_tools = self.agent_spec.get("tools") or []
         if spec_tools:
@@ -132,11 +136,17 @@ class Agent:
         self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
     @property
+    def _tool_specs(self) -> tuple:
+        specs = getattr(self, "_available_tools", None)
+        if specs is None:
+            specs = self._available_tools = tuple(tool_specs())
+        return specs
+
+    @property
     def tools(self) -> list:
-        specs = tool_specs()
         if self.allowed_tools is None:
-            return specs
-        return [s for s in specs if s.name in self.allowed_tools]
+            return list(self._tool_specs)
+        return [s for s in self._tool_specs if s.name in self.allowed_tools]
 
     def _with_tools(self, enabled: bool) -> "Agent":
         """Disable all tools for chat mode (enabled=False); otherwise keep agent limits."""
@@ -152,7 +162,7 @@ class Agent:
         if not blocked:
             return self
         if self.allowed_tools is None:
-            self.allowed_tools = {s.name for s in tool_specs()} - blocked
+            self.allowed_tools = {s.name for s in self._tool_specs} - blocked
         else:
             self.allowed_tools -= blocked
         return self
@@ -161,7 +171,7 @@ class Agent:
         """Restrict the agent to exactly these tool names (kept tool names only)."""
         kept = set(names)
         if self.allowed_tools is None:
-            self.allowed_tools = {s.name for s in tool_specs()} & kept
+            self.allowed_tools = {s.name for s in self._tool_specs} & kept
         else:
             self.allowed_tools &= kept
         return self

@@ -5038,7 +5038,7 @@ def test_doctor_update_check(monkeypatch):
     assert "9.9.9" in upd["detail"]
 
 
-def test_version_is_100():
+def test_version_is_110():
     import termux_agent
 
     assert termux_agent.__version__ == "1.1.0"

@@ -7,9 +7,9 @@ import os
 import sys
 import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from termux_agent import __version__
-from termux_agent.agent import Agent
 from termux_agent.config import (
     CONFIG_DIR,
     CONFIG_FILE,
@@ -19,9 +19,30 @@ from termux_agent.config import (
     load_config,
     resolve_working_dir,
 )
-from termux_agent.providers import create_provider
-from termux_agent.tools.base import ToolContext
-from termux_agent.ui.renderer import render_error, render_info
+if TYPE_CHECKING:
+    from termux_agent.agent import Agent
+    from termux_agent.tools.base import ToolContext
+
+
+def render_error(message: str) -> None:
+    """Render an error without importing Rich during lightweight startup."""
+    from termux_agent.ui.renderer import render_error as _render_error
+
+    _render_error(message)
+
+
+def render_info(message: str) -> None:
+    """Render informational text while keeping the renderer import lazy."""
+    from termux_agent.ui.renderer import render_info as _render_info
+
+    _render_info(message)
+
+
+def create_provider(*args, **kwargs):
+    """Create a provider lazily while preserving the public patch point."""
+    from termux_agent.providers import create_provider as _create_provider
+
+    return _create_provider(*args, **kwargs)
 
 READONLY_TOOLS = {
     "read_file",
@@ -58,7 +79,8 @@ def build_agent(
     memory: bool = True,
     allow_dirs: list[str] | None = None,
 ) -> Agent:
-    from pathlib import Path
+    from termux_agent.agent import Agent
+    from termux_agent.tools.base import ToolContext
 
     name = provider_name or cfg.get("provider", "zen")
     provider = create_provider(name, cfg, model)
@@ -2303,7 +2325,7 @@ def cmd_stats_all(as_json: bool = False, output: str | None = None) -> int:
     import json as _json
     from collections import Counter
 
-    from termux_agent.session import list_sessions, read_session
+    from termux_agent.session import iter_session, list_sessions
 
     sessions = list_sessions()
     total_chars = 0
@@ -2311,17 +2333,18 @@ def cmd_stats_all(as_json: bool = False, output: str | None = None) -> int:
     by_provider: Counter = Counter()
     by_day: Counter = Counter()
     for s in sessions:
-        recs = read_session(s)
-        info = next((r for r in recs if r.get("provider")), {})
-        by_provider[info.get("provider") or "?"] += 1
+        provider_name = "?"
         day = s.stem[:8]
         by_day[day] += 1
-        for r in recs:
+        for r in iter_session(s):
+            if provider_name == "?" and r.get("provider"):
+                provider_name = str(r.get("provider"))
             if r.get("role") in ("user", "assistant"):
                 c = r.get("content")
                 if isinstance(c, str):
                     total_chars += len(c)
                     total_messages += 1
+        by_provider[provider_name] += 1
     from termux_agent.session import all_notes
 
     payload = {
