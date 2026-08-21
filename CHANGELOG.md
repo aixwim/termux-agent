@@ -4,6 +4,7 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Bound local and remote vision inputs to 10 MiB, verify image signatures, use collision-safe temporary files, and clean downloads after each command.
 - Make batch, watch, aggregate summarize, and aggregate rerun status/exit codes reflect partial and total failures accurately.
 - Report exhausted provider/model failures as real workflow failures across one-shot, batch, watch, summarize, rerun, and resume.
 - Preserve valid machine-readable output across one-shot and dispatcher preflight failures in `--json` workflows.

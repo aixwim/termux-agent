@@ -36,6 +36,16 @@ READONLY_TOOLS = {
 }
 
 
+def _run_with_image_cleanup(downloaded_image: Path | None, command, *args, **kwargs):
+    """Run a command and remove its temporary remote image afterwards."""
+    try:
+        return command(*args, **kwargs)
+    finally:
+        from termux_agent.images import cleanup_downloaded_image
+
+        cleanup_downloaded_image(downloaded_image)
+
+
 def build_agent(
     cfg: dict,
     provider_name: str | None,
@@ -3665,34 +3675,41 @@ def main(argv: list[str] | None = None) -> int:
             _render_or_json_error(f"Cannot read --prompt-file: {e}", args.json)
             return 1
         prompt = (prompt + "\n\n" + file_prompt).strip() if prompt else file_prompt
+    downloaded_image: Path | None = None
     if args.image:
         if not prompt:
             _render_or_json_error("--image requires a one-shot prompt (or --prompt-file).", args.json)
             return 2
         img = args.image
         if img.startswith(("http://", "https://")):
-            import tempfile
-            import urllib.parse
-            import urllib.request
+            from termux_agent.images import ImageDownloadError, download_image
 
             try:
-                with urllib.request.urlopen(img, timeout=30) as resp:
-                    data = resp.read()
-                ext = Path(urllib.parse.urlparse(img).path).suffix or ".jpg"
-                tmp_img = Path(tempfile.gettempdir()) / f"termux-agent-img{ext}"
-                tmp_img.write_bytes(data)
-                img = str(tmp_img)
+                downloaded_image, size = download_image(img)
+                img = str(downloaded_image)
                 if not args.json and not args.quiet:
-                    render_info(f"Downloaded image to {img} ({len(data)} bytes).")
-            except Exception as e:  # noqa: BLE001
+                    render_info(f"Downloaded image securely ({size} bytes).")
+            except ImageDownloadError as e:
                 _render_or_json_error(f"Failed to download image: {e}", args.json)
                 return 1
         if not Path(img).expanduser().is_file():
             _render_or_json_error(f"Image not found: {img}", args.json)
             return 1
+        from termux_agent.images import ImageDownloadError, read_image
+
+        try:
+            read_image(img)
+        except ImageDownloadError as e:
+            from termux_agent.images import cleanup_downloaded_image
+
+            cleanup_downloaded_image(downloaded_image)
+            _render_or_json_error(f"Invalid image: {e}", args.json)
+            return 1
         prompt = f"{prompt}\n[image: {img}]"
     if args.resume:
-        return cmd_resume(
+        return _run_with_image_cleanup(
+            downloaded_image,
+            cmd_resume,
             cfg,
             args.resume,
             prompt,
@@ -3717,7 +3734,9 @@ def main(argv: list[str] | None = None) -> int:
         if not prompt:
             _render_or_json_error("--watch requires a one-shot prompt.", args.json)
             return 2
-        return cmd_watch(
+        return _run_with_image_cleanup(
+            downloaded_image,
+            cmd_watch,
             cfg,
             prompt,
             args.provider,
@@ -3749,7 +3768,9 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.batch:
-        return cmd_batch(
+        return _run_with_image_cleanup(
+            downloaded_image,
+            cmd_batch,
             cfg,
             args.batch,
             args.provider,
@@ -3774,7 +3795,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if prompt:
         try:
-            return cmd_one_shot(
+            return _run_with_image_cleanup(
+                downloaded_image,
+                cmd_one_shot,
                 cfg,
                 prompt,
                 args.provider,

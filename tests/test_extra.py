@@ -996,7 +996,7 @@ def test_embed_images_converts_to_parts(tmp_path: Path):
     from termux_agent.providers import openai_compat as oc
 
     img = tmp_path / "shot.png"
-    img.write_bytes(b"\x89PNG fake")
+    img.write_bytes(b"\x89PNG\r\n\x1a\nimage")
     out = oc._embed_images(f"look at [image: {img}] and describe it")
     assert isinstance(out, list)
     assert out[0]["type"] == "text"
@@ -1024,7 +1024,7 @@ def test_wire_message_embeds_image(tmp_path: Path):
     from termux_agent.providers.openai_compat import _to_openai_wire
 
     img = tmp_path / "a.jpg"
-    img.write_bytes(b"jpegdata")
+    img.write_bytes(b"\xff\xd8\xffimage")
     out = _to_openai_wire([{"role": "user", "content": f"what is in [image: {img}]"}])
     assert out[0]["role"] == "user"
     assert isinstance(out[0]["content"], list)
@@ -1059,7 +1059,7 @@ def test_main_image_flag(tmp_path: Path, monkeypatch):
     from termux_agent import cli
 
     img = tmp_path / "x.png"
-    img.write_bytes(b"data")
+    img.write_bytes(b"\x89PNG\r\n\x1a\nimage")
     seen = {}
 
     def fake_one_shot(cfg, prompt, provider, model, **kw):
@@ -4738,7 +4738,7 @@ def test_image_url_download(tmp_path: Path, monkeypatch):
     class H(BaseHTTPRequestHandler):
         def do_GET(self):
             served["path"] = self.path
-            body = b"fakepng"
+            body = b"\x89PNG\r\n\x1a\n" + b"image-data"
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
