@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from termux_agent.storage import atomic_write_text
+from termux_agent.storage import atomic_copy_file, atomic_write_text
 
 
 def test_atomic_write_text_replaces_content_without_temp_files(tmp_path):
@@ -30,6 +30,35 @@ def test_atomic_write_failure_preserves_existing_file(tmp_path, monkeypatch):
 
     assert target.read_text() == "old"
     assert list(tmp_path.glob(".notes.json.*.tmp")) == []
+
+
+def test_atomic_copy_file_streams_and_replaces_content(tmp_path):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "destination.bin"
+    source.write_bytes((b"chunk" * 300_000) + b"end")
+    destination.write_bytes(b"old")
+
+    atomic_copy_file(source, destination)
+
+    assert destination.read_bytes() == source.read_bytes()
+    assert list(tmp_path.glob(".destination.bin.*.tmp")) == []
+
+
+def test_atomic_copy_failure_preserves_existing_file(tmp_path, monkeypatch):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "destination.bin"
+    source.write_bytes(b"new")
+    destination.write_bytes(b"old")
+
+    def fail_replace(source_path, destination_path):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("os.replace", fail_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        atomic_copy_file(source, destination)
+
+    assert destination.read_bytes() == b"old"
+    assert list(tmp_path.glob(".destination.bin.*.tmp")) == []
 
 
 def test_concurrent_note_updates_do_not_overwrite_each_other(tmp_path, monkeypatch):

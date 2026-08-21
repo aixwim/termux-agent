@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -19,6 +20,28 @@ def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_path, path)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def atomic_copy_file(source: Path, destination: Path) -> None:
+    """Copy a file in bounded chunks and atomically replace the destination."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
+    temporary_path = Path(temporary)
+    try:
+        with source.open("rb") as source_handle, os.fdopen(fd, "wb") as target:
+            shutil.copyfileobj(source_handle, target, length=1024 * 1024)
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(temporary_path, destination)
     except Exception:
         try:
             os.close(fd)

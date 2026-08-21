@@ -2081,10 +2081,10 @@ def cmd_summarize(
 def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = True) -> int:
     """Back up config, memory, and all sessions into a portable directory (or a gzipped tar to stdout with '-')."""
     import json as _json
-    import shutil
 
     from termux_agent.agent import MEMORY_FILE
-    from termux_agent.session import NOTES_FILE, SESSIONS_DIR, list_sessions
+    from termux_agent.session import NOTES_FILE, list_sessions
+    from termux_agent.storage import atomic_copy_file, atomic_write_text
 
     def _collect() -> list[tuple[Path, str]]:
         files: list[tuple[Path, str]] = []
@@ -2132,20 +2132,20 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
     out.mkdir(parents=True, exist_ok=True)
     copied = []
     if CONFIG_FILE.is_file():
-        shutil.copy2(CONFIG_FILE, out / CONFIG_FILE.name)
+        atomic_copy_file(CONFIG_FILE, out / CONFIG_FILE.name)
         copied.append(CONFIG_FILE.name)
     if MEMORY_FILE.is_file():
-        shutil.copy2(MEMORY_FILE, out / MEMORY_FILE.name)
+        atomic_copy_file(MEMORY_FILE, out / MEMORY_FILE.name)
         copied.append(MEMORY_FILE.name)
     if NOTES_FILE.is_file():
-        shutil.copy2(NOTES_FILE, out / NOTES_FILE.name)
+        atomic_copy_file(NOTES_FILE, out / NOTES_FILE.name)
         copied.append(NOTES_FILE.name)
     ses_dir = out / "sessions"
     if include_sessions:
         ses_dir.mkdir(parents=True, exist_ok=True)
     n_sessions = 0
     for s in list_sessions() if include_sessions else []:
-        shutil.copy2(s, ses_dir / s.name)
+        atomic_copy_file(s, ses_dir / s.name)
         n_sessions += 1
     manifest = {
         "app": "termux-agent",
@@ -2155,7 +2155,10 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
         "notes": NOTES_FILE.name if NOTES_FILE.is_file() else None,
         "sessions": n_sessions,
     }
-    (out / "manifest.json").write_text(_json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(
+        out / "manifest.json",
+        _json.dumps(manifest, ensure_ascii=False, indent=2),
+    )
     if as_json:
         print(_json.dumps(manifest, ensure_ascii=False))
         return 0
