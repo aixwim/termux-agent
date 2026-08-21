@@ -2131,22 +2131,38 @@ def cmd_bundle(target_dir: str, as_json: bool = False, include_sessions: bool = 
     out = Path(target_dir)
     out.mkdir(parents=True, exist_ok=True)
     copied = []
+    current_top_level: set[str] = set()
     if CONFIG_FILE.is_file():
         atomic_copy_file(CONFIG_FILE, out / CONFIG_FILE.name)
         copied.append(CONFIG_FILE.name)
+        current_top_level.add(CONFIG_FILE.name)
     if MEMORY_FILE.is_file():
         atomic_copy_file(MEMORY_FILE, out / MEMORY_FILE.name)
         copied.append(MEMORY_FILE.name)
+        current_top_level.add(MEMORY_FILE.name)
     if NOTES_FILE.is_file():
         atomic_copy_file(NOTES_FILE, out / NOTES_FILE.name)
         copied.append(NOTES_FILE.name)
+        current_top_level.add(NOTES_FILE.name)
     ses_dir = out / "sessions"
     if include_sessions:
         ses_dir.mkdir(parents=True, exist_ok=True)
     n_sessions = 0
+    current_sessions: set[str] = set()
     for s in list_sessions() if include_sessions else []:
         atomic_copy_file(s, ses_dir / s.name)
+        current_sessions.add(s.name)
         n_sessions += 1
+    # A reused bundle must mirror current managed state. Remove only known
+    # termux-agent artifacts; unrelated files in the destination are preserved.
+    for managed_name in ("config.yaml", "memory.md", "notes.json"):
+        stale = out / managed_name
+        if managed_name not in current_top_level and stale.is_file():
+            stale.unlink()
+    if ses_dir.is_dir():
+        for stale in ses_dir.glob("*.jsonl"):
+            if stale.name not in current_sessions:
+                stale.unlink()
     manifest = {
         "app": "termux-agent",
         "version": __version__,
@@ -2256,6 +2272,20 @@ def _restore_from_dir(src: Path, dry_run: bool = False, as_json: bool = False, m
     if not isinstance(manifest, dict) or manifest.get("app") != "termux-agent":
         render_error("Invalid bundle manifest: expected app 'termux-agent'.")
         return 1
+    for key, filename in (
+        ("config", "config.yaml"),
+        ("memory", "memory.md"),
+        ("notes", "notes.json"),
+    ):
+        if key not in manifest:
+            continue  # Backward compatibility with older bundle manifests.
+        declared = manifest.get(key)
+        if declared not in (None, filename):
+            render_error(f"Invalid bundle manifest: unexpected {key} file.")
+            return 1
+        if bool(declared) != (src / filename).is_file():
+            render_error(f"Invalid bundle manifest: {key} file mismatch.")
+            return 1
     text_files: list[tuple[str, str]] = []
     for name in ("config.yaml", "memory.md", "notes.json"):
         f = src / name
@@ -2272,6 +2302,15 @@ def _restore_from_dir(src: Path, dry_run: bool = False, as_json: bool = False, m
         if (src / "sessions").is_dir()
         else []
     )
+    declared_sessions = manifest.get("sessions")
+    if (
+        isinstance(declared_sessions, bool)
+        or not isinstance(declared_sessions, int)
+        or declared_sessions < 0
+        or declared_sessions != len(candidates)
+    ):
+        render_error("Invalid bundle manifest: session count mismatch.")
+        return 1
     from termux_agent.session import validate_session_id
 
     for f in candidates:

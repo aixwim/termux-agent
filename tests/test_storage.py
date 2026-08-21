@@ -184,6 +184,44 @@ def test_restore_rejects_foreign_manifest(tmp_path, monkeypatch):
     assert "expected app 'termux-agent'" in output.getvalue()
 
 
+def test_restore_rejects_manifest_content_mismatch(tmp_path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "manifest.json").write_text(
+        '{"app":"termux-agent","config":"config.yaml","sessions":0}'
+    )
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_restore(str(bundle)) == 1
+    assert "config file mismatch" in output.getvalue()
+
+
+def test_restore_rejects_session_count_mismatch(tmp_path, monkeypatch):
+    import io
+
+    from termux_agent import cli
+
+    bundle = tmp_path / "bundle"
+    sessions = bundle / "sessions"
+    sessions.mkdir(parents=True)
+    (bundle / "manifest.json").write_text(
+        '{"app":"termux-agent","sessions":0}'
+    )
+    (sessions / "unexpected.jsonl").write_text(
+        '{"role":"user","content":"hello"}\n'
+    )
+    output = io.StringIO()
+    monkeypatch.setattr(cli.sys, "stdout", output)
+
+    assert cli.cmd_restore(str(bundle)) == 1
+    assert "session count mismatch" in output.getvalue()
+
+
 def test_restore_preflight_prevents_partial_write(tmp_path, monkeypatch):
     import io
 
@@ -193,7 +231,7 @@ def test_restore_preflight_prevents_partial_write(tmp_path, monkeypatch):
     sessions = bundle / "sessions"
     sessions.mkdir(parents=True)
     (bundle / "manifest.json").write_text(
-        '{"app":"termux-agent","version":"test"}'
+        '{"app":"termux-agent","version":"test","sessions":1}'
     )
     (bundle / "config.yaml").write_text("provider: test\n")
     (sessions / ".unsafe.jsonl").write_text(
@@ -335,3 +373,63 @@ def test_streamed_bundle_round_trips_through_restore(tmp_path, monkeypatch):
     assert (destination / "config.yaml").read_text() == "provider: test\n"
     restored = destination / "sessions" / "stream-id.jsonl"
     assert json.loads(restored.read_text())["content"] == "hello"
+
+
+def test_reused_bundle_removes_only_stale_managed_files(tmp_path, monkeypatch):
+    import io
+
+    from termux_agent import agent, cli, session
+
+    source = tmp_path / "source"
+    source.mkdir()
+    config = source / "config.yaml"
+    config.write_text("provider: test\n")
+    sessions = source / "sessions"
+    sessions.mkdir()
+    active = sessions / "active.jsonl"
+    active.write_text('{"role":"user","content":"active"}\n')
+    monkeypatch.setattr(cli, "CONFIG_FILE", config)
+    monkeypatch.setattr(session, "SESSIONS_DIR", sessions)
+    monkeypatch.setattr(session, "NOTES_FILE", source / "notes.json")
+    monkeypatch.setattr(agent, "MEMORY_FILE", source / "memory.md")
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+
+    bundle = tmp_path / "bundle"
+    stale_sessions = bundle / "sessions"
+    stale_sessions.mkdir(parents=True)
+    (stale_sessions / "stale.jsonl").write_text("stale")
+    (bundle / "memory.md").write_text("stale memory")
+    (bundle / "unrelated.txt").write_text("keep")
+
+    assert cli.cmd_bundle(str(bundle)) == 0
+
+    assert (bundle / "sessions" / "active.jsonl").is_file()
+    assert not (bundle / "sessions" / "stale.jsonl").exists()
+    assert not (bundle / "memory.md").exists()
+    assert (bundle / "unrelated.txt").read_text() == "keep"
+
+
+def test_no_sessions_removes_sessions_from_reused_bundle(tmp_path, monkeypatch):
+    import io
+
+    from termux_agent import agent, cli, session
+
+    source = tmp_path / "source"
+    source.mkdir()
+    config = source / "config.yaml"
+    config.write_text("provider: test\n")
+    sessions = source / "sessions"
+    sessions.mkdir()
+    (sessions / "current.jsonl").write_text("current")
+    monkeypatch.setattr(cli, "CONFIG_FILE", config)
+    monkeypatch.setattr(session, "SESSIONS_DIR", sessions)
+    monkeypatch.setattr(session, "NOTES_FILE", source / "notes.json")
+    monkeypatch.setattr(agent, "MEMORY_FILE", source / "memory.md")
+    monkeypatch.setattr(cli.sys, "stdout", io.StringIO())
+
+    bundle = tmp_path / "bundle"
+    assert cli.cmd_bundle(str(bundle), include_sessions=True) == 0
+    assert list((bundle / "sessions").glob("*.jsonl"))
+
+    assert cli.cmd_bundle(str(bundle), include_sessions=False) == 0
+    assert list((bundle / "sessions").glob("*.jsonl")) == []
