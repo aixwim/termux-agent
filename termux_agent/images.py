@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import tempfile
+import base64
+import binascii
 import urllib.request
 from pathlib import Path
 
@@ -52,6 +54,46 @@ def read_image(path: str | Path, *, max_bytes: int = MAX_IMAGE_BYTES) -> tuple[b
     return data, IMAGE_MIME_TYPES[suffix]
 
 
+def save_image_bytes(data: bytes, *, max_bytes: int = MAX_IMAGE_BYTES) -> Path:
+    """Validate image bytes and store them in a unique temporary file."""
+    if len(data) > max_bytes:
+        raise ImageDownloadError(
+            f"image exceeds the {max_bytes // (1024 * 1024)} MiB limit"
+        )
+    suffix = _image_suffix(data)
+    if suffix is None:
+        raise ImageDownloadError(
+            "data is not a supported PNG, JPEG, GIF, or WebP image"
+        )
+    tmp = tempfile.NamedTemporaryFile(
+        prefix="termux-agent-img-", suffix=suffix, delete=False
+    )
+    try:
+        tmp.write(data)
+        tmp.close()
+    except Exception:
+        tmp.close()
+        Path(tmp.name).unlink(missing_ok=True)
+        raise
+    return Path(tmp.name)
+
+
+def decode_data_image(uri: str, *, max_bytes: int = MAX_IMAGE_BYTES) -> Path:
+    """Decode a bounded base64 image data URI into a temporary file."""
+    header, separator, encoded = uri.partition(",")
+    if not separator or not header.lower().startswith("data:image/") or ";base64" not in header.lower():
+        raise ImageDownloadError("invalid base64 image data URI")
+    if len(encoded) > ((max_bytes + 2) // 3) * 4 + 4:
+        raise ImageDownloadError(
+            f"image exceeds the {max_bytes // (1024 * 1024)} MiB limit"
+        )
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ImageDownloadError("invalid base64 image data URI") from exc
+    return save_image_bytes(data, max_bytes=max_bytes)
+
+
 def download_image(url: str, *, max_bytes: int = MAX_IMAGE_BYTES) -> tuple[Path, int]:
     """Download a recognized image into a unique temporary file."""
     try:
@@ -72,19 +114,13 @@ def download_image(url: str, *, max_bytes: int = MAX_IMAGE_BYTES) -> tuple[Path,
 
     if len(data) > max_bytes:
         raise ImageDownloadError(f"image exceeds the {max_bytes // (1024 * 1024)} MiB limit")
-    suffix = _image_suffix(data)
-    if suffix is None:
-        raise ImageDownloadError("response is not a supported PNG, JPEG, GIF, or WebP image")
-
-    tmp = tempfile.NamedTemporaryFile(prefix="termux-agent-img-", suffix=suffix, delete=False)
     try:
-        tmp.write(data)
-        tmp.close()
-    except Exception:
-        tmp.close()
-        Path(tmp.name).unlink(missing_ok=True)
-        raise
-    return Path(tmp.name), len(data)
+        path = save_image_bytes(data, max_bytes=max_bytes)
+    except ImageDownloadError as exc:
+        raise ImageDownloadError(
+            "response is not a supported PNG, JPEG, GIF, or WebP image"
+        ) from exc
+    return path, len(data)
 
 
 def cleanup_downloaded_image(path: Path | None) -> None:

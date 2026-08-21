@@ -299,7 +299,7 @@ curl -X POST http://127.0.0.1:8787/chat \
 | `POST /sessions/<id>/note` | attach/update a session note |
 | `DELETE /sessions/<id>` | delete a session |
 | `POST /chat` | chat with the agent (all CLI overrides + `note`, `stream`, `history`, `session`) |
-| `POST /batch` | run a list of prompts in parallel |
+| `POST /batch` | run up to 100 prompts in parallel (`workers`: 1-4) |
 | `POST /summarize` | summarize a stored session (`{"session": id}`) |
 | `POST /rerun` | re-run a session's last question (`{"session": id}`) |
 | `POST /memory` / `GET /memory` | persistent memory |

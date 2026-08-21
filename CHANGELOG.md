@@ -4,7 +4,11 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
-- Bound local and remote vision inputs to 10 MiB, verify image signatures, use collision-safe temporary files, and clean downloads after each command.
+- Send native chat SSE headers exactly once so event bodies remain protocol-compliant across multi-event streams.
+- Return structured HTTP 500 responses when non-stream chat execution fails instead of dropping the client connection.
+- Cap HTTP batches at 100 prompts, limit individual prompts to 200,000 characters, and support an explicit safe `workers` range of 1-4.
+- Limit HTTP request bodies to 16 MiB and return explicit errors for invalid lengths, truncated payloads, malformed UTF-8/JSON, and non-object bodies.
+- Bound CLI and HTTP-server vision inputs to 10 MiB, verify file and data-URI image signatures, use collision-safe temporary files, and clean downloads after each request.
 - Make batch, watch, aggregate summarize, and aggregate rerun status/exit codes reflect partial and total failures accurately.
 - Report exhausted provider/model failures as real workflow failures across one-shot, batch, watch, summarize, rerun, and resume.
 - Preserve valid machine-readable output across one-shot and dispatcher preflight failures in `--json` workflows.

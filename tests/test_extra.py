@@ -1960,6 +1960,7 @@ def test_server_stream_sse(tmp_path: Path, monkeypatch):
         assert '"text": "hel"' in body
         assert 'event: done' in body
         assert '"answer": "hello"' in body
+        assert "Content-Type:" not in body
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -4864,7 +4865,7 @@ def test_server_chat_image_url(tmp_path: Path, monkeypatch):
 
     class H(BaseHTTPRequestHandler):
         def do_GET(self):
-            body = b"fakepng"
+            body = b"\x89PNG\r\n\x1a\nimage-data"
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()

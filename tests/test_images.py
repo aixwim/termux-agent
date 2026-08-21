@@ -8,6 +8,7 @@ import pytest
 from termux_agent.images import (
     ImageDownloadError,
     cleanup_downloaded_image,
+    decode_data_image,
     download_image,
     read_image,
 )
@@ -115,3 +116,50 @@ def test_cli_rejects_invalid_local_image_before_command(tmp_path: Path, monkeypa
 
     assert cli.main(["--image", str(image), "describe"]) == 1
     assert called is False
+
+
+def test_decode_data_image_validates_and_stores_png():
+    import base64
+
+    data = b"\x89PNG\r\n\x1a\ncontent"
+    uri = "data:image/png;base64," + base64.b64encode(data).decode()
+    image = decode_data_image(uri)
+    try:
+        assert image.suffix == ".png"
+        assert image.read_bytes() == data
+    finally:
+        cleanup_downloaded_image(image)
+
+
+def test_decode_data_image_rejects_invalid_base64():
+    with pytest.raises(ImageDownloadError, match="invalid base64"):
+        decode_data_image("data:image/png;base64,not!base64")
+
+
+def test_decode_data_image_rejects_non_image_payload():
+    import base64
+
+    uri = "data:image/png;base64," + base64.b64encode(b"not an image").decode()
+    with pytest.raises(ImageDownloadError, match="not a supported"):
+        decode_data_image(uri)
+
+
+def test_openai_server_prompt_rejects_invalid_image_data_uri():
+    from termux_agent.server import _AgentHandler
+
+    handler = object.__new__(_AgentHandler)
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,invalid!"},
+                },
+            ],
+        }
+    ]
+
+    with pytest.raises(ImageDownloadError, match="invalid base64"):
+        handler._openai_prompt(messages)

@@ -63,16 +63,77 @@ class _Uptime:
 
 
 _STARTED = _Uptime()
+MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
+MAX_BATCH_PROMPTS = 100
+MAX_PROMPT_CHARS = 200_000
+MAX_BATCH_WORKERS = 4
+
+
+class RequestBodyError(ValueError):
+    def __init__(self, message: str, status: int = 400) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def _validate_batch(data: dict[str, Any]) -> tuple[list[str], int]:
+    prompts = data.get("prompts")
+    if not isinstance(prompts, list) or not prompts:
+        raise RequestBodyError("missing non-empty 'prompts' list")
+    if len(prompts) > MAX_BATCH_PROMPTS:
+        raise RequestBodyError(
+            f"batch exceeds the {MAX_BATCH_PROMPTS}-prompt limit"
+        )
+    cleaned: list[str] = []
+    for prompt in prompts:
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise RequestBodyError("all batch prompts must be non-empty strings")
+        if len(prompt) > MAX_PROMPT_CHARS:
+            raise RequestBodyError(
+                f"batch prompt exceeds the {MAX_PROMPT_CHARS:,}-character limit"
+            )
+        cleaned.append(prompt.strip())
+    workers = data.get("workers", MAX_BATCH_WORKERS)
+    if isinstance(workers, bool) or not isinstance(workers, int):
+        raise RequestBodyError("batch 'workers' must be an integer from 1 to 4")
+    if not 1 <= workers <= MAX_BATCH_WORKERS:
+        raise RequestBodyError("batch 'workers' must be an integer from 1 to 4")
+    return cleaned, min(workers, len(cleaned))
+
+
+def _validate_prompt(prompt: str) -> str:
+    cleaned = prompt.strip()
+    if not cleaned:
+        raise RequestBodyError("missing prompt")
+    if len(cleaned) > MAX_PROMPT_CHARS:
+        raise RequestBodyError(
+            f"prompt exceeds the {MAX_PROMPT_CHARS:,}-character limit"
+        )
+    return cleaned
 
 
 def _read_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    length = int(handler.headers.get("Content-Length") or 0)
+    declared = handler.headers.get("Content-Length")
+    try:
+        length = int(declared or 0)
+    except (TypeError, ValueError) as exc:
+        raise RequestBodyError("invalid Content-Length") from exc
+    if length < 0:
+        raise RequestBodyError("invalid Content-Length")
+    if length > MAX_REQUEST_BODY_BYTES:
+        raise RequestBodyError(
+            f"request body exceeds the {MAX_REQUEST_BODY_BYTES // (1024 * 1024)} MiB limit",
+            status=413,
+        )
     raw = handler.rfile.read(length) if length else b"{}"
+    if len(raw) != length:
+        raise RequestBodyError("incomplete request body")
     try:
         data = json.loads(raw.decode("utf-8") or "{}")
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RequestBodyError("request body must be valid UTF-8 JSON") from exc
+    if not isinstance(data, dict):
+        raise RequestBodyError("request body must be a JSON object")
+    return data
 
 
 def _authorized(handler: BaseHTTPRequestHandler, body: dict[str, Any] | None = None) -> bool:
@@ -99,11 +160,16 @@ def _send_unauthorized(handler: BaseHTTPRequestHandler) -> None:
     handler.wfile.write(body)
 
 
-def _sse(handler: BaseHTTPRequestHandler, event: str, data: dict[str, Any]) -> None:
+def _start_sse(handler: BaseHTTPRequestHandler) -> None:
     handler.send_header("Content-Type", "text/event-stream")
     handler.send_header("Cache-Control", "no-cache")
-    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.send_header(
+        "Access-Control-Allow-Origin", getattr(handler, "cors_origin", "*")
+    )
     handler.end_headers()
+
+
+def _sse(handler: BaseHTTPRequestHandler, event: str, data: dict[str, Any]) -> None:
     payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
     handler.wfile.write(b"event: " + event.encode() + b"\ndata: " + payload + b"\n\n")
     handler.wfile.flush()
@@ -139,6 +205,23 @@ class _AgentHandler(BaseHTTPRequestHandler):
     log_path: str | None = None
     cors_origin: str = "*"
     max_context_tokens: int | None = None
+
+    def _track_temporary_image(self, path):
+        images = getattr(self, "_temporary_images", None)
+        if images is None:
+            images = []
+            self._temporary_images = images
+        images.append(path)
+        return path
+
+    def finish(self) -> None:
+        try:
+            super().finish()
+        finally:
+            from termux_agent.images import cleanup_downloaded_image
+
+            for image in getattr(self, "_temporary_images", []):
+                cleanup_downloaded_image(image)
 
     def log_message(self, fmt: str, *args: Any) -> None:
         pass
@@ -190,6 +273,7 @@ class _AgentHandler(BaseHTTPRequestHandler):
     def _stream_chat(self, agent, prompt: str, session_ref, note: str | None = None) -> None:
         """Stream POST /chat responses as Server-Sent Events."""
         self.send_response(200)
+        _start_sse(self)
         _sse(self, "start", {"provider": agent.provider.name, "model": agent.provider.model})
         try:
             answer = agent.run(
@@ -258,30 +342,19 @@ class _AgentHandler(BaseHTTPRequestHandler):
             prompt = last["content"]
             history = history[:-1]
         if image:
-            import base64
-            import tempfile
-            import urllib.parse
-            import urllib.request
             from pathlib import Path
 
-            try:
-                if image.startswith(("http://", "https://")):
-                    with urllib.request.urlopen(image, timeout=30) as resp:
-                        raw = resp.read()
-                    ext = Path(urllib.parse.urlparse(image).path).suffix or ".jpg"
-                elif image.startswith("data:"):
-                    header, _, b64 = image.partition(",")
-                    raw = base64.b64decode(b64)
-                    ext = ".png" if "png" in header else ".jpg"
-                else:
-                    raw = None
-                    ext = ""
-                if raw is not None:
-                    tmp_img = Path(tempfile.gettempdir()) / f"termux-agent-oai-img{ext}"
-                    tmp_img.write_bytes(raw)
-                    image = str(tmp_img)
-            except Exception:  # noqa: BLE001
-                image = None
+            from termux_agent.images import decode_data_image, download_image, read_image
+
+            if image.startswith(("http://", "https://")):
+                path, _ = download_image(image)
+                image = str(self._track_temporary_image(path))
+            elif image.startswith("data:"):
+                path = decode_data_image(image)
+                image = str(self._track_temporary_image(path))
+            else:
+                read_image(image)
+                image = str(Path(image).expanduser())
         return prompt, history, image
 
     def _openai_chat(self, data: dict[str, Any]) -> None:
@@ -294,9 +367,28 @@ class _AgentHandler(BaseHTTPRequestHandler):
             return
         model = str(data.get("model") or self.model or "")
         stream = bool(data.get("stream"))
-        prompt, history, image = self._openai_prompt(messages)
-        if not prompt:
-            self._send(400, {"error": {"message": "no user message found", "type": "invalid_request_error"}})
+        from termux_agent.images import ImageDownloadError
+
+        try:
+            prompt, history, image = self._openai_prompt(messages)
+        except ImageDownloadError as e:
+            self._send(
+                400,
+                {
+                    "error": {
+                        "message": f"invalid image: {e}",
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
+            return
+        try:
+            prompt = _validate_prompt(prompt)
+        except RequestBodyError as e:
+            self._send(
+                e.status,
+                {"error": {"message": str(e), "type": "invalid_request_error"}},
+            )
             return
         mct = data.get("max_context_tokens")
         if mct is None:
@@ -389,7 +481,14 @@ class _AgentHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
             return
-        answer = agent.run(prompt)
+        try:
+            answer = agent.run(prompt)
+        except Exception as e:  # noqa: BLE001
+            self._send(
+                500,
+                {"error": {"message": str(e), "type": "server_error"}},
+            )
+            return
         usage = getattr(agent, "usage", {}) or {}
         session_id = ""
         try:
@@ -669,7 +768,11 @@ class _AgentHandler(BaseHTTPRequestHandler):
             self._send(404, {"ok": False, "error": "not found"})
 
     def do_POST(self) -> None:
-        data = _read_body(self)
+        try:
+            data = _read_body(self)
+        except RequestBodyError as e:
+            self._send(e.status, {"ok": False, "error": str(e)})
+            return
         if not _authorized(self, data):
             _send_unauthorized(self)
             return
@@ -685,9 +788,10 @@ class _AgentHandler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True, "memory": content.strip()})
             return
         if self.path == "/batch":
-            prompts = data.get("prompts")
-            if not isinstance(prompts, list) or not all(isinstance(p, str) and p.strip() for p in prompts):
-                self._send(400, {"ok": False, "error": "missing non-empty 'prompts' list"})
+            try:
+                prompts, batch_workers = _validate_batch(data)
+            except RequestBodyError as e:
+                self._send(e.status, {"ok": False, "error": str(e)})
                 return
             provider = str(data.get("provider") or self.provider or self.cfg.get("provider", "zen"))
             model = str(data.get("model") or self.model or "")
@@ -726,7 +830,9 @@ class _AgentHandler(BaseHTTPRequestHandler):
                 except Exception as e:  # noqa: BLE001
                     return {"prompt": p, "answer": None, "error": str(e)}
 
-            results = list(ThreadPoolExecutor(max_workers=4).map(_one, [p.strip() for p in prompts]))
+            results = list(
+                ThreadPoolExecutor(max_workers=batch_workers).map(_one, prompts)
+            )
             self._send(200, {"results": results})
             return
         if self.path.startswith("/sessions/") and self.path.rstrip("/").endswith("/note"):
@@ -761,35 +867,29 @@ class _AgentHandler(BaseHTTPRequestHandler):
         if self.path != "/chat":
             self._send(404, {"ok": False, "error": "not found"})
             return
-        prompt = str(data.get("prompt", "")).strip()
-        if not prompt:
-            self._send(400, {"ok": False, "error": "missing 'prompt'"})
+        try:
+            prompt = _validate_prompt(str(data.get("prompt", "")))
+        except RequestBodyError as e:
+            self._send(e.status, {"ok": False, "error": str(e)})
             return
         image = data.get("image")
         if isinstance(image, str) and image:
             if image.startswith(("http://", "https://")):
-                import tempfile
-                import urllib.parse
-                import urllib.request
-                from pathlib import Path
+                from termux_agent.images import ImageDownloadError, download_image
 
                 try:
-                    with urllib.request.urlopen(image, timeout=30) as resp:
-                        raw = resp.read()
-                    ext = urllib.parse.urlparse(image).path
-                    ext = Path(ext).suffix or ".jpg"
-                    tmp_img = Path(tempfile.gettempdir()) / f"termux-agent-img{ext}"
-                    tmp_img.write_bytes(raw)
-                    image = str(tmp_img)
-                except Exception as e:  # noqa: BLE001
+                    path, _ = download_image(image)
+                    image = str(self._track_temporary_image(path))
+                except ImageDownloadError as e:
                     self._send(400, {"ok": False, "error": f"failed to download image: {e}"})
                     return
-            from os.path import exists
+            from termux_agent.images import ImageDownloadError, read_image
 
-            if exists(image):
+            try:
+                read_image(image)
                 prompt += f"\n[image: {image}]"
-            else:
-                self._send(400, {"ok": False, "error": f"image not found: {image}"})
+            except ImageDownloadError as e:
+                self._send(400, {"ok": False, "error": f"invalid image: {e}"})
                 return
         try:
             temp = data.get("temperature")
@@ -841,7 +941,11 @@ class _AgentHandler(BaseHTTPRequestHandler):
             note = data.get("note")
             self._stream_chat(agent, prompt, session_ref, note=str(note).strip() if isinstance(note, str) else None)
             return
-        answer = agent.run(prompt)
+        try:
+            answer = agent.run(prompt)
+        except Exception as e:  # noqa: BLE001
+            self._send(500, {"ok": False, "error": str(e)})
+            return
         if data.get("notify"):
             from termux_agent.notify import notify as _notify
 
